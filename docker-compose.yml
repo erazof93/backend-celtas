@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: celtas-db
+
+    environment:
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE}
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - celtas_pgdata:/var/lib/postgresql/data
+
+    restart: unless-stopped
+
+volumes:
+  celtas_pgdata:
