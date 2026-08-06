@@ -81,3 +81,11 @@ cuando pasa lo aplicable de este checklist.
 
 Veredicto: LISTO PARA MARCAR COMPLETO / PENDIENTE
 ```
+## Config / Validación de variables de entorno
+
+- [ ] `validation.schema.ts` declara TODAS las variables del `.env` con `.required()` (PORT, NODE_ENV, DB_*, JWT_*)
+- [ ] `ConfigModule.forRoot({ validationSchema })` está conectado en `app.module.ts`
+- [ ] La app FALLA al arrancar (error claro, no defaults silenciosos) si falta o está vacía una variable requerida
+- [ ] `configuration.ts` NO tiene fallbacks `??` hardcodeados para las variables requeridas
+- [ ] `GOOGLE_CLIENT_ID` NO está en el schema (se agrega en el submódulo de Google de Auth)
+- [ ] `PORT`/`DB_PORT` validan como número de puerto; `NODE_ENV` solo `development`/`production`/`test`

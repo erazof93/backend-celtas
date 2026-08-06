@@ -108,16 +108,30 @@ celtas-backend/
 
 ## Checklist por módulos
 
-### 0. Setup inicial
-- [x] Crear proyecto con `nest new celtas-backend --package-manager pnpm` (ya hecho)
-- [x] Confirmar que existe `pnpm-lock.yaml` (no `package-lock.json` ni `yarn.lock`)
-- [x] Configurar ESLint + Prettier
-- [x] Instalar `@nestjs/config`, `@nestjs/typeorm` + `typeorm` + `pg`, `@nestjs/swagger` (+ `class-validator` / `class-transformer` para el ValidationPipe)
-- [x] `docker compose up -d` para levantar PostgreSQL local (ver `docker-compose.yml` en la raíz)
-- [x] Copiar `.env.example` a `.env` y ajustar `JWT_SECRET`/`JWT_REFRESH_SECRET`
-- [x] Conectar TypeORM al PostgreSQL local vía `ConfigService` leyendo `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`
-- [x] Configurar `ValidationPipe` global + interceptor de respuesta + filtro de excepciones
-- [x] Configurar Swagger en `/docs` (UI) y confirmar que el spec queda expuesto en `/docs-json` — el frontend lo va a leer directamente para probar los endpoints
+### 0. Setup inicial — ✅ COMPLETO
+- [x] Crear proyecto con `nest new celtas-backend --package-manager pnpm`
+- [x] Confirmar que existe `pnpm-lock.yaml`
+- [x] Configurar ESLint + Prettier (venían de `nest new`, verificados en 0 errores)
+- [x] Instalar `@nestjs/config`, `@nestjs/typeorm` + `typeorm` + `pg`, `@nestjs/swagger`
+- [x] `docker compose up -d` para levantar PostgreSQL local
+- [x] Copiar `.env.example` a `.env`
+- [x] Conectar TypeORM al PostgreSQL local vía `ConfigService` (`TypeOrmModule.forRootAsync`)
+- [x] `ValidationPipe` global + interceptor de respuesta + filtro de excepciones
+- [x] Swagger en `/docs` (UI) + spec en `/docs-json` sin auth
+- [x] Endpoint `GET /health` que valida conexión real a la BD (`SELECT 1`)
+- [x] Auditado por `@tester`: build limpio, lint 0 errores, 14 tests unitarios + 3 e2e pasando
+
+### 0.5 Validación de variables de entorno — ✅ COMPLETO
+> `@tester` marcó esto como riesgo: agregarlo ahora, con pocas variables, es barato.
+> Después de Auth (JWT_SECRET, JWT_REFRESH_SECRET, GOOGLE_CLIENT_ID) sale más caro retrofitear.
+- [x] Crear `src/config/validation.schema.ts` con Joi (o Zod) validando TODAS las variables del `.env`
+- [x] La app debe **fallar al arrancar** (no arrancar con defaults silenciosos) si falta o está vacía
+      cualquier variable requerida — incluyendo `JWT_SECRET`/`JWT_REFRESH_SECRET` aunque el módulo
+      Auth aún no exista (las declara igual, para que Auth las use sin fallback hardcodeado)
+- [x] Conectar el schema en `ConfigModule.forRoot({ validationSchema })`
+- [x] `@tester` verifica: arrancar sin una variable requerida debe tirar error claro, no arrancar "a medias"
+- [x] Auditado por `@tester`: build limpio, lint 0 errores, 22 tests unitarios + 3 e2e pasando.
+      Prueba real: comentar `JWT_SECRET` → `Config validation error: "JWT_SECRET" is required`
 
 ### 1. Módulo Auth
 - [ ] Entidad `User` (con `password` nullable, `provider`, `googleId`)
