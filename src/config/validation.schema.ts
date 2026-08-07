@@ -19,6 +19,10 @@ export const validationSchema = Joi.object({
   DB_USERNAME: Joi.string().required(),
   DB_PASSWORD: Joi.string().required(),
   DB_DATABASE: Joi.string().required(),
+  // SSL de la conexión a Postgres. Opcional: por defecto se activa solo en producción
+  // (Supabase lo exige). DB_SSL=true/false lo fuerza (ej. probar el build de producción
+  // contra un Postgres local sin SSL).
+  DB_SSL: Joi.string().valid('true', 'false').optional(),
 
   // Auth (se declaran ya para que el módulo Auth las use sin fallback hardcodeado)
   JWT_SECRET: Joi.string().required(),

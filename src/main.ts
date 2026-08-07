@@ -1,12 +1,21 @@
 import { ClassSerializerInterceptor, ValidationPipe } from '@nestjs/common';
 import { NestFactory, Reflector } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Render está detrás de un reverse proxy. Sin `trust proxy`, Express ve la IP del
+  // proxy para todas las conexiones y el ThrottlerGuard de auth contaría la misma IP
+  // para todos los usuarios (bloqueando a todo el mundo juntos tras N requests).
+  // Solo en producción: en desarrollo local no hay proxy y no debe confiarse en X-Forwarded-For.
+  if (process.env.NODE_ENV === 'production') {
+    app.set('trust proxy', 1);
+  }
 
   // CORS habilitado para el panel admin (React) y la app (Flutter) en desarrollo.
   app.enableCors();
