@@ -1,0 +1,173 @@
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { AddressesService } from './addresses.service';
+import { CreateAddressDto } from './dto/create-address.dto';
+import { Address } from './entities/address.entity';
+
+describe('AddressesService', () => {
+  let service: AddressesService;
+  let repo: {
+    find: jest.Mock;
+    findOne: jest.Mock;
+    create: jest.Mock;
+    save: jest.Mock;
+    remove: jest.Mock;
+    update: jest.Mock;
+  };
+
+  const userA = 'user-a';
+  const userB = 'user-b';
+  const ownAddress = {
+    id: 'addr-1',
+    alias: 'Casa',
+    fullAddress: 'Av. Los Álamos 123',
+    reference: null,
+    district: 'SJM',
+    isDefault: false,
+    userId: userA,
+  } as Address;
+  const otherAddress = {
+    id: 'addr-2',
+    alias: 'Casa',
+    fullAddress: 'Otra',
+    reference: null,
+    district: 'Surco',
+    isDefault: false,
+    userId: userB,
+  } as Address;
+
+  beforeEach(async () => {
+    repo = {
+      find: jest.fn(),
+      findOne: jest.fn(),
+      create: jest.fn(),
+      save: jest.fn(),
+      remove: jest.fn(),
+      update: jest.fn(),
+    };
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AddressesService,
+        { provide: getRepositoryToken(Address), useValue: repo },
+      ],
+    }).compile();
+
+    service = module.get(AddressesService);
+  });
+
+  describe('findByUser', () => {
+    it('busca por userId ordenando principal primero', async () => {
+      repo.find.mockResolvedValue([ownAddress]);
+      const result = await service.findByUser(userA);
+      expect(repo.find).toHaveBeenCalledWith({
+        where: { userId: userA },
+        order: { isDefault: 'DESC', createdAt: 'ASC' },
+      });
+      expect(result).toEqual([ownAddress]);
+    });
+  });
+
+  describe('create', () => {
+    it('crea la dirección ligada al usuario', async () => {
+      repo.create.mockImplementation((data: CreateAddressDto) => data);
+      repo.save.mockImplementation((addr: Address) => addr);
+
+      const result = await service.create(userA, {
+        alias: 'Casa',
+        fullAddress: 'Av. Los Álamos 123',
+        district: 'SJM',
+      });
+
+      expect(repo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: userA }),
+      );
+      expect(result.userId).toBe(userA);
+    });
+
+    it('si isDefault=true, quita el default a las demás y crea la nueva', async () => {
+      repo.update.mockResolvedValue({ affected: 1 });
+      repo.create.mockImplementation((data: CreateAddressDto) => data);
+      repo.save.mockImplementation((addr: Address) => addr);
+
+      await service.create(userA, {
+        alias: 'Casa',
+        fullAddress: 'Av. Los Álamos 123',
+        district: 'SJM',
+        isDefault: true,
+      });
+
+      expect(repo.update).toHaveBeenCalledWith(
+        { userId: userA, isDefault: true },
+        { isDefault: false },
+      );
+    });
+  });
+
+  describe('update', () => {
+    it('actualiza una dirección propia', async () => {
+      repo.findOne.mockResolvedValue(ownAddress);
+      repo.save.mockImplementation((addr: Address) => addr);
+
+      const result = await service.update(userA, 'addr-1', {
+        district: 'Miraflores',
+      });
+
+      expect(result.district).toBe('Miraflores');
+      expect(result.userId).toBe(userA);
+    });
+
+    it('lanza 403 si la dirección es de otro usuario', async () => {
+      repo.findOne.mockResolvedValue(otherAddress);
+      await expect(
+        service.update(userA, 'addr-2', { district: 'X' }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+
+    it('lanza 404 si la dirección no existe', async () => {
+      repo.findOne.mockResolvedValue(null);
+      await expect(
+        service.update(userA, 'no-existe', { district: 'X' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('si isDefault=true en la actualización, quita el default a las demás', async () => {
+      repo.findOne.mockResolvedValue(ownAddress);
+      repo.save.mockImplementation((addr: Address) => addr);
+
+      await service.update(userA, 'addr-1', { isDefault: true });
+
+      expect(repo.update).toHaveBeenCalledWith(
+        { userId: userA, isDefault: true },
+        { isDefault: false },
+      );
+    });
+  });
+
+  describe('remove', () => {
+    it('elimina una dirección propia', async () => {
+      repo.findOne.mockResolvedValue(ownAddress);
+      repo.remove.mockResolvedValue(ownAddress);
+
+      await service.remove(userA, 'addr-1');
+
+      expect(repo.remove).toHaveBeenCalledWith(ownAddress);
+    });
+
+    it('lanza 403 si la dirección es de otro usuario', async () => {
+      repo.findOne.mockResolvedValue(otherAddress);
+      await expect(service.remove(userA, 'addr-2')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(repo.remove).not.toHaveBeenCalled();
+    });
+
+    it('lanza 404 si la dirección no existe', async () => {
+      repo.findOne.mockResolvedValue(null);
+      await expect(service.remove(userA, 'no-existe')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+  });
+});

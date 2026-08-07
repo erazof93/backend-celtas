@@ -134,54 +134,90 @@ celtas-backend/
       Prueba real: comentar `JWT_SECRET` → `Config validation error: "JWT_SECRET" is required`
 
 ### 1. Módulo Auth
-- [ ] Entidad `User` (con `password` nullable, `provider`, `googleId`)
-- [ ] Registro tradicional (email + password, hash con bcrypt)
-- [ ] Login tradicional (retorna access + refresh JWT)
-- [ ] Login con Google (verificación de `idToken`, crea usuario si no existe)
-- [ ] Guard `JwtAuthGuard` y estrategia `Passport`
-- [ ] Endpoint `refresh-token`
-- [ ] Roles básicos: `cliente` / `admin`
+- [x] Entidad `User` (con `password` nullable, `provider`, `googleId`)
+- [x] Registro tradicional (email + password, hash con bcrypt)
+- [x] Login tradicional (retorna access + refresh JWT)
+- [x] Login con Google (verificación de `idToken` con `google-auth-library`, audiencia + `email_verified`, crea usuario `provider: google` con `password: null` si no existe, 409 si el email ya es cuenta local)
+- [x] Guard `JwtAuthGuard` y estrategia `Passport`
+- [x] Endpoint `refresh-token`
+- [x] Roles básicos: `cliente` / `admin`
+- [x] Auditado por `@tester` (parte tradicional): build limpio, lint 0, 31 tests unitarios + 15 e2e. Login/refresh devuelven 200, register 201. Password nunca expuesto, guardado hasheado. Login de cuenta Google rechazado con 401 + mensaje claro.
+- [x] Auditado por `@tester` (login con Google, **LISTO PARA MARCAR COMPLETO**): build/lint limpios, 36 unit + 20 e2e. `POST /auth/google` valida audiencia (`GOOGLE_CLIENT_ID`) y `email_verified`, crea usuario `provider: google` con `password: null`, 409 si el email ya es cuenta local (no fusiona), login directo si el `googleId` ya existe (sin duplicar), `ThrottlerGuard` + Swagger. Endurecido: índice único en `googleId`, mensajes de validación 100% en español.
 
-### 2. Módulo Users
-- [ ] CRUD de perfil (nombre, teléfono, direcciones)
-- [ ] Campo `totalSpent` (usado por el módulo de cupones)
-- [ ] Endpoint para historial de pedidos del usuario
+### 1.1 Endurecimiento rápido (antes de Google)
+- [x] Transformer de `totalSpent` en la entidad User → TypeORM lo devuelve como `number` (no string)
+- [x] `GET /auth/me` devuelve el usuario real de la BD (no solo el payload del JWT), con `totalSpent` como número
+- [x] Rate limiting con `@nestjs/throttler` en `POST /auth/login` y `POST /auth/register` (5 intentos/min por IP, mensaje 429 en español)
+- [x] Auditado por `@tester` (**LISTO PARA MARCAR COMPLETO**): 429 al superar el límite (no 401 ni 200) con mensaje en español, `totalSpent` llega como number (verificado con decimal 123.45), `/auth/refresh` y `/auth/me` no limitados, build/lint/31 unit/15 e2e limpios
 
-### 3. Módulo Menu
-- [ ] Entidad `Category` (Burgers, Chicken, Bebidas, etc.)
-- [ ] Entidad `MenuItem` (nombre, descripción, precio, imagen, disponible)
-- [ ] CRUD completo protegido para admin
-- [ ] Endpoint público `GET /menu` optimizado para la app (agrupado por categoría)
+### 2. Módulo Users — ✅ COMPLETO
+- [x] CRUD de perfil (nombre, teléfono, direcciones)
+  - [x] `GET /users/me` perfil real desde la BD (patrón compartido con `GET /auth/me`)
+  - [x] `PATCH /users/me` solo `fullName`/`phone` (DTO sin `email`/`password`/`provider`/`role`/`totalSpent`)
+  - [x] Entidad `Address` (alias, dirección, referencia, distrito, `isDefault`, `ManyToOne` User)
+  - [x] `GET/POST /users/me/addresses` y `PATCH/DELETE /users/me/addresses/:id` con verificación de propiedad (403) y una sola `isDefault`
+- [x] Campo `totalSpent` (usado por el módulo de cupones)
+- [ ] Endpoint para historial de pedidos del usuario (depende del módulo Orders)
+- [x] `GET /users` solo admin, paginado, sin exponer password
+- [x] Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — build/lint limpios, 53 unit + 45 e2e. Cliente no edita/borra dirección de otro (403), DTO de perfil rechaza `role`/`totalSpent` (400), `GET /users` 403 para `cliente`. Corregido: `@IsNotEmpty` en `phone`/`reference`.
+
+### 3. Módulo Menu — ✅ COMPLETO
+- [x] Entidad `Category` (Burgers, Chicken, Bebidas, etc.)
+- [x] Entidad `MenuItem` (nombre, descripción, precio, imagen, disponible)
+- [x] CRUD completo protegido para admin
+- [x] Endpoint público `GET /menu` optimizado para la app (agrupado por categoría)
+- [x] Subida de imágenes a Cloudinary (`CloudinaryService` reutilizable) + endpoints `POST /menu/items/:id/image` y `POST /menu/categories/:id/image` (multipart, solo imágenes, máx 5MB → 400, admin)
+- [x] Auditado por `@tester` (**LISTO PARA MARCAR COMPLETO**): build/lint limpios, 84 unit + 69 e2e. `GET /menu` filtra inactivos/no disponibles, admin rechaza 401/403, borrar categoría con productos → 409, nombre duplicado → 409 (corregido: antes 500), subida de imagen 200/400/404, Swagger multipart usable, credenciales Cloudinary no expuestas.
+- [x] Nota de concurrencia resuelta: fallback `QueryFailedError` 23505 → 409 en `createCategory`/`updateCategory`/`createItem`/`updateItem` (no reemplaza el chequeo previo). Confirmado por `@tester` (**NOTA DE CONCURRENCIA RESUELTA**): 88 unit + 69 e2e.
 
 ### 4. Módulo Orders
-- [ ] Entidad `Order` + `OrderItem`
-- [ ] Endpoint `POST /orders` (crea pedido en estado `pendiente`)
-- [ ] Estados: `pendiente` → `confirmado` → `en_camino` → `entregado` / `cancelado`
-- [ ] Al pasar a `entregado`: sumar el monto a `user.totalSpent`
-- [ ] Endpoint para listar pedidos (admin) y pedidos propios (cliente)
-- [ ] Generar el texto/link de WhatsApp en el backend (para mantenerlo consistente) o dejarlo al frontend — **definir en el setup**
+- [x] Entidad `Order` + `OrderItem`
+- [x] Endpoint `POST /orders` (crea pedido en estado `pendiente`)
+- [x] Estados: `pendiente` → `confirmado` → `en_camino` → `entregado` / `cancelado`
+- [x] Al pasar a `entregado`: sumar el monto a `user.totalSpent`
+- [x] Endpoint para listar pedidos (admin) y pedidos propios (cliente)
+- [x] Generar el texto/link de WhatsApp en el backend (para mantenerlo consistente) o dejarlo al frontend — **definir en el setup**
 
 ### 5. Módulo Coupons
-- [ ] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)
-- [ ] Cron job (`@nestjs/schedule`) que revisa usuarios que superaron el umbral (ej. S/50) desde el último cupón
-- [ ] Endpoint para generación manual de cupones desde el panel admin (campañas)
-- [ ] Endpoint de validación/canje de cupón al hacer un pedido
+- [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)
+- [x] Cron job (`@nestjs/schedule`) que revisa usuarios que superaron el umbral (ej. S/50) desde el último cupón
+- [x] Endpoint para generación manual de cupones desde el panel admin (campañas)
+- [x] Endpoint de validación/canje de cupón al hacer un pedido
+
+### 5.1 Endurecimiento Coupons
+- [x] `@Max(100)` condicional en `GenerateCouponDto` para `percentage` (un `fixed_amount` > 100 sigue válido); el chequeo del servicio se mantiene como defensa en profundidad
+- [x] Test e2e: `POST /coupons/generate` con `percentage` 150 → 400; `fixed_amount` 150 → 201
+- [x] Aislamiento de datos e2e: cada suite ya usa prefijos de email únicos; fragilidad de `/users` resuelta con `limit` alto (mejora mayor anotada en módulo 10)
+- ⚠️ **Corrección (módulo 8)**: el `@Validate` inline original no validaba nada de verdad (silencioso,
+  ver skill `nestjs-celtas`) — el 400 funcionaba solo porque el servicio también lo rechazaba.
+  Reemplazado por `is-percentage-within-limit.ts` (`@ValidatorConstraint` real). Confirmado por `@tester`.
 
 ### 6. Módulo Banners
-- [ ] Entidad `Banner` (imagen, título, link/acción, fechas, activo, orden)
-- [ ] Endpoint `GET /banners/active` (público, consumido por la app)
-- [ ] CRUD protegido para admin (subida de imagen vía Cloudinary)
+- [x] Entidad `Banner` (imagen, título, link/acción, fechas, activo, orden)
+- [x] Endpoint `GET /banners/active` (público, consumido por la app)
+- [x] CRUD protegido para admin (subida de imagen vía Cloudinary)
+- ⚠️ **Corrección (módulo 8)**: la validación `startDate < endDate` tenía el mismo `@Validate`
+  inline muerto que Coupons. Reemplazado por `is-banner-date-range-valid.ts`. Confirmado por `@tester`.
 
 ### 7. Módulo Notifications
-- [ ] Integración con Firebase Cloud Messaging
-- [ ] Guardar `fcmToken` por usuario
-- [ ] Servicio reutilizable `sendPushNotification(userId, payload)`
-- [ ] Disparo automático: cupón generado, cambio de estado de pedido, banner nuevo
+- [x] Integración con Firebase Cloud Messaging
+- [x] Guardar `fcmToken` por usuario
+- [x] Servicio reutilizable `sendPushNotification(userId, payload)`
+- [x] Disparo automático: cupón generado, cambio de estado de pedido
+- [ ] Disparo automático: banner nuevo (broadcast) — PENDIENTE como decisión futura (probablemente FCM topics, no token a token). El método `sendPushNotification` ya está listo.
 
-### 8. Panel Admin (endpoints)
-- [ ] Guard de rol `admin` para todos los endpoints de gestión
-- [ ] Dashboard: pedidos del día, ventas totales, productos más vendidos (endpoints de estadísticas)
-- [ ] Endpoints ya cubiertos por los módulos de menú, banners y cupones
+### 8. Panel Admin (endpoints) — ✅ COMPLETO
+- [x] Guard de rol `admin` para todos los endpoints de gestión
+- [x] Dashboard: pedidos del día, ventas totales, productos más vendidos (endpoints de estadísticas)
+- [x] Endpoints ya cubiertos por los módulos de menú, banners y cupones
+- [x] `deliveredAt` en `Order` como fuente de verdad para reportes (no `createdAt`)
+- [x] Validación `from <= to` en `DashboardQueryDto` con `is-date-range-valid.ts` (`@ValidatorConstraint` real)
+- [x] Sección "Admin / Dashboard" agregada a `docs/testing-checklist.md` (11 ítems)
+- [x] **Bug de clase encontrado y corregido en los 3 DTOs**: `@Validate` con función inline no
+  valida nada en `class-validator` 0.15.1 (silencioso). Reemplazado en Coupons, Banners y
+  Dashboard por clases `@ValidatorConstraint` reales. Documentado como convención en la skill
+  `nestjs-celtas` para no repetirlo.
+- [x] Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — 164 unit + 160 e2e, build/lint limpios
 
 ### 9. Deploy y DevOps
 - [ ] Deploy backend en Render (free tier) — configurar Build Command `pnpm install && pnpm run build` y Start Command `pnpm run start:prod`
@@ -190,10 +226,12 @@ celtas-backend/
 - [ ] Migraciones automatizadas en el deploy
 
 ### 10. Calidad
-- [ ] Tests unitarios de servicios críticos (`auth`, `coupons`, `orders`)
-- [ ] Tests e2e de los endpoints principales
-- [ ] Documentación Swagger completa y actualizada
-- [ ] Todos los módulos auditados por `@tester` con veredicto LISTO (ver `docs/testing-checklist.md`)
+- [x] Tests unitarios de servicios críticos (`auth`, `coupons`, `orders`)
+- [x] Tests e2e de los endpoints principales
+- [x] Documentación Swagger completa y actualizada
+- [x] Todos los módulos auditados por `@tester` con veredicto LISTO (ver `docs/testing-checklist.md`)
+- [x] Pase de auditoría global (módulo 10): cobertura de `google-auth.service` y login de `auth.service` cerrada; `@Validate` sin funciones inline (solo clases `@ValidatorConstraint`); auditoría de guards en los 8 controllers sin hallazgos; test `full-customer-journey.e2e-spec.ts` que cruza auth→users→menu→orders→coupons; sección "## Menu" añadida al checklist; `@ApiResponse(400)` en `POST /auth/register` y `ThrottlerGuard` en `POST /auth/refresh`. Veredicto GLOBAL de `@tester`: **LISTO PARA MARCAR COMPLETO** — 171 unit + 161 e2e, build/lint limpios.
+- [ ] (Mejora opcional) Aislar mejor los datos entre suites e2e: hoy comparten la misma BD y corren en paralelo. Cada suite ya usa prefijos de email únicos (`qa-orders-`, `qa-coupons-`, etc.) y los tests de listados usan `limit` alto para no depender de la página 1. Si la fragilidad reaparece, evaluar BD separada por suite o `maxWorkers=1` en jest-e2e.
 
 ---
 
@@ -210,3 +248,16 @@ celtas-backend/
 5. Solo se marca un módulo como completo en este checklist cuando `@tester` da veredicto **LISTO**.
    Si reporta fallos, se corrigen y se vuelve a auditar antes de avanzar al siguiente módulo.
 6. La skill `nestjs-celtas` se carga automáticamente cuando el agente trabaja en entidades, DTOs o endpoints — ahí están las convenciones específicas del proyecto (ver `.opencode/skills/nestjs-celtas/SKILL.md`).
+
+### 8.1 Módulo Settings — ✅ COMPLETO
+- [x] Entidad `Setting` (key único, value text, description) en `entities/setting.entity.ts`
+- [x] `SettingsService.onModuleInit` siembra `whatsapp_business_number` al arrancar si no existe (desde `.env` o default `51999999999`)
+- [x] `GET /settings/public` (sin auth) expone SOLO las keys de `PUBLIC_KEYS_WHITELIST` (nunca todo el key-value)
+- [x] `GET /settings` y `PATCH /settings` (admin, upsert por key) con guards `JwtAuthGuard` + `RolesGuard`
+- [x] `OrdersService.buildWhatsappUrl` async lee el número de `SettingsService.getWhatsappNumber()` (tabla settings); fallback a `.env` si la tabla está vacía; `ConfigService` eliminado de OrdersService
+- [x] `WHATSAPP_BUSINESS_NUMBER` pasó a `.optional()` en `validation.schema.ts`; `configuration.ts` usa `process.env` directo sin lanzar
+- [x] `PATCH /users/:id/role` (admin): `UpdateUserRoleDto` (solo `cliente`|`admin`), `updateRole` rechaza auto-degradación (400) y usuario inexistente (404)
+- [x] Swagger documentado en todos los endpoints
+- [x] Tests: `settings.service.spec.ts`, `users.service.spec.ts` (updateRole), `test/settings.e2e-spec.ts` (13 e2e), `orders.service.spec.ts` con mock de SettingsService
+- [x] `test/jest-e2e.json` con `maxWorkers: 1` (mitigación de fragilidad de BD compartida)
+- [x] Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — 183 unit (17 suites) + 174 e2e (11 suites), build/lint limpios

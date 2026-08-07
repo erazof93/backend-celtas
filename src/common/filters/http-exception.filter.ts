@@ -5,6 +5,7 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  PayloadTooLargeException,
 } from '@nestjs/common';
 import { Response } from 'express';
 
@@ -26,7 +27,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
     let statusCode: number;
     let message: string;
 
-    if (exception instanceof HttpException) {
+    if (exception instanceof PayloadTooLargeException) {
+      // NestJS convierte el límite de tamaño de multer (LIMIT_FILE_SIZE) en un
+      // PayloadTooLargeException (413). Lo normalizamos a 400 con mensaje en español
+      // para mantener el contrato de la API (subidas inválidas → 400).
+      statusCode = HttpStatus.BAD_REQUEST;
+      message = 'El archivo excede el tamaño máximo permitido (5 MB)';
+    } else if (exception instanceof HttpException) {
       statusCode = exception.getStatus();
       const exceptionResponse = exception.getResponse();
 

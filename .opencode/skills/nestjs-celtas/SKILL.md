@@ -52,7 +52,15 @@ export class User {
   @Column({ type: 'enum', enum: ['local', 'google'], default: 'local' }) provider: string;
   @Column({ nullable: true }) googleId: string | null;
   @Column({ nullable: true }) phone: string;
-  @Column({ type: 'decimal', default: 0 }) totalSpent: number;
+  @Column({
+    type: 'decimal',
+    default: 0,
+    transformer: {
+      to: (value: number) => value,
+      from: (value: string) => parseFloat(value),
+    },
+  })
+  totalSpent: number; // TypeORM devuelve 'decimal' como string sin este transformer
   @Column({ type: 'enum', enum: ['cliente', 'admin'], default: 'cliente' }) role: string;
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;
@@ -72,6 +80,13 @@ Reglas:
   siempre hay registro aunque el cliente no complete el envío del mensaje.
 - Estados válidos: `pendiente`, `confirmado`, `en_camino`, `entregado`, `cancelado`. Modelar como
   `enum` en la entidad, no como string libre.
+- **Snapshot de precios**: cada `OrderItem` guarda `name` y `unitPrice` copiados del `MenuItem` al
+  momento del pedido (no una referencia que se recalcule después). Si el admin cambia el precio de
+  un producto mañana, los pedidos viejos no deben cambiar de total retroactivamente.
+- **Decisión: el link de WhatsApp se genera en el backend**, no en Flutter. `POST /orders` devuelve,
+  junto con el pedido creado, un campo `whatsappUrl` ya armado (`https://wa.me/<número>?text=<mensaje
+  codificado>`), usando `WHATSAPP_BUSINESS_NUMBER` de la config. Así el formato del mensaje y el
+  número quedan en un solo lugar, no hardcodeados en el cliente.
 - Al transicionar a `entregado`: incrementar `user.totalSpent` en el mismo `service`, dentro de una
   transacción, y disparar el chequeo del módulo de cupones (evento o llamada directa al service).
 
@@ -89,6 +104,38 @@ Reglas:
   (`startDate <= now <= endDate`), ordenado por el campo `order`.
 - La subida de imagen se hace a Cloudinary desde el backend (no exponer credenciales al frontend);
   el endpoint recibe el archivo, lo sube, y guarda solo la URL resultante.
+
+## Validaciones cruzadas / condicionales en DTOs
+
+⚠️ **Gotcha confirmado en este proyecto** (class-validator 0.15.1): `@Validate(callback)` con una
+función flecha inline **no funciona** — se ignora en silencio, sin error, sin warning. El campo
+queda sin validar aunque el código "parezca" correcto y los tests puedan pasar igual por casualidad
+(si el service también valida lo mismo, como pasó con el `%>100` de Coupons y las fechas de Banners).
+
+**Regla del proyecto**: toda validación cruzada o condicional (ej. "A es requerido si B es X",
+"fecha1 < fecha2", "% ≤ 100 pero monto fijo no") se implementa con una clase real:
+
+```ts
+@ValidatorConstraint({ name: 'isDateRangeValid', async: false })
+export class IsDateRangeValid implements ValidatorConstraintInterface {
+  validate(endValue: any, args: ValidationArguments) {
+    const obj = args.object as any;
+    if (!obj.startDate || !endValue) return true;
+    return new Date(obj.startDate) < new Date(endValue);
+  }
+  defaultMessage() {
+    return 'La fecha de inicio debe ser anterior a la fecha de fin';
+  }
+}
+
+// en el DTO:
+@Validate(IsDateRangeValid)
+endDate?: string;
+```
+
+Nunca uses `@Validate((obj) => ...)` con una función inline — aunque compile, no valida nada.
+El chequeo redundante a nivel de servicio sigue siendo buena práctica (defensa en profundidad),
+pero no reemplaza tener la validación real en el DTO.
 
 ## Swagger
 

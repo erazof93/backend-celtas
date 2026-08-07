@@ -4,6 +4,7 @@ import {
   HttpException,
   Logger,
   NotFoundException,
+  PayloadTooLargeException,
 } from '@nestjs/common';
 import { HttpExceptionFilter } from './http-exception.filter';
 
@@ -74,5 +75,17 @@ describe('HttpExceptionFilter', () => {
     });
     expect(loggerSpy).toHaveBeenCalled();
     loggerSpy.mockRestore();
+  });
+
+  it('convierte un PayloadTooLargeException (archivo muy grande) en 400', () => {
+    const { response, status, json } = mockResponse();
+    const exception = new PayloadTooLargeException('File too large');
+    filter.catch(exception, buildHost(response));
+    expect(status).toHaveBeenCalledWith(400);
+    expect(json).toHaveBeenCalledWith({
+      success: false,
+      message: 'El archivo excede el tamaño máximo permitido (5 MB)',
+      statusCode: 400,
+    });
   });
 });

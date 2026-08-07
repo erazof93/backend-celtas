@@ -12,6 +12,17 @@ const completeEnv = {
   JWT_EXPIRES_IN: '15m',
   JWT_REFRESH_SECRET: 'refresh-secret',
   JWT_REFRESH_EXPIRES_IN: '7d',
+  GOOGLE_CLIENT_ID: 'x.apps.googleusercontent.com',
+  WHATSAPP_BUSINESS_NUMBER: '51999999999',
+  CLOUDINARY_CLOUD_NAME: 'cloud',
+  CLOUDINARY_API_KEY: 'key',
+  CLOUDINARY_API_SECRET: 'secret',
+  COUPON_THRESHOLD_AMOUNT: '50',
+  COUPON_EXPIRATION_DAYS: '15',
+  FIREBASE_PROJECT_ID: 'proyecto-test',
+  FIREBASE_CLIENT_EMAIL: 'admin@test.iam.gserviceaccount.com',
+  FIREBASE_PRIVATE_KEY:
+    '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg...\n-----END PRIVATE KEY-----\n',
 };
 
 /** Devuelve una copia del env completo sin la variable indicada. */
@@ -80,16 +91,11 @@ describe('validationSchema (Módulo 0.5)', () => {
     expect(error!.message).toContain('"JWT_REFRESH_SECRET"');
   });
 
-  it('NO exige GOOGLE_CLIENT_ID (se agrega en el submódulo de Google)', () => {
-    const { error } = validationSchema.validate(completeEnv, {
+  it('falla si falta GOOGLE_CLIENT_ID (requerido con el login de Google)', () => {
+    const { error } = validationSchema.validate(without('GOOGLE_CLIENT_ID'), {
       allowUnknown: true,
     });
-    expect(error).toBeUndefined();
-    // Y si se pasa, no debe romper (allowUnknown) ni estar declarado como requerido.
-    const { error: withGoogle } = validationSchema.validate(
-      { ...completeEnv, GOOGLE_CLIENT_ID: 'x.apps.googleusercontent.com' },
-      { allowUnknown: true },
-    );
-    expect(withGoogle).toBeUndefined();
+    expect(error).toBeDefined();
+    expect(error!.message).toContain('"GOOGLE_CLIENT_ID" is required');
   });
 });

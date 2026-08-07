@@ -32,4 +32,28 @@ export default () => ({
     refreshSecret: env('JWT_REFRESH_SECRET'),
     refreshExpiresIn: env('JWT_REFRESH_EXPIRES_IN'),
   },
+  google: {
+    clientId: env('GOOGLE_CLIENT_ID'),
+  },
+  whatsapp: {
+    // Opcional: el número vive en la tabla `settings`. Solo se usa como fallback
+    // si la tabla está vacía. No lanza si falta (a diferencia de las requeridas).
+    businessNumber: process.env.WHATSAPP_BUSINESS_NUMBER,
+  },
+  cloudinary: {
+    cloudName: env('CLOUDINARY_CLOUD_NAME'),
+    apiKey: env('CLOUDINARY_API_KEY'),
+    apiSecret: env('CLOUDINARY_API_SECRET'),
+  },
+  coupons: {
+    thresholdAmount: parseFloat(env('COUPON_THRESHOLD_AMOUNT')),
+    expirationDays: parseInt(env('COUPON_EXPIRATION_DAYS'), 10),
+  },
+  firebase: {
+    projectId: env('FIREBASE_PROJECT_ID'),
+    clientEmail: env('FIREBASE_CLIENT_EMAIL'),
+    // La clave privada llega con \n literales en el .env; el reemplazo por saltos
+    // de línea reales se hace en NotificationsService al construir el credential.
+    privateKey: env('FIREBASE_PRIVATE_KEY'),
+  },
 });

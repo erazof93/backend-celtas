@@ -1,5 +1,5 @@
-import { ValidationPipe } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
+import { ClassSerializerInterceptor, ValidationPipe } from '@nestjs/common';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -22,7 +22,12 @@ async function bootstrap() {
   );
 
   // Formato de respuesta estándar { success, data, message } y errores normalizados.
-  app.useGlobalInterceptors(new TransformInterceptor());
+  // ClassSerializerInterceptor corre primero sobre la respuesta (serializa entidades y aplica
+  // @Exclude(), p. ej. el password de User); luego TransformInterceptor envuelve en { success, data }.
+  app.useGlobalInterceptors(
+    new TransformInterceptor(),
+    new ClassSerializerInterceptor(app.get(Reflector)),
+  );
   app.useGlobalFilters(new HttpExceptionFilter());
 
   // Swagger en /docs (UI) y /docs-json (spec JSON consumido por el frontend Flutter).
