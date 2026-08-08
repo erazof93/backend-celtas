@@ -412,6 +412,44 @@ describe('CouponsService', () => {
       );
       expect(result.meta.total).toBe(1);
     });
+
+    it('filtra por userId cuando se pasa el query param', async () => {
+      couponsRepo.findAndCount.mockResolvedValue([[seedCoupon()], 1]);
+      const result = await service.findAll({ userId });
+      expect(couponsRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId },
+          take: 10,
+          skip: 0,
+        }),
+      );
+      expect(result.meta.total).toBe(1);
+    });
+
+    it('combina el filtro por userId con el de status', async () => {
+      couponsRepo.findAndCount.mockResolvedValue([[seedCoupon()], 1]);
+      await service.findAll({
+        userId,
+        status: CouponStatus.ACTIVE,
+      });
+      expect(couponsRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId, status: CouponStatus.ACTIVE },
+        }),
+      );
+    });
+
+    it('sin userId no agrega el filtro (comportamiento previo intacto)', async () => {
+      couponsRepo.findAndCount.mockResolvedValue([[seedCoupon()], 1]);
+      await service.findAll({});
+      expect(couponsRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {},
+          take: 10,
+          skip: 0,
+        }),
+      );
+    });
   });
 
   describe('handleDailyMaintenance (cron)', () => {

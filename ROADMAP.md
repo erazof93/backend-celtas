@@ -191,6 +191,10 @@ celtas-backend/
 - ⚠️ **Corrección (módulo 8)**: el `@Validate` inline original no validaba nada de verdad (silencioso,
   ver skill `nestjs-celtas`) — el 400 funcionaba solo porque el servicio también lo rechazaba.
   Reemplazado por `is-percentage-within-limit.ts` (`@ValidatorConstraint` real). Confirmado por `@tester`.
+- [x] Filtro `userId` (UUID v4 validado) en `GET /coupons` (admin): `CouponsService.findAll` agrega
+  `where.userId` solo si el param viene presente; sin él el comportamiento previo queda intacto.
+  Swagger documenta el param (`@ApiQuery` + `@ApiPropertyOptional`). Auditado por `@tester`:
+  **LISTO PARA MARCAR COMPLETO** — 186 unit + 179 e2e, build/lint limpios.
 
 ### 6. Módulo Banners
 - [x] Entidad `Banner` (imagen, título, link/acción, fechas, activo, orden)
@@ -219,19 +223,38 @@ celtas-backend/
   `nestjs-celtas` para no repetirlo.
 - [x] Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — 164 unit + 160 e2e, build/lint limpios
 
-### 9. Deploy y DevOps
-- [ ] Deploy backend en Render (free tier) — configurar Build Command `pnpm install && pnpm run build` y Start Command `pnpm run start:prod`
-- [ ] Base de datos en Supabase/Neon (free tier)
-- [ ] Variables de entorno configuradas en Render
-- [ ] Migraciones automatizadas en el deploy
+### 8.1 Settings (número de WhatsApp editable desde el panel) — ✅ COMPLETO
+- [x] Entidad `Setting` (key único, value, description), sembrada al arrancar si no existe
+- [x] `GET /settings/public` (sin auth, whitelist explícita en código, nunca expone todo el key-value)
+- [x] `GET`/`PATCH /settings` (admin)
+- [x] `OrdersService.buildWhatsappUrl` migrado a leer de `SettingsService`, con fallback a `.env` si la tabla está vacía (logueado)
+- [x] `WHATSAPP_BUSINESS_NUMBER` pasó de requerida a opcional en el schema
+- [x] `PATCH /users/:id/role` (admin, rechaza auto-degradación con 400)
+- [x] `test/jest-e2e.json` con `maxWorkers: 1` — resuelve la fragilidad de BD compartida entre suites e2e (anotada como mejora opcional desde el módulo 5.1, reapareció con la 11ª suite)
+- [x] Auditado por `@tester`: 183 unit (17 suites) + 174 e2e (11 suites), lint/build limpios
 
-### 10. Calidad
-- [x] Tests unitarios de servicios críticos (`auth`, `coupons`, `orders`)
-- [x] Tests e2e de los endpoints principales
-- [x] Documentación Swagger completa y actualizada
-- [x] Todos los módulos auditados por `@tester` con veredicto LISTO (ver `docs/testing-checklist.md`)
-- [x] Pase de auditoría global (módulo 10): cobertura de `google-auth.service` y login de `auth.service` cerrada; `@Validate` sin funciones inline (solo clases `@ValidatorConstraint`); auditoría de guards en los 8 controllers sin hallazgos; test `full-customer-journey.e2e-spec.ts` que cruza auth→users→menu→orders→coupons; sección "## Menu" añadida al checklist; `@ApiResponse(400)` en `POST /auth/register` y `ThrottlerGuard` en `POST /auth/refresh`. Veredicto GLOBAL de `@tester`: **LISTO PARA MARCAR COMPLETO** — 171 unit + 161 e2e, build/lint limpios.
-- [ ] (Mejora opcional) Aislar mejor los datos entre suites e2e: hoy comparten la misma BD y corren en paralelo. Cada suite ya usa prefijos de email únicos (`qa-orders-`, `qa-coupons-`, etc.) y los tests de listados usan `limit` alto para no depender de la página 1. Si la fragilidad reaparece, evaluar BD separada por suite o `maxWorkers=1` en jest-e2e.
+### 9. Deploy y DevOps
+- [x] Migración inicial de TypeORM generada y verificada (9 tablas, 7 enums, 7 FKs, todos los índices únicos confirmados uno a uno contra las entidades)
+- [x] `synchronize: false` forzado cuando `NODE_ENV=production` (schema solo por migraciones en prod)
+- [x] SSL condicional en TypeORM (`NODE_ENV=production` → SSL con `rejectUnauthorized: false` para Supabase; override manual `DB_SSL` para pruebas)
+- [x] `trust proxy` habilitado solo en producción (protege el `ThrottlerGuard` de auth detrás del proxy de Render)
+- [x] `data-source.ts` (CLI de migraciones) carga `.env` de forma independiente y **falla explícito** si falta una variable — probado renombrando `.env` y confirmando el error, no un fallback silencioso a `localhost`
+- [x] `pnpm run start:prod` verificado localmente en modo producción
+- [x] Proyecto en Supabase creado (`celtas-backend`, São Paulo, Data API desactivado) — **hecho**
+- [x] Web Service en Render creado y configurado (Build Command, Start Command con migración encadenada, Health Check `/health`) — **hecho**
+- [x] Variables de entorno reales pegadas en Render (secrets de JWT nuevos, no reutilizar los de local)
+- [x] **Gotcha resuelto**: conexión directa de Supabase (`db.xxx.supabase.co`) solo resuelve IPv6, y Render no soporta salida IPv6 (`ENETUNREACH`). Solución: usar el **Session Pooler** de Supabase (`aws-0-<region>.pooler.supabase.com:5432`, usuario `postgres.<project-ref>`) en vez de la conexión directa — es IPv4-compatible y funciona igual para una app persistente
+- [x] Primer deploy exitoso: migración corrió sola en el arranque, las 9 tablas + enums + FKs se crearon correctamente, `"Your service is live 🎉"` — backend real en `https://backend-celtas.onrender.com`
+
+### 10. Calidad — ✅ COMPLETO
+- [x] Cobertura reforzada en lógica crítica: `google-auth.service.ts` 23% → ~95%, casos de `auth.service.ts` (email inexistente, usuario sin password)
+- [x] Confirmado: cero usos de `@Validate` con función inline en todo `src/` (solo clases `@ValidatorConstraint` reales)
+- [x] Auditoría manual de guards en los 8 controllers + `app.controller`: públicos/JwtAuthGuard/admin coinciden exactamente con el spec, sin `APP_GUARD` global oculto, **cero hallazgos**
+- [x] `test/full-customer-journey.e2e-spec.ts`: registro → login → menú → pedido → entrega → `totalSpent` → cupón automático → canje en segundo pedido → descuento aplicado — todo el flujo cruzando módulos
+- [x] `docs/testing-checklist.md`: sección "Menu" que estaba huérfana bajo Users, corregida; una sección por módulo confirmada
+- [x] Swagger: status codes de error confirmados en endpoints principales (agregado 400 faltante en `POST /auth/register`)
+- [x] Extra: `ThrottlerGuard` agregado a `POST /auth/refresh` (consistencia con register/login/google)
+- [x] Auditado por `@tester`: veredicto **GLOBAL LISTO** — 171 unit + 161 e2e, build/lint limpios
 
 ---
 
@@ -248,16 +271,3 @@ celtas-backend/
 5. Solo se marca un módulo como completo en este checklist cuando `@tester` da veredicto **LISTO**.
    Si reporta fallos, se corrigen y se vuelve a auditar antes de avanzar al siguiente módulo.
 6. La skill `nestjs-celtas` se carga automáticamente cuando el agente trabaja en entidades, DTOs o endpoints — ahí están las convenciones específicas del proyecto (ver `.opencode/skills/nestjs-celtas/SKILL.md`).
-
-### 8.1 Módulo Settings — ✅ COMPLETO
-- [x] Entidad `Setting` (key único, value text, description) en `entities/setting.entity.ts`
-- [x] `SettingsService.onModuleInit` siembra `whatsapp_business_number` al arrancar si no existe (desde `.env` o default `51999999999`)
-- [x] `GET /settings/public` (sin auth) expone SOLO las keys de `PUBLIC_KEYS_WHITELIST` (nunca todo el key-value)
-- [x] `GET /settings` y `PATCH /settings` (admin, upsert por key) con guards `JwtAuthGuard` + `RolesGuard`
-- [x] `OrdersService.buildWhatsappUrl` async lee el número de `SettingsService.getWhatsappNumber()` (tabla settings); fallback a `.env` si la tabla está vacía; `ConfigService` eliminado de OrdersService
-- [x] `WHATSAPP_BUSINESS_NUMBER` pasó a `.optional()` en `validation.schema.ts`; `configuration.ts` usa `process.env` directo sin lanzar
-- [x] `PATCH /users/:id/role` (admin): `UpdateUserRoleDto` (solo `cliente`|`admin`), `updateRole` rechaza auto-degradación (400) y usuario inexistente (404)
-- [x] Swagger documentado en todos los endpoints
-- [x] Tests: `settings.service.spec.ts`, `users.service.spec.ts` (updateRole), `test/settings.e2e-spec.ts` (13 e2e), `orders.service.spec.ts` con mock de SettingsService
-- [x] `test/jest-e2e.json` con `maxWorkers: 1` (mitigación de fragilidad de BD compartida)
-- [x] Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — 183 unit (17 suites) + 174 e2e (11 suites), build/lint limpios

@@ -669,5 +669,68 @@ describe('Coupons (e2e)', () => {
         .expect(400);
       expect((res.body as ErrorResponse).statusCode).toBe(400);
     });
+
+    it('filtra por userId: devuelve solo los cupones de ese usuario', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/coupons?userId=${clientAId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        items: CouponData[];
+        meta: { page: number; limit: number; total: number };
+      };
+      expect(Array.isArray(data.items)).toBe(true);
+      expect(data.meta.total).toBeGreaterThanOrEqual(1);
+      expect(data.items.every((c) => c.userId === clientAId)).toBe(true);
+    });
+
+    it('filtra por userId inexistente: lista vacía sin error', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/coupons?userId=11111111-1111-4111-8111-111111111111')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        items: CouponData[];
+        meta: { page: number; limit: number; total: number };
+      };
+      expect(data.items).toHaveLength(0);
+      expect(data.meta.total).toBe(0);
+    });
+
+    it('combina userId con status', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/coupons?userId=${clientAId}&status=used`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        items: CouponData[];
+        meta: { page: number; limit: number; total: number };
+      };
+      expect(data.meta.total).toBeGreaterThanOrEqual(1);
+      expect(data.items.every((c) => c.userId === clientAId)).toBe(true);
+      expect(data.items.every((c) => c.status === 'used')).toBe(true);
+    });
+
+    it('rechaza un userId que no es UUID (400)', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/coupons?userId=no-es-un-uuid')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('sin userId sigue listando cupones de todos los usuarios', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/coupons?page=1&limit=100')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        items: CouponData[];
+        meta: { page: number; limit: number; total: number };
+      };
+      expect(data.meta.total).toBeGreaterThanOrEqual(1);
+      // Al menos un cupón pertenece a clientA (creado en esta suite).
+      expect(data.items.some((c) => c.userId === clientAId)).toBe(true);
+    });
   });
 });

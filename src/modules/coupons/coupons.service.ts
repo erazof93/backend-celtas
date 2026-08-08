@@ -316,13 +316,16 @@ export class CouponsService {
     });
   }
 
-  /** Listado paginado para el panel admin, con filtro opcional por estado. */
+  /** Listado paginado para el panel admin, con filtro opcional por estado y por usuario. */
   async findAll(query: QueryCouponsDto): Promise<PaginatedCoupons> {
     const page = query.page ?? 1;
     const limit = query.limit ?? 10;
     const where: FindOptionsWhere<Coupon> = {};
     if (query.status) {
       where.status = query.status;
+    }
+    if (query.userId) {
+      where.userId = query.userId;
     }
     const [items, total] = await this.couponsRepository.findAndCount({
       where,
