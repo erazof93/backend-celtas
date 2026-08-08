@@ -62,10 +62,11 @@ cuando pasa lo aplicable de este checklist.
 
 ## Coupons
 
-- [ ] El cron no genera cupones duplicados para el mismo ciclo de gasto
-- [ ] Todo cupón generado tiene `expiresAt` futuro
-- [ ] Un cupón usado (`usado: true`) no puede reutilizarse
-- [ ] Generación manual desde admin funciona igual que la automática (mismo servicio, distinto trigger)
+- [x] El cron no genera cupones duplicados para el mismo ciclo de gasto
+- [x] Todo cupón generado tiene `expiresAt` futuro
+- [x] Un cupón usado (`usado: true`) no puede reutilizarse
+- [x] Generación manual desde admin funciona igual que la automática (mismo servicio, distinto trigger)
+- [x] `GET /coupons?userId=X` (admin) filtra solo los cupones de ese usuario; userId inexistente → lista vacía (200); userId malformado → 400; sin el param el comportamiento previo (paginación + status) queda intacto
 
 ## Banners
 

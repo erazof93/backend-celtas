@@ -36,6 +36,27 @@ en cada módulo.
 - La conexión de TypeORM se arma en `config/configuration.ts` leyendo esas variables vía
   `ConfigService`, y se registra con `TypeOrmModule.forRootAsync()` (no `forRoot()` con valores
   hardcodeados), para que en el futuro (deploy) solo cambie el `.env` y no el código.
+- **`synchronize` está apagado siempre, incluso en desarrollo** (ver "Flujo de migraciones" abajo).
+  No lo reactives ni siquiera temporalmente — rompe la detección de diffs de `migration:generate`.
+
+## Flujo de migraciones (OBLIGATORIO para cualquier cambio de schema)
+
+Producción (Render) corre `pnpm run migration:run && pnpm run start:prod` en cada deploy — las
+migraciones se aplican solas contra Supabase al hacer `git push`. Pero el archivo de migración
+tiene que existir y estar probado ANTES de ese push. Cada vez que se agregue/modifique una
+entidad (columna, tabla, índice, FK, enum):
+
+1. Modificar la entidad en código.
+2. Generar la migración: `pnpm run migration:generate src/migrations/NombreDescriptivo`
+3. Revisar el archivo generado a mano — nunca confiar ciegamente en el diff automático.
+4. Correr `pnpm run migration:run` localmente y verificar que la app sigue funcionando con el
+   cambio real aplicado (no solo con `synchronize`).
+5. Commitear la entidad Y el archivo de migración JUNTOS, en el mismo commit — nunca sueltos.
+6. `git push` → Render aplica la migración sola antes de arrancar la nueva versión.
+
+Si `migration:generate` dice "no changes found" después de un cambio real de entidad, es señal
+de que `synchronize` se reactivó en algún lado o de que la BD local no está al día con las
+migraciones — no seguir adelante hasta resolver esa inconsistencia primero.
 
 ## Entidad User (auth híbrida)
 

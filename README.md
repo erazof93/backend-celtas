@@ -1,98 +1,103 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Celtas Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+API del backend de la dark kitchen **Celtas** (fast food, solo delivery) en San Juan de
+Miraflores, Lima. NestJS + TypeScript + PostgreSQL + TypeORM.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Stack
 
-## Description
+- **NestJS 11** + TypeScript
+- **PostgreSQL 17** (local vía docker-compose, producción en Supabase)
+- **TypeORM** (migraciones, `synchronize` SIEMPRE apagado)
+- Autenticación híbrida: email+password y Google OAuth (`password` nullable para usuarios Google)
+- Checkout sin pago en la app: el pedido se guarda como `pendiente` y se redirige a WhatsApp
+- Banners promocionales, cupones automáticos (umbral de gasto vía cron), notificaciones FCM
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Requisitos
 
-## Project setup
+- Node.js 20+
+- pnpm
+- Docker (para el Postgres local)
+
+## Setup
 
 ```bash
-$ pnpm install
+# 1. Copia el .env de ejemplo y ajusta los valores
+cp .env.example .env
+
+# 2. Instala dependencias
+pnpm install
+
+# 3. Levanta el Postgres local (lee DB_* del .env)
+docker compose up -d postgres
 ```
 
-## Compile and run the project
+## Flujo de migraciones (OBLIGATORIO)
+
+> **`synchronize` está apagado siempre, incluso en desarrollo.** El schema se gestiona solo
+> por migraciones. Reactivar `synchronize` rompe la detección de diffs de `migration:generate`.
+
+Cada vez que agregues o modifiques una entidad (columna, tabla, índice, FK, enum):
+
+1. Modifica la entidad en código.
+2. Genera la migración:
+
+   ```bash
+   pnpm run migration:generate src/migrations/NombreDescriptivo
+   ```
+
+3. **Revisa el archivo generado a mano** — nunca confíes ciegamente en el diff automático.
+4. Aplica la migración localmente y prueba el cambio real:
+
+   ```bash
+   pnpm run migration:run
+   pnpm run start:dev
+   ```
+
+5. Commitea la entidad **y** el archivo de migración juntos, en el mismo commit.
+6. Al hacer `git push`, el deploy corre `migration:run` antes de arrancar la nueva versión.
+
+Si `migration:generate` dice "No changes in database schema were found" después de un cambio
+real de entidad, es señal de que `synchronize` se reactivó o de que la BD local no está al día
+con las migraciones — resolvé esa inconsistencia antes de seguir.
+
+### Nota sobre la BD local
+
+La BD local de Docker fue creada originalmente con `synchronize`, así que tiene el schema pero
+**no** tiene la tabla `migrations`. Para dejarla en el mismo "estado conocido" que producción:
+
+1. Crear la tabla `migrations` (schema de TypeORM: `id` serial PK, `timestamp` bigint, `name` varchar).
+2. Insertar la fila `('timestamp_de_InitialSchema', 'InitialSchema...')` para marcarla como ya ejecutada
+   sin volver a correr su `CREATE TABLE`.
+
+Después de eso, `pnpm run migration:generate` contra la BD local debe decir
+"No changes in database schema were found" si no hay cambios de entidades pendientes.
+
+## Scripts
 
 ```bash
-# development
-$ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
+pnpm run start:dev          # desarrollo con watch
+pnpm run start:prod         # build de producción (node dist/main)
+pnpm run build              # compila a dist/
+pnpm run migration:generate # genera una migración desde el diff de entidades vs BD local
+pnpm run migration:run      # aplica las migraciones pendientes
+pnpm run migration:revert   # deshace la última migración aplicada
+pnpm run test               # tests unitarios
+pnpm run test:e2e           # tests e2e (con la BD local; si tu .env apunta a otro host,
+                            # antepón los DB_* correctos al comando)
+pnpm run lint               # eslint + prettier
 ```
 
-## Run tests
+## Swagger
 
-```bash
-# unit tests
-$ pnpm run test
+Con la app corriendo:
 
-# e2e tests
-$ pnpm run test:e2e
+- UI: `http://localhost:3000/docs`
+- Spec JSON (consumido por Flutter): `http://localhost:3000/docs-json`
 
-# test coverage
-$ pnpm run test:cov
-```
+## Estructura
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- `src/modules/<modulo>/` — cada módulo: `entities/`, `dto/`, `<modulo>.controller.ts`, `<modulo>.service.ts`, `<modulo>.module.ts`
+- `src/migrations/` — migraciones de TypeORM
+- `src/config/` — `configuration.ts` (lectura de env) y `validation.schema.ts` (validación Joi)
+- `src/data-source.ts` — DataSource para el CLI de TypeORM (carga `.env` con dotenv)
+- `test/` — tests e2e
