@@ -146,6 +146,27 @@ export class UsersController {
     return this.addressesService.remove(req.user.userId, id);
   }
 
+  @Get(':id/addresses')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Listar las direcciones de un usuario (solo admin)',
+    description:
+      'Vista 360 del cliente en el panel admin. 404 si el usuario no existe; array vacío si no tiene direcciones.',
+  })
+  @ApiParam({ name: 'id', description: 'UUID del usuario' })
+  @ApiResponse({
+    status: 200,
+    description: 'Lista de direcciones del usuario (principal primero)',
+  })
+  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
+  @ApiResponse({ status: 403, description: 'Requiere rol admin' })
+  @ApiResponse({ status: 404, description: 'El usuario no existe' })
+  async listUserAddresses(@Param('id', ParseUUIDPipe) id: string) {
+    await this.usersService.ensureExists(id);
+    return this.addressesService.findByUser(id);
+  }
+
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)

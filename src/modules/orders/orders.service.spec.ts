@@ -331,6 +331,46 @@ describe('OrdersService', () => {
         expect.objectContaining({ where: { status: OrderStatus.CONFIRMADO } }),
       );
     });
+
+    it('filtra por userId cuando se pasa el query param', async () => {
+      ordersRepo.findAndCount.mockResolvedValue([[seedOrder()], 1]);
+      const result = await service.findAll({ page: 1, limit: 10, userId });
+      expect(ordersRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId },
+          take: 10,
+          skip: 0,
+        }),
+      );
+      expect(result.meta.total).toBe(1);
+    });
+
+    it('combina el filtro por userId con el de status', async () => {
+      ordersRepo.findAndCount.mockResolvedValue([[], 0]);
+      await service.findAll({
+        page: 1,
+        limit: 10,
+        userId,
+        status: OrderStatus.PENDIENTE,
+      });
+      expect(ordersRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId, status: OrderStatus.PENDIENTE },
+        }),
+      );
+    });
+
+    it('sin userId no agrega el filtro (comportamiento previo intacto)', async () => {
+      ordersRepo.findAndCount.mockResolvedValue([[seedOrder()], 1]);
+      await service.findAll({ page: 1, limit: 10 });
+      expect(ordersRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {},
+          take: 10,
+          skip: 0,
+        }),
+      );
+    });
   });
 
   describe('findOne', () => {

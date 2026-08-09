@@ -160,6 +160,7 @@ celtas-backend/
 - [ ] Endpoint para historial de pedidos del usuario (depende del módulo Orders)
 - [x] `GET /users` solo admin, paginado, sin exponer password
 - [x] Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — build/lint limpios, 53 unit + 45 e2e. Cliente no edita/borra dirección de otro (403), DTO de perfil rechaza `role`/`totalSpent` (400), `GET /users` 403 para `cliente`. Corregido: `@IsNotEmpty` en `phone`/`reference`.
+- [x] `GET /users/:id/addresses` (admin): vista 360 del cliente. `UsersService.ensureExists` (404 si no existe) + `AddressesService.findByUser` reutilizado. Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — 191 unit + 190 e2e, build/lint limpios, Swagger 200/401/403/404, sin conflicto de rutas con `me/addresses`.
 
 ### 3. Módulo Menu — ✅ COMPLETO
 - [x] Entidad `Category` (Burgers, Chicken, Bebidas, etc.)
@@ -177,6 +178,7 @@ celtas-backend/
 - [x] Al pasar a `entregado`: sumar el monto a `user.totalSpent`
 - [x] Endpoint para listar pedidos (admin) y pedidos propios (cliente)
 - [x] Generar el texto/link de WhatsApp en el backend (para mantenerlo consistente) o dejarlo al frontend — **definir en el setup**
+- [x] Filtro `userId` (UUID v4 validado) en `GET /orders` (admin): `OrdersService.findAll` agrega `where.userId` solo si el param viene presente; sin él el comportamiento previo queda intacto. Swagger documenta el param (`@ApiQuery` + `@ApiPropertyOptional`). Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — 191 unit + 190 e2e, build/lint limpios.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)

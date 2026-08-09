@@ -92,6 +92,12 @@ export class OrdersController {
     enum: ['pendiente', 'confirmado', 'en_camino', 'entregado', 'cancelado'],
     description: 'Filtrar por estado',
   })
+  @ApiQuery({
+    name: 'userId',
+    required: false,
+    example: '3f2b1c4a-9d8e-4f6a-b7c5-1a2b3c4d5e6f',
+    description: 'Filtrar los pedidos de un usuario específico (UUID)',
+  })
   @ApiResponse({ status: 200, description: 'Lista paginada de pedidos' })
   @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
   @ApiResponse({ status: 403, description: 'Requiere rol admin' })

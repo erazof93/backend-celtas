@@ -47,6 +47,7 @@ describe('Users (e2e)', () => {
   let clientAToken: string;
   let clientBToken: string;
   let adminToken: string;
+  let clientAId: string;
 
   const suffix = Date.now();
   const clientAEmail = `qa-users-a-${suffix}@test.com`;
@@ -111,6 +112,8 @@ describe('Users (e2e)', () => {
     clientAToken = await register(clientAEmail, 'Cliente A');
     clientBToken = await register(clientBEmail, 'Cliente B');
     adminToken = await login(adminEmail, password);
+    const clientA = await usersRepo.findOne({ where: { email: clientAEmail } });
+    clientAId = clientA!.id;
   });
 
   afterAll(async () => {
@@ -400,6 +403,65 @@ describe('Users (e2e)', () => {
     it('rechaza limit > 100 con 400', async () => {
       const res = await request(app.getHttpServer())
         .get('/users?limit=101')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+  });
+
+  describe('GET /users/:id/addresses (admin)', () => {
+    it('401 sin token', async () => {
+      await request(app.getHttpServer())
+        .get(`/users/${clientAId}/addresses`)
+        .expect(401);
+    });
+
+    it('403 para un usuario con rol cliente', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/users/${clientAId}/addresses`)
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(403);
+      expect((res.body as ErrorResponse).statusCode).toBe(403);
+    });
+
+    it('404 si el usuario no existe', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/users/11111111-1111-4111-8111-111111111111/addresses')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(404);
+      expect((res.body as ErrorResponse).statusCode).toBe(404);
+    });
+
+    it('devuelve las direcciones del usuario (la "Trabajo" creada antes)', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/users/${clientAId}/addresses`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as Array<{
+        id: string;
+        alias: string;
+        userId: string;
+      }>;
+      expect(Array.isArray(data)).toBe(true);
+      expect(data.length).toBeGreaterThanOrEqual(1);
+      expect(data.every((a) => a.userId === clientAId)).toBe(true);
+      expect(data.some((a) => a.alias === 'Trabajo')).toBe(true);
+    });
+
+    it('array vacío si el usuario no tiene direcciones (cliente B)', async () => {
+      const clientB = await usersRepo.findOne({
+        where: { email: clientBEmail },
+      });
+      const res = await request(app.getHttpServer())
+        .get(`/users/${clientB!.id}/addresses`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      expect((res.body as Envelope).data).toEqual([]);
+    });
+
+    it('400 si el id no es un UUID válido', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/users/no-es-un-uuid/addresses')
         .set('Authorization', `Bearer ${adminToken}`)
         .expect(400);
       expect((res.body as ErrorResponse).statusCode).toBe(400);

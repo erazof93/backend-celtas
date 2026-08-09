@@ -408,6 +408,69 @@ describe('Orders (e2e)', () => {
         .expect(400);
       expect((res.body as ErrorResponse).statusCode).toBe(400);
     });
+
+    it('filtra por userId: devuelve solo los pedidos de ese usuario', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/orders?userId=${clientAId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        items: OrderData[];
+        meta: { page: number; limit: number; total: number };
+      };
+      expect(Array.isArray(data.items)).toBe(true);
+      expect(data.meta.total).toBeGreaterThanOrEqual(1);
+      expect(data.items.every((o) => o.userId === clientAId)).toBe(true);
+    });
+
+    it('filtra por userId inexistente: lista vacía sin error', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/orders?userId=11111111-1111-4111-8111-111111111111')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        items: OrderData[];
+        meta: { page: number; limit: number; total: number };
+      };
+      expect(data.items).toHaveLength(0);
+      expect(data.meta.total).toBe(0);
+    });
+
+    it('combina userId con status', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/orders?userId=${clientAId}&status=pendiente`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        items: OrderData[];
+        meta: { page: number; limit: number; total: number };
+      };
+      expect(data.meta.total).toBeGreaterThanOrEqual(1);
+      expect(data.items.every((o) => o.userId === clientAId)).toBe(true);
+      expect(data.items.every((o) => o.status === 'pendiente')).toBe(true);
+    });
+
+    it('rechaza un userId que no es UUID (400)', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/orders?userId=no-es-un-uuid')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('sin userId sigue listando pedidos de todos los usuarios', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/orders?page=1&limit=100')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        items: OrderData[];
+        meta: { page: number; limit: number; total: number };
+      };
+      expect(data.meta.total).toBeGreaterThanOrEqual(1);
+      // Al menos un pedido pertenece a clientA (creado en esta suite).
+      expect(data.items.some((o) => o.userId === clientAId)).toBe(true);
+    });
   });
 
   describe('PATCH /orders/:id/status', () => {

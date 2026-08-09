@@ -50,6 +50,17 @@ export class UsersService {
     return this.usersRepository.findOne({ where: { id } });
   }
 
+  /**
+   * Verifica que el usuario exista (404 si no). Lo usan los endpoints admin que
+   * operan sobre un usuario por :id (ej. GET /users/:id/addresses).
+   */
+  async ensureExists(userId: string): Promise<void> {
+    const user = await this.findById(userId);
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+  }
+
   findByGoogleId(googleId: string): Promise<User | null> {
     return this.usersRepository.findOne({ where: { googleId } });
   }

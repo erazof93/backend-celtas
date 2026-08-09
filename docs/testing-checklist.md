@@ -43,6 +43,7 @@ cuando pasa lo aplicable de este checklist.
 - [ ] `GET /users/me/addresses` devuelve solo las direcciones del usuario autenticado
 - [ ] Solo una dirección puede ser `isDefault` a la vez para un usuario
 - [ ] `GET /users` devuelve 403 para un usuario con rol `cliente` y la lista paginada sin password para un admin
+- [x] `GET /users/:id/addresses` (admin): `401` sin token, `403` cliente, `404` si el usuario no existe, `400` si el id no es UUID, devuelve solo las direcciones de ese usuario (array vacío si no tiene)
 - [ ] Endpoints protegidos devuelven 401 sin token
 
 ## Menu
@@ -59,6 +60,7 @@ cuando pasa lo aplicable de este checklist.
 - [ ] Transición de estados sigue el flujo válido (no se puede saltar de `pendiente` a `entregado` sin pasar por los intermedios, salvo que se decida lo contrario explícitamente)
 - [ ] Al pasar a `entregado`, `totalSpent` del usuario se incrementa correctamente (verificar con un caso de prueba numérico)
 - [ ] Un cliente solo puede ver sus propios pedidos; admin puede ver todos
+- [x] `GET /orders?userId=X` (admin) filtra solo los pedidos de ese usuario; userId inexistente → lista vacía (200); userId malformado → 400; combinado con `status`; sin el param el comportamiento previo (paginación + status) queda intacto
 
 ## Coupons
 

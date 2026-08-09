@@ -152,6 +152,21 @@ describe('UsersService', () => {
     });
   });
 
+  describe('ensureExists', () => {
+    it('no lanza si el usuario existe', async () => {
+      repo.findOne.mockResolvedValue(makeUser());
+      await expect(service.ensureExists('user-1')).resolves.toBeUndefined();
+      expect(repo.findOne).toHaveBeenCalledWith({ where: { id: 'user-1' } });
+    });
+
+    it('lanza 404 si el usuario no existe', async () => {
+      repo.findOne.mockResolvedValue(null);
+      await expect(service.ensureExists('no-existe')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+  });
+
   describe('updateRole', () => {
     it('cambia el rol de otro usuario', async () => {
       repo.findOne.mockResolvedValue(makeUser());
