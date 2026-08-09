@@ -1,3 +1,4 @@
+import * as Joi from 'joi';
 import { validationSchema } from './validation.schema';
 
 const completeEnv = {
@@ -97,5 +98,29 @@ describe('validationSchema (Módulo 0.5)', () => {
     });
     expect(error).toBeDefined();
     expect(error!.message).toContain('"GOOGLE_CLIENT_ID" is required');
+  });
+
+  it('ALLOWED_ORIGINS es opcional y aplica el default de desarrollo local', () => {
+    const { error, value } = validationSchema.validate(
+      without('ALLOWED_ORIGINS'),
+      { allowUnknown: true },
+    ) as { error?: Joi.ValidationError; value: Record<string, string> };
+    expect(error).toBeUndefined();
+    expect(value.ALLOWED_ORIGINS).toBe('http://localhost:5173');
+  });
+
+  it('ALLOWED_ORIGINS acepta una lista separada por comas', () => {
+    const { error, value } = validationSchema.validate(
+      {
+        ...completeEnv,
+        ALLOWED_ORIGINS:
+          'https://celtas-admin.vercel.app,https://celtas-app.flutter.app',
+      },
+      { allowUnknown: true },
+    ) as { error?: Joi.ValidationError; value: Record<string, string> };
+    expect(error).toBeUndefined();
+    expect(value.ALLOWED_ORIGINS).toBe(
+      'https://celtas-admin.vercel.app,https://celtas-app.flutter.app',
+    );
   });
 });

@@ -1,4 +1,5 @@
 import { ClassSerializerInterceptor, ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { NestFactory, Reflector } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -17,8 +18,15 @@ async function bootstrap() {
     app.set('trust proxy', 1);
   }
 
-  // CORS habilitado para el panel admin (React) y la app (Flutter) en desarrollo.
-  app.enableCors();
+  // CORS con whitelist explícita: solo los orígenes de ALLOWED_ORIGINS (separados por
+  // comas) pueden consumir la API desde el navegador. Cualquier otro origen no recibe
+  // Access-Control-Allow-Origin y el navegador bloquea la respuesta. Sin whitelist no
+  // hay CORS (antes `app.enableCors()` sin opciones permitía cualquier origen).
+  const configService = app.get(ConfigService);
+  const allowedOrigins = configService.get<string[]>('allowedOrigins') ?? [];
+  app.enableCors({
+    origin: allowedOrigins,
+  });
 
   // Validación global de DTOs: elimina campos no declarados, rechaza campos extra
   // y transforma los payloads a las clases DTO.

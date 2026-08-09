@@ -12,6 +12,10 @@ export const validationSchema = Joi.object({
   // App
   PORT: Joi.number().port().required(),
   NODE_ENV: Joi.string().valid('development', 'production', 'test').required(),
+  // CORS: orígenes permitidos separados por comas (whitelist explícita en main.ts).
+  // Opcional: por defecto solo el dev server de Vite. En producción se setea en Render
+  // con el dominio del panel admin (y el de la app Flutter cuando exista).
+  ALLOWED_ORIGINS: Joi.string().optional().default('http://localhost:5173'),
 
   // Base de datos
   DB_HOST: Joi.string().required(),

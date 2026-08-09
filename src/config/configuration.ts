@@ -19,6 +19,13 @@ const env = (key: string): string => {
 export default () => ({
   port: parseInt(env('PORT'), 10),
   nodeEnv: env('NODE_ENV'),
+  // CORS: lista de orígenes permitidos (whitelist). Se lee de ALLOWED_ORIGINS
+  // (separados por comas) con el mismo default que validation.schema.ts para
+  // desarrollo local. Nunca se hardcodea el dominio de producción en el código.
+  allowedOrigins: (process.env.ALLOWED_ORIGINS ?? 'http://localhost:5173')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
   database: {
     host: env('DB_HOST'),
     port: parseInt(env('DB_PORT'), 10),
