@@ -14,6 +14,7 @@ describe('BannersService', () => {
     findOne: jest.Mock;
     find: jest.Mock;
     create: jest.Mock;
+    merge: jest.Mock;
     save: jest.Mock;
     remove: jest.Mock;
     createQueryBuilder: jest.Mock;
@@ -40,10 +41,23 @@ describe('BannersService', () => {
       findOne: jest.fn(),
       find: jest.fn(),
       create: jest.fn(passthrough),
+      merge: jest.fn(),
       save: jest.fn(passthrough),
       remove: jest.fn(),
       createQueryBuilder: jest.fn(),
     };
+    // Replica el comportamiento real de TypeORM Repository.merge: solo copia las
+    // propiedades definidas (no undefined) del DTO sobre la entidad cargada.
+    bannersRepo.merge.mockImplementation(
+      (target: Banner, dto: Record<string, unknown>) => {
+        for (const key of Object.keys(dto)) {
+          if (dto[key] !== undefined) {
+            (target as Record<string, unknown>)[key] = dto[key];
+          }
+        }
+        return target;
+      },
+    );
     dataSource = { transaction: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({

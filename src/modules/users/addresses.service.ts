@@ -48,7 +48,10 @@ export class AddressesService {
     if (dto.isDefault) {
       await this.unsetDefault(userId);
     }
-    Object.assign(address, dto);
+    // merge (no Object.assign): solo copia los campos definidos del DTO. Con
+    // Object.assign, los campos ausentes del PATCH (undefined) pisaban los valores
+    // ya cargados de la entidad y la respuesta salía incompleta (bug de producción).
+    this.addressesRepository.merge(address, dto);
     return this.addressesRepository.save(address);
   }
 

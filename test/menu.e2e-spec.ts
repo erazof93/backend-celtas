@@ -454,4 +454,72 @@ describe('Menu (e2e)', () => {
       );
     });
   });
+
+  describe('Regresión PATCH parcial (Object.assign → merge)', () => {
+    let regCatId: string;
+    let regItemId: string;
+
+    beforeAll(async () => {
+      const cat = await request(app.getHttpServer())
+        .post('/menu/categories')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          name: `Regresión ${suffix}`,
+          description: 'Desc regresión',
+          sortOrder: 3,
+        })
+        .expect(201);
+      regCatId = ((cat.body as Envelope).data as { id: string }).id;
+
+      const item = await request(app.getHttpServer())
+        .post('/menu/items')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          name: 'Item regresión',
+          price: 15.5,
+          categoryId: regCatId,
+          available: true,
+        })
+        .expect(201);
+      regItemId = ((item.body as Envelope).data as { id: string }).id;
+    });
+
+    afterAll(async () => {
+      await itemsRepo.delete({ id: regItemId });
+      await categoriesRepo.delete({ id: regCatId });
+    });
+
+    it('PATCH parcial de categoría devuelve la entidad COMPLETA', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/menu/categories/${regCatId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ active: false }) // solo UN campo: el resto del DTO queda undefined
+        .expect(200);
+      const data = (res.body as Envelope).data as Record<string, unknown>;
+      expect(data.id).toBe(regCatId);
+      expect(data.name).toBe(`Regresión ${suffix}`);
+      expect(data.description).toBe('Desc regresión');
+      expect(data.active).toBe(false);
+      expect(data.sortOrder).toBe(3);
+      expect(data.createdAt).toBeDefined();
+      expect(data.updatedAt).toBeDefined();
+    });
+
+    it('PATCH parcial de producto devuelve la entidad COMPLETA', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/menu/items/${regItemId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ description: 'Desc editada' }) // solo UN campo
+        .expect(200);
+      const data = (res.body as Envelope).data as Record<string, unknown>;
+      expect(data.id).toBe(regItemId);
+      expect(data.name).toBe('Item regresión');
+      expect(data.description).toBe('Desc editada');
+      expect(data.price).toBe(15.5);
+      expect(data.available).toBe(true);
+      expect(data.categoryId).toBe(regCatId);
+      expect(data.createdAt).toBeDefined();
+      expect(data.updatedAt).toBeDefined();
+    });
+  });
 });

@@ -98,7 +98,10 @@ export class MenuService {
     if (dto.name !== undefined && dto.name !== category.name) {
       await this.ensureCategoryNameAvailable(dto.name, id);
     }
-    Object.assign(category, dto);
+    // merge (no Object.assign): solo aplica los campos definidos del DTO. Con
+    // Object.assign, los campos ausentes del PATCH (undefined) pisaban los valores
+    // ya cargados de la entidad y la respuesta salía incompleta.
+    this.categoriesRepository.merge(category, dto);
     return this.runSaveWithUniqueFallback(
       this.categoriesRepository.save(category),
       'Ya existe una categoría con ese nombre',
@@ -150,7 +153,10 @@ export class MenuService {
     if (dto.categoryId !== undefined) {
       await this.ensureCategory(dto.categoryId);
     }
-    Object.assign(item, dto);
+    // merge (no Object.assign): solo aplica los campos definidos del DTO. Con
+    // Object.assign, los campos ausentes del PATCH (undefined) pisaban los valores
+    // ya cargados de la entidad y la respuesta salía incompleta.
+    this.itemsRepository.merge(item, dto);
     return this.runSaveWithUniqueFallback(
       this.itemsRepository.save(item),
       'Ya existe un producto con ese nombre',

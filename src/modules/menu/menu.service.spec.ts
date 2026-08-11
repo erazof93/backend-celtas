@@ -18,12 +18,24 @@ const uniqueViolationError = (): QueryFailedError => {
   return new QueryFailedError('INSERT INTO categories ...', [], driverError);
 };
 
+/** Replica Repository.merge de TypeORM: solo copia las propiedades definidas. */
+const mergeImplementation = <T extends object>(target: T, dto: object) => {
+  for (const key of Object.keys(dto)) {
+    const value = (dto as Record<string, unknown>)[key];
+    if (value !== undefined) {
+      (target as Record<string, unknown>)[key] = value;
+    }
+  }
+  return target;
+};
+
 describe('MenuService', () => {
   let service: MenuService;
   let categoriesRepo: {
     find: jest.Mock;
     findOne: jest.Mock;
     create: jest.Mock;
+    merge: jest.Mock;
     save: jest.Mock;
     remove: jest.Mock;
   };
@@ -31,6 +43,7 @@ describe('MenuService', () => {
     find: jest.Mock;
     findOne: jest.Mock;
     create: jest.Mock;
+    merge: jest.Mock;
     save: jest.Mock;
     remove: jest.Mock;
   };
@@ -68,6 +81,7 @@ describe('MenuService', () => {
       find: jest.fn(),
       findOne: jest.fn(),
       create: jest.fn(),
+      merge: jest.fn(mergeImplementation),
       save: jest.fn(),
       remove: jest.fn(),
     };
@@ -75,6 +89,7 @@ describe('MenuService', () => {
       find: jest.fn(),
       findOne: jest.fn(),
       create: jest.fn(),
+      merge: jest.fn(mergeImplementation),
       save: jest.fn(),
       remove: jest.fn(),
     };

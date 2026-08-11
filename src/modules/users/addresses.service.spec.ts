@@ -11,6 +11,7 @@ describe('AddressesService', () => {
     find: jest.Mock;
     findOne: jest.Mock;
     create: jest.Mock;
+    merge: jest.Mock;
     save: jest.Mock;
     remove: jest.Mock;
     update: jest.Mock;
@@ -42,10 +43,23 @@ describe('AddressesService', () => {
       find: jest.fn(),
       findOne: jest.fn(),
       create: jest.fn(),
+      merge: jest.fn(),
       save: jest.fn(),
       remove: jest.fn(),
       update: jest.fn(),
     };
+    // Replica el comportamiento real de TypeORM Repository.merge: solo copia las
+    // propiedades definidas (no undefined) del DTO sobre la entidad cargada.
+    repo.merge.mockImplementation(
+      (target: Address, dto: Record<string, unknown>) => {
+        for (const key of Object.keys(dto)) {
+          if (dto[key] !== undefined) {
+            (target as Record<string, unknown>)[key] = dto[key];
+          }
+        }
+        return target;
+      },
+    );
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AddressesService,

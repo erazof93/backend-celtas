@@ -347,6 +347,43 @@ describe('Users (e2e)', () => {
       const list = (res.body as Envelope).data as Array<{ id: string }>;
       expect(list.find((a) => a.id === addressIdA)).toBeUndefined();
     });
+
+    it('PATCH parcial devuelve la entidad COMPLETA (regresión Object.assign→merge)', async () => {
+      // Bug de producción: AddressesService.update() usaba Object.assign(address, dto).
+      // Como el DTO declara los campos ausentes como undefined, el PATCH de un solo
+      // campo pisaba con undefined los valores ya cargados (alias, fullAddress,
+      // district, reference) y la respuesta salía incompleta. La BD sí se actualizaba
+      // bien; solo la respuesta era incorrecta. Con repository.merge() esto no pasa.
+      const created = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Oficina',
+          fullAddress: 'Av. Los Próceres 789',
+          reference: 'Edificio azul',
+          district: 'Villa El Salvador',
+          isDefault: false,
+        })
+        .expect(201);
+      const createdId = ((created.body as Envelope).data as { id: string }).id;
+
+      const res = await request(app.getHttpServer())
+        .patch(`/users/me/addresses/${createdId}`)
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({ isDefault: true }) // solo UN campo: el resto del DTO queda undefined
+        .expect(200);
+      const data = (res.body as Envelope).data as Record<string, unknown>;
+      // No basta con que el HTTP sea 200: TODOS los campos deben venir completos.
+      expect(data.id).toBe(createdId);
+      expect(data.alias).toBe('Oficina');
+      expect(data.fullAddress).toBe('Av. Los Próceres 789');
+      expect(data.reference).toBe('Edificio azul');
+      expect(data.district).toBe('Villa El Salvador');
+      expect(data.isDefault).toBe(true);
+      expect(data.userId).toBe(clientAId);
+      expect(data.createdAt).toBeDefined();
+      expect(data.updatedAt).toBeDefined();
+    });
   });
 
   describe('GET /users (admin)', () => {

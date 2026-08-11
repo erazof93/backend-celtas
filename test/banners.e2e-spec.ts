@@ -306,6 +306,35 @@ describe('Banners (e2e)', () => {
       expect(((res.body as Envelope).data as Banner).title).toBe('Después');
     });
 
+    it('PATCH parcial devuelve el banner COMPLETO (regresión Object.assign→merge)', async () => {
+      // Bug de clase igual al de Addresses: BannersService.update() usaba
+      // Object.assign(banner, dto) y el PATCH de un solo campo pisaba con undefined
+      // los campos cargados (actionType, active, order, fechas), dejando la respuesta
+      // incompleta aunque la BD se actualizara bien. Con repository.merge() no pasa.
+      const created = await createBanner({
+        title: 'Regresión banner',
+        actionType: BannerActionType.CATEGORY,
+        actionValue: 'burgers',
+        active: true,
+        order: 7,
+      });
+
+      const res = await request(app.getHttpServer())
+        .patch(`/banners/${created.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ title: 'Regresión banner editado' }) // solo UN campo
+        .expect(200);
+      const data = (res.body as Envelope).data as Banner;
+      expect(data.id).toBe(created.id);
+      expect(data.title).toBe('Regresión banner editado');
+      expect(data.actionType).toBe(BannerActionType.CATEGORY);
+      expect(data.actionValue).toBe('burgers');
+      expect(data.active).toBe(true);
+      expect(data.order).toBe(7);
+      expect(data.createdAt).toBeDefined();
+      expect(data.updatedAt).toBeDefined();
+    });
+
     it('rechaza editar con startDate >= endDate', async () => {
       const created = await createBanner({ title: 'Editar mal' });
       await request(app.getHttpServer())

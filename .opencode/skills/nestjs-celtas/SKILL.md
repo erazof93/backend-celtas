@@ -158,6 +158,35 @@ Nunca uses `@Validate((obj) => ...)` con una función inline — aunque compile,
 El chequeo redundante a nivel de servicio sigue siendo buena práctica (defensa en profundidad),
 pero no reemplaza tener la validación real en el DTO.
 
+## Actualizaciones parciales (PATCH) — NUNCA `Object.assign` sobre entidades
+
+⚠️ **Gotcha confirmado en este proyecto (bug real de producción)**: el proyecto corre con
+`target: ES2023` en `tsconfig.json`, lo que activa `useDefineForClassFields`. Consecuencia: un DTO
+de clase con campos opcionales (`alias?: string`, etc.) queda con **propiedades propias `undefined`**
+para los campos que el PATCH no envía. Por eso:
+
+```ts
+// ❌ MAL — pisaba con undefined los valores ya cargados de la entidad:
+Object.assign(address, dto);
+// La BD sí se actualizaba bien, pero la respuesta JSON salía incompleta
+// (JSON.stringify descarta los undefined). Bug confirmado en PATCH /users/me/addresses/:id.
+```
+
+**Regla del proyecto**: para aplicar un DTO parcial sobre una entidad cargada, usar
+`repository.merge(entity, dto)` (TypeORM solo copia columnas con valor `!== undefined`, verificable
+en `PlainObjectToNewEntityTransformer`) o guards explícitos `if (dto.x !== undefined)` campo a campo
+(patrón ya usado en `UsersService.updateProfile`). Nunca `Object.assign` ni spread `{ ...entity, ...dto }`
+sobre la entidad que se va a devolver en la respuesta.
+
+- Excepción válida: `repository.create({ ...dto })` al CREAR es correcto (no parte de una entidad
+  cargada; `create` también ignora `undefined`).
+- Atención extra: los DTOs generados con `PartialType` de `@nestjs/swagger` (menú) NO tienen
+  propiedades propias `undefined` (no redeclaran class fields), por lo que hoy no disparan este bug;
+  pero el código de update debe usar `merge` igual, como defensa en profundidad si mañana se
+  reescriben como clases planas.
+- Los mocks de repositorio en los specs unitarios deben incluir `merge` replicando este
+  comportamiento (solo copiar `!== undefined`) — ver `addresses.service.spec.ts`.
+
 ## Swagger
 
 - Todo controller lleva `@ApiTags('nombre-modulo')`.

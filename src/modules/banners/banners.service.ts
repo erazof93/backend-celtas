@@ -77,10 +77,13 @@ export class BannersService {
 
   async update(id: string, dto: UpdateBannerDto): Promise<Banner> {
     const banner = await this.findOne(id);
-    const merged = { ...banner, ...dto };
-    this.assertValidDates(merged.startDate, merged.endDate);
-    this.assertActionValue(merged.actionType, merged.actionValue);
-    Object.assign(banner, dto);
+    // merge (no Object.assign): solo aplica los campos definidos del DTO. Con
+    // Object.assign, los campos ausentes del PATCH (undefined) pisaban los valores
+    // ya cargados y la respuesta salía incompleta. Además, las validaciones se
+    // ejecutan sobre el banner ya fusionado, no sobre un objeto temporal con spread.
+    this.bannersRepository.merge(banner, dto);
+    this.assertValidDates(banner.startDate, banner.endDate);
+    this.assertActionValue(banner.actionType, banner.actionValue);
     return this.bannersRepository.save(banner);
   }
 
