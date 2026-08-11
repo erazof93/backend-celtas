@@ -185,6 +185,12 @@ celtas-backend/
 - [x] Cron job (`@nestjs/schedule`) que revisa usuarios que superaron el umbral (ej. S/50) desde el último cupón
 - [x] Endpoint para generación manual de cupones desde el panel admin (campañas)
 - [x] Endpoint de validación/canje de cupón al hacer un pedido
+- [x] **Bug de negocio encontrado post-lanzamiento (vía uso real en producción) y corregido**:
+  cancelar un pedido con cupón aplicado dejaba el cupón `used` para siempre, aunque el cliente
+  nunca recibió el descuento. `CouponsService.reactivateForCancelledOrder()` reactiva el cupón
+  (lock pesimista) dentro de la misma transacción del cambio de estado a `cancelado`. Confirmado
+  que `entregado → cancelado` no es una transición válida (no se puede reactivar por error un
+  cupón ya legítimamente usado). 198 unit + 201 e2e, sin regresiones
 
 ### 5.1 Endurecimiento Coupons
 - [x] `@Max(100)` condicional en `GenerateCouponDto` para `percentage` (un `fixed_amount` > 100 sigue válido); el chequeo del servicio se mantiene como defensa en profundidad
