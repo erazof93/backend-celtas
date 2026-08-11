@@ -187,7 +187,8 @@ export class OrdersService {
   /**
    * Actualiza el estado de un pedido (admin). Valida la transición (no saltar de
    * pendiente a entregado; cancelado solo desde pendiente/confirmado). Al pasar a
-   * `entregado` suma el total al `user.totalSpent` dentro de la misma transacción.
+   * `entregado` suma el total al `user.totalSpent` dentro de la misma transacción;
+   * al pasar a `cancelado` reactiva el cupón que el pedido hubiera canjeado.
    */
   async updateStatus(id: string, dto: UpdateOrderStatusDto): Promise<Order> {
     return this.dataSource
@@ -211,6 +212,16 @@ export class OrdersService {
         }
 
         order.status = dto.status;
+
+        if (dto.status === OrderStatus.CANCELADO) {
+          // Si el pedido canjeó un cupón y se cancela, el cliente nunca usó el
+          // descuento: se reactiva el cupón dentro de la misma transacción
+          // (mismo patrón que totalSpent al entregar). No se toca expiresAt.
+          await this.couponsService.reactivateForCancelledOrder(
+            manager,
+            order.id,
+          );
+        }
 
         if (dto.status === OrderStatus.ENTREGADO) {
           const user = await manager.findOne(User, {

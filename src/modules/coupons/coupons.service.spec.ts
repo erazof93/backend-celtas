@@ -317,6 +317,45 @@ describe('CouponsService', () => {
     });
   });
 
+  describe('reactivateForCancelledOrder', () => {
+    let manager: { findOne: jest.Mock; save: jest.Mock };
+
+    beforeEach(() => {
+      manager = {
+        findOne: jest.fn(),
+        save: jest.fn((_e: unknown, v: unknown) => Promise.resolve(v)),
+      };
+    });
+
+    it('reactiva el cupón que canjeó el pedido (active, sin usedInOrderId ni usedAt)', async () => {
+      const coupon = seedCoupon({
+        status: CouponStatus.USED,
+        usedAt: new Date(),
+        usedInOrderId: 'order-1',
+      });
+      manager.findOne.mockResolvedValue(coupon);
+
+      await service.reactivateForCancelledOrder(manager as never, 'order-1');
+
+      expect(manager.findOne).toHaveBeenCalledWith(Coupon, {
+        where: { usedInOrderId: 'order-1' },
+        lock: { mode: 'pessimistic_write' },
+      });
+      expect(coupon.status).toBe(CouponStatus.ACTIVE);
+      expect(coupon.usedInOrderId).toBeNull();
+      expect(coupon.usedAt).toBeNull();
+      expect(manager.save).toHaveBeenCalledWith(Coupon, coupon);
+    });
+
+    it('no hace nada si el pedido no canjeó ningún cupón', async () => {
+      manager.findOne.mockResolvedValue(null);
+
+      await service.reactivateForCancelledOrder(manager as never, 'order-1');
+
+      expect(manager.save).not.toHaveBeenCalled();
+    });
+  });
+
   describe('checkAndGenerateForUser', () => {
     it('no genera si ya hay un cupón automático activo (no duplica)', async () => {
       setupTransaction({

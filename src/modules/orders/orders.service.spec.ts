@@ -39,6 +39,7 @@ describe('OrdersService', () => {
     applyToOrder: jest.Mock;
     markUsed: jest.Mock;
     checkAndGenerateForUser: jest.Mock;
+    reactivateForCancelledOrder: jest.Mock;
   };
   let notificationsService: { sendPushNotification: jest.Mock };
   let settingsService: { getWhatsappNumber: jest.Mock };
@@ -102,6 +103,7 @@ describe('OrdersService', () => {
       applyToOrder: jest.fn(),
       markUsed: jest.fn().mockResolvedValue(undefined),
       checkAndGenerateForUser: jest.fn().mockResolvedValue(null),
+      reactivateForCancelledOrder: jest.fn().mockResolvedValue(undefined),
     };
     notificationsService = {
       sendPushNotification: jest.fn().mockResolvedValue(true),
@@ -523,6 +525,46 @@ describe('OrdersService', () => {
         status: OrderStatus.CANCELADO,
       });
       expect(result.status).toBe(OrderStatus.CANCELADO);
+    });
+
+    it('reactiva el cupón del pedido al cancelarlo (dentro de la transacción)', async () => {
+      const user = { id: userId, totalSpent: 0 } as User;
+      const order = seedOrder({ status: OrderStatus.PENDIENTE });
+      const manager = setupTransaction(order, user);
+
+      const result = await service.updateStatus('one-1', {
+        status: OrderStatus.CANCELADO,
+      });
+
+      expect(couponsService.reactivateForCancelledOrder).toHaveBeenCalledWith(
+        manager,
+        order.id,
+      );
+      expect(result.status).toBe(OrderStatus.CANCELADO);
+    });
+
+    it('cancelar un pedido sin cupón no rompe nada', async () => {
+      const user = { id: userId, totalSpent: 0 } as User;
+      const order = seedOrder({ status: OrderStatus.PENDIENTE });
+      setupTransaction(order, user);
+
+      const result = await service.updateStatus('one-1', {
+        status: OrderStatus.CANCELADO,
+      });
+
+      expect(result.status).toBe(OrderStatus.CANCELADO);
+    });
+
+    it('no reactiva el cupón en transiciones que no son cancelado', async () => {
+      const user = { id: userId, totalSpent: 0 } as User;
+      const order = seedOrder({ status: OrderStatus.PENDIENTE });
+      setupTransaction(order, user);
+
+      await service.updateStatus('one-1', {
+        status: OrderStatus.CONFIRMADO,
+      });
+
+      expect(couponsService.reactivateForCancelledOrder).not.toHaveBeenCalled();
     });
 
     it('notifica al cliente el nuevo estado tras el cambio', async () => {

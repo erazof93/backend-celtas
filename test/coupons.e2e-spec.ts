@@ -534,6 +534,101 @@ describe('Coupons (e2e)', () => {
     });
   });
 
+  describe('Reactivación del cupón al cancelar el pedido', () => {
+    let reactivationCode: string;
+
+    beforeAll(async () => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+        })
+        .expect(201);
+      reactivationCode = ((res.body as Envelope).data as CouponData).code;
+    });
+
+    it('cancelar un pedido con cupón reactiva el cupón (active y usedInOrderId null)', async () => {
+      // Pedido con cupón: 24.9 * 2 = 49.8 → 10% = 44.82
+      const created = await request(app.getHttpServer())
+        .post('/orders')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          addressId,
+          items: [{ menuItemId: itemId, quantity: 2 }],
+          couponCode: reactivationCode,
+        })
+        .expect(201);
+      const order = (created.body as Envelope).data as OrderData;
+      expect(order.total).toBe(44.82);
+
+      // El cupón quedó usado y vinculado al pedido.
+      let stored = await couponsRepo.findOne({
+        where: { code: reactivationCode },
+      });
+      expect(stored!.status).toBe(CouponStatus.USED);
+      expect(stored!.usedInOrderId).toBe(order.id);
+
+      // Se cancela el pedido (pendiente → cancelado).
+      await request(app.getHttpServer())
+        .patch(`/orders/${order.id}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'cancelado' })
+        .expect(200);
+
+      // El cupón vuelve a estar activo y desvinculado del pedido cancelado.
+      stored = await couponsRepo.findOne({
+        where: { code: reactivationCode },
+      });
+      expect(stored!.status).toBe(CouponStatus.ACTIVE);
+      expect(stored!.usedInOrderId).toBeNull();
+      expect(stored!.usedAt).toBeNull();
+    });
+
+    it('el cupón reactivado puede volver a usarse en un pedido nuevo', async () => {
+      const created = await request(app.getHttpServer())
+        .post('/orders')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          addressId,
+          items: [{ menuItemId: itemId, quantity: 2 }],
+          couponCode: reactivationCode, // reactivado en el test anterior
+        })
+        .expect(201);
+      const order = (created.body as Envelope).data as OrderData;
+      expect(order.total).toBe(44.82);
+
+      const stored = await couponsRepo.findOne({
+        where: { code: reactivationCode },
+      });
+      expect(stored!.status).toBe(CouponStatus.USED);
+      expect(stored!.usedInOrderId).toBe(order.id);
+    });
+
+    it('cancelar un pedido sin cupón no rompe nada', async () => {
+      const created = await request(app.getHttpServer())
+        .post('/orders')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          addressId,
+          items: [{ menuItemId: itemId, quantity: 1 }],
+        })
+        .expect(201);
+      const orderId = ((created.body as Envelope).data as OrderData).id;
+
+      const res = await request(app.getHttpServer())
+        .patch(`/orders/${orderId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'cancelado' })
+        .expect(200);
+      expect(((res.body as Envelope).data as OrderData).status).toBe(
+        'cancelado',
+      );
+    });
+  });
+
   describe('Generación automática (disparo tras entregar)', () => {
     let clientCId: string;
 

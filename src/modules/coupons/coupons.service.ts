@@ -195,6 +195,34 @@ export class CouponsService {
     await manager.save(Coupon, coupon);
   }
 
+  /**
+   * Reactiva el cupón que canjeó un pedido cuando ese pedido se cancela: el
+   * cliente nunca recibió el descuento, así que el cupón vuelve a estar
+   * disponible (status `active`, sin `usedInOrderId` ni `usedAt`). Se ejecuta
+   * DENTRO de la transacción del cambio de estado del pedido (misma garantía
+   * que el incremento de `totalSpent` al entregar). Si el pedido no canjeó
+   * ningún cupón, no hace nada.
+   *
+   * No toca `expiresAt`: si el cupón ya venció naturalmente para cuando se
+   * cancela el pedido, seguirá rechazándose como expirado a la hora de usarse.
+   */
+  async reactivateForCancelledOrder(
+    manager: EntityManager,
+    orderId: string,
+  ): Promise<void> {
+    const coupon = await manager.findOne(Coupon, {
+      where: { usedInOrderId: orderId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!coupon) {
+      return; // Pedido sin cupón asociado: nada que reactivar.
+    }
+    coupon.status = CouponStatus.ACTIVE;
+    coupon.usedInOrderId = null;
+    coupon.usedAt = null;
+    await manager.save(Coupon, coupon);
+  }
+
   // ── Generación automática ───────────────────────────────────────────────────
 
   /**

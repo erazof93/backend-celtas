@@ -68,6 +68,7 @@ cuando pasa lo aplicable de este checklist.
 - [x] Todo cupón generado tiene `expiresAt` futuro
 - [x] Un cupón usado (`usado: true`) no puede reutilizarse
 - [x] Generación manual desde admin funciona igual que la automática (mismo servicio, distinto trigger)
+- [x] Cancelar un pedido que canjeó un cupón reactiva el cupón (status `active`, `usedInOrderId`/`usedAt` null); el cupón reactivado puede reutilizarse en un pedido nuevo; `expiresAt` no se toca (si venció, se rechaza como expirado al usarse)
 - [x] `GET /coupons?userId=X` (admin) filtra solo los cupones de ese usuario; userId inexistente → lista vacía (200); userId malformado → 400; sin el param el comportamiento previo (paginación + status) queda intacto
 
 ## Banners
