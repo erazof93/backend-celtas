@@ -43,6 +43,7 @@ describe('CouponsService', () => {
       code: 'A1B2C3D4',
       discountType: CouponDiscountType.PERCENTAGE,
       discountValue: 10,
+      minPurchaseAmount: null,
       status: CouponStatus.ACTIVE,
       origin: CouponOrigin.MANUAL,
       expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 15),
@@ -150,6 +151,36 @@ describe('CouponsService', () => {
       expect(result.expiresAt.getTime()).toBeLessThan(expected + 5000);
     });
 
+    it('crea un cupón manual con mínimo de compra cuando se indica', async () => {
+      usersRepo.findOne.mockResolvedValue({ id: userId });
+      couponsRepo.create.mockImplementation(passthrough);
+      couponsRepo.save.mockImplementation(passthrough);
+
+      const result = await service.generateManual({
+        userId,
+        discountType: CouponDiscountType.PERCENTAGE,
+        discountValue: 10,
+        minPurchaseAmount: 50,
+      });
+
+      expect(result.minPurchaseAmount).toBe(50);
+      expect(result.origin).toBe(CouponOrigin.MANUAL);
+    });
+
+    it('crea un cupón manual sin mínimo cuando no se indica (null)', async () => {
+      usersRepo.findOne.mockResolvedValue({ id: userId });
+      couponsRepo.create.mockImplementation(passthrough);
+      couponsRepo.save.mockImplementation(passthrough);
+
+      const result = await service.generateManual({
+        userId,
+        discountType: CouponDiscountType.PERCENTAGE,
+        discountValue: 10,
+      });
+
+      expect(result.minPurchaseAmount).toBeNull();
+    });
+
     it('lanza 404 si el usuario no existe', async () => {
       usersRepo.findOne.mockResolvedValue(null);
       await expect(
@@ -180,7 +211,58 @@ describe('CouponsService', () => {
       expect(result.valid).toBe(true);
       expect(result.discountType).toBe(CouponDiscountType.PERCENTAGE);
       expect(result.discountValue).toBe(10);
+      expect(result.minPurchaseAmount).toBeNull();
       expect(result.description).toBe('10% de descuento');
+    });
+
+    it('devuelve el mínimo de compra en la respuesta cuando el cupón lo tiene', async () => {
+      couponsRepo.findOne.mockResolvedValue(
+        seedCoupon({ minPurchaseAmount: 50 }),
+      );
+      const result = await service.validateCoupon('A1B2C3D4', userId);
+      expect(result.valid).toBe(true);
+      expect(result.minPurchaseAmount).toBe(50);
+    });
+
+    it('rechaza con mensaje claro si el subtotal es menor al mínimo de compra', async () => {
+      couponsRepo.findOne.mockResolvedValue(
+        seedCoupon({ minPurchaseAmount: 50 }),
+      );
+      await expect(
+        service.validateCoupon('A1B2C3D4', userId, 30),
+      ).rejects.toThrow('Este cupón requiere un pedido mínimo de S/50.00');
+    });
+
+    it('acepta si el subtotal es igual al mínimo de compra', async () => {
+      couponsRepo.findOne.mockResolvedValue(
+        seedCoupon({ minPurchaseAmount: 50 }),
+      );
+      const result = await service.validateCoupon('A1B2C3D4', userId, 50);
+      expect(result.valid).toBe(true);
+    });
+
+    it('acepta si el subtotal supera el mínimo de compra', async () => {
+      couponsRepo.findOne.mockResolvedValue(
+        seedCoupon({ minPurchaseAmount: 50 }),
+      );
+      const result = await service.validateCoupon('A1B2C3D4', userId, 80);
+      expect(result.valid).toBe(true);
+    });
+
+    it('sin subtotal no valida el mínimo (comportamiento previo intacto)', async () => {
+      couponsRepo.findOne.mockResolvedValue(
+        seedCoupon({ minPurchaseAmount: 50 }),
+      );
+      const result = await service.validateCoupon('A1B2C3D4', userId);
+      expect(result.valid).toBe(true);
+    });
+
+    it('minPurchaseAmount = 0 se comporta como sin mínimo (acepta subtotal 0)', async () => {
+      couponsRepo.findOne.mockResolvedValue(
+        seedCoupon({ minPurchaseAmount: 0 }),
+      );
+      const result = await service.validateCoupon('A1B2C3D4', userId, 0);
+      expect(result.valid).toBe(true);
     });
 
     it('lanza 400 si el cupón no existe', async () => {
@@ -242,6 +324,58 @@ describe('CouponsService', () => {
       expect(applied.coupon).toBe(coupon);
       expect(coupon.status).toBe(CouponStatus.ACTIVE); // aún no usado
       expect(manager.save).not.toHaveBeenCalled();
+    });
+
+    it('rechaza con mensaje claro si el subtotal es menor al mínimo de compra', async () => {
+      manager.findOne.mockResolvedValue(seedCoupon({ minPurchaseAmount: 50 }));
+      await expect(
+        service.applyToOrder(manager as never, {
+          code: 'A1B2C3D4',
+          userId,
+          subtotal: 30,
+        }),
+      ).rejects.toThrow('Este cupón requiere un pedido mínimo de S/50.00');
+      expect(manager.save).not.toHaveBeenCalled();
+    });
+
+    it('aplica el descuento si el subtotal supera el mínimo de compra', async () => {
+      manager.findOne.mockResolvedValue(seedCoupon({ minPurchaseAmount: 50 }));
+      const applied = await service.applyToOrder(manager as never, {
+        code: 'A1B2C3D4',
+        userId,
+        subtotal: 100,
+      });
+      expect(applied.discountedTotal).toBe(90); // 100 - 10%
+    });
+
+    it('aplica el descuento si el subtotal es igual al mínimo de compra', async () => {
+      manager.findOne.mockResolvedValue(seedCoupon({ minPurchaseAmount: 50 }));
+      const applied = await service.applyToOrder(manager as never, {
+        code: 'A1B2C3D4',
+        userId,
+        subtotal: 50,
+      });
+      expect(applied.discountedTotal).toBe(45); // 50 - 10%
+    });
+
+    it('sin mínimo de compra aplica igual (comportamiento previo intacto)', async () => {
+      manager.findOne.mockResolvedValue(seedCoupon());
+      const applied = await service.applyToOrder(manager as never, {
+        code: 'A1B2C3D4',
+        userId,
+        subtotal: 10,
+      });
+      expect(applied.discountedTotal).toBe(9); // 10 - 10%
+    });
+
+    it('minPurchaseAmount = 0 aplica igual con subtotal 0', async () => {
+      manager.findOne.mockResolvedValue(seedCoupon({ minPurchaseAmount: 0 }));
+      const applied = await service.applyToOrder(manager as never, {
+        code: 'A1B2C3D4',
+        userId,
+        subtotal: 0,
+      });
+      expect(applied.discountedTotal).toBe(0); // 0 - 10% = 0
     });
 
     it('markUsed marca el cupón como usado con usedInOrderId', async () => {
@@ -387,6 +521,7 @@ describe('CouponsService', () => {
       expect(result!.origin).toBe(CouponOrigin.AUTO);
       expect(result!.status).toBe(CouponStatus.ACTIVE);
       expect(result!.discountType).toBe(CouponDiscountType.PERCENTAGE);
+      expect(result!.minPurchaseAmount).toBeNull(); // los automáticos no llevan mínimo
       expect(result!.code).toMatch(/^[0-9A-F]{8}$/);
       expect(manager.save).toHaveBeenCalled();
     });

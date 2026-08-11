@@ -63,6 +63,24 @@ export class Coupon {
   })
   discountValue: number;
 
+  /**
+   * Monto mínimo de compra (subtotal del pedido) para poder usar el cupón.
+   * `null` significa "sin mínimo" (cualquier pedido puede usarlo). Los cupones
+   * automáticos nunca llevan mínimo; es un campo pensado para campañas manuales.
+   */
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    nullable: true,
+    transformer: {
+      to: (value: number | null): number | null => value,
+      from: (value: string | null): number | null =>
+        value === null ? null : parseFloat(value),
+    },
+  })
+  minPurchaseAmount: number | null;
+
   @Column({ type: 'enum', enum: CouponStatus, default: CouponStatus.ACTIVE })
   status: CouponStatus;
 

@@ -74,7 +74,11 @@ export class CouponsController {
   })
   @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
   validate(@Req() req: AuthenticatedRequest, @Body() dto: ValidateCouponDto) {
-    return this.couponsService.validateCoupon(dto.code, req.user.userId);
+    return this.couponsService.validateCoupon(
+      dto.code,
+      req.user.userId,
+      dto.subtotal,
+    );
   }
 
   @Get()

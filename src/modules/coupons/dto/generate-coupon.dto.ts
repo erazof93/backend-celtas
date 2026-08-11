@@ -1,7 +1,8 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsEnum,
   IsNumber,
+  IsOptional,
   IsPositive,
   IsUUID,
   Min,
@@ -39,4 +40,14 @@ export class GenerateCouponDto {
   // Un fixed_amount puede superar 100 (ej. S/150); el % no puede pasar de 100.
   @Validate(IsPercentageWithinLimit)
   discountValue: number;
+
+  @ApiPropertyOptional({
+    example: 50,
+    description:
+      'Monto mínimo de compra (subtotal del pedido) para poder usar el cupón. Omitido o null = sin mínimo. Pensado para campañas manuales.',
+  })
+  @IsOptional()
+  @IsNumber({}, { message: 'minPurchaseAmount debe ser un número' })
+  @Min(0, { message: 'minPurchaseAmount no puede ser negativo' })
+  minPurchaseAmount?: number;
 }

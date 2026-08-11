@@ -46,6 +46,7 @@ export interface ValidatedCoupon {
   code: string;
   discountType: CouponDiscountType;
   discountValue: number;
+  minPurchaseAmount: number | null;
   description: string;
   expiresAt: Date;
 }
@@ -117,6 +118,7 @@ export class CouponsService {
       code: this.generateCode(),
       discountType: dto.discountType,
       discountValue: dto.discountValue,
+      minPurchaseAmount: dto.minPurchaseAmount ?? null,
       status: CouponStatus.ACTIVE,
       origin: CouponOrigin.MANUAL,
       expiresAt: this.addDays(new Date(), this.expirationDays()),
@@ -139,19 +141,27 @@ export class CouponsService {
   /**
    * Valida un cupón sin marcarlo como usado (lo usa el frontend antes de
    * confirmar el pedido). El cupón debe pertenecer al usuario autenticado.
+   * Si se pasa `subtotal` y el cupón tiene un monto mínimo de compra, se
+   * rechaza cuando el subtotal es menor.
    */
-  async validateCoupon(code: string, userId: string): Promise<ValidatedCoupon> {
+  async validateCoupon(
+    code: string,
+    userId: string,
+    subtotal?: number,
+  ): Promise<ValidatedCoupon> {
     const coupon = await this.couponsRepository.findOne({ where: { code } });
     if (!coupon) {
       throw new BadRequestException('El cupón no existe');
     }
     this.assertUsable(coupon, userId);
+    this.assertMinPurchase(coupon, subtotal);
     return {
       valid: true,
       id: coupon.id,
       code: coupon.code,
       discountType: coupon.discountType,
       discountValue: coupon.discountValue,
+      minPurchaseAmount: coupon.minPurchaseAmount,
       description: this.describeDiscount(coupon),
       expiresAt: coupon.expiresAt,
     };
@@ -178,6 +188,7 @@ export class CouponsService {
       throw new BadRequestException('El cupón no existe');
     }
     this.assertUsable(coupon, params.userId);
+    this.assertMinPurchase(coupon, params.subtotal);
 
     const discountedTotal = this.applyDiscount(params.subtotal, coupon);
     return { discountedTotal, coupon };
@@ -281,6 +292,7 @@ export class CouponsService {
         code: this.generateCode(),
         discountType: AUTO_COUPON_DISCOUNT_TYPE,
         discountValue: AUTO_COUPON_DISCOUNT_VALUE,
+        minPurchaseAmount: null, // los automáticos nunca llevan mínimo de compra
         status: CouponStatus.ACTIVE,
         origin: CouponOrigin.AUTO,
         expiresAt: this.addDays(new Date(), this.expirationDays()),
@@ -388,6 +400,26 @@ export class CouponsService {
       coupon.expiresAt.getTime() < Date.now()
     ) {
       throw new BadRequestException('Este cupón ha expirado');
+    }
+  }
+
+  /**
+   * Valida el monto mínimo de compra del cupón. Si el cupón tiene
+   * `minPurchaseAmount` y el subtotal del pedido es menor, rechaza con un
+   * mensaje claro (no un error genérico). Si el cupón no tiene mínimo o no se
+   * conoce el subtotal (validación sin subtotal), no hace nada.
+   */
+  private assertMinPurchase(coupon: Coupon, subtotal?: number): void {
+    if (coupon.minPurchaseAmount == null) {
+      return; // Sin mínimo: cualquier pedido puede usarlo.
+    }
+    if (subtotal == null) {
+      return; // No se informó el subtotal: no se puede validar el mínimo.
+    }
+    if (subtotal < coupon.minPurchaseAmount) {
+      throw new BadRequestException(
+        `Este cupón requiere un pedido mínimo de S/${coupon.minPurchaseAmount.toFixed(2)}`,
+      );
     }
   }
 

@@ -50,6 +50,7 @@ interface CouponData {
   userId: string;
   discountType: string;
   discountValue: number;
+  minPurchaseAmount: number | null;
   status: string;
   origin: string;
   expiresAt: string;
@@ -311,6 +312,64 @@ describe('Coupons (e2e)', () => {
       expect(data.code).toMatch(/^[0-9A-F]{8}$/);
       manualCouponCode = data.code;
     });
+
+    it('genera un cupón manual con minPurchaseAmount cuando se indica', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+          minPurchaseAmount: 50,
+        })
+        .expect(201);
+      const data = (res.body as Envelope).data as CouponData;
+      expect(data.minPurchaseAmount).toBe(50);
+    });
+
+    it('genera un cupón manual sin mínimo cuando no se indica (null)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+        })
+        .expect(201);
+      const data = (res.body as Envelope).data as CouponData;
+      expect(data.minPurchaseAmount).toBeNull();
+    });
+
+    it('400 si minPurchaseAmount es negativo', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+          minPurchaseAmount: -5,
+        })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('acepta minPurchaseAmount = 0 (se comporta como sin mínimo)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+          minPurchaseAmount: 0,
+        })
+        .expect(201);
+      const data = (res.body as Envelope).data as CouponData;
+      expect(data.minPurchaseAmount).toBe(0);
+    });
   });
 
   describe('GET /coupons/me', () => {
@@ -355,10 +414,119 @@ describe('Coupons (e2e)', () => {
         valid: boolean;
         discountType: string;
         discountValue: number;
+        minPurchaseAmount: number | null;
       };
       expect(data.valid).toBe(true);
       expect(data.discountType).toBe('percentage');
       expect(data.discountValue).toBe(10);
+      expect(data.minPurchaseAmount).toBeNull();
+    });
+
+    it('rechaza con mensaje claro si el subtotal es menor al mínimo de compra', async () => {
+      const withMin = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+          minPurchaseAmount: 50,
+        })
+        .expect(201);
+      const minCoupon = (withMin.body as Envelope).data as CouponData;
+
+      const res = await request(app.getHttpServer())
+        .post('/coupons/validate')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({ code: minCoupon.code, subtotal: 30 })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+      expect((res.body as ErrorResponse).message).toBe(
+        'Este cupón requiere un pedido mínimo de S/50.00',
+      );
+    });
+
+    it('acepta si el subtotal supera el mínimo de compra', async () => {
+      const withMin = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+          minPurchaseAmount: 50,
+        })
+        .expect(201);
+      const minCoupon = (withMin.body as Envelope).data as CouponData;
+
+      const res = await request(app.getHttpServer())
+        .post('/coupons/validate')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({ code: minCoupon.code, subtotal: 80 })
+        .expect(201);
+      const data = (res.body as Envelope).data as {
+        valid: boolean;
+        minPurchaseAmount: number | null;
+      };
+      expect(data.valid).toBe(true);
+      expect(data.minPurchaseAmount).toBe(50);
+    });
+
+    it('sin subtotal no valida el mínimo (comportamiento previo intacto)', async () => {
+      const withMin = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+          minPurchaseAmount: 50,
+        })
+        .expect(201);
+      const minCoupon = (withMin.body as Envelope).data as CouponData;
+
+      const res = await request(app.getHttpServer())
+        .post('/coupons/validate')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({ code: minCoupon.code })
+        .expect(201);
+      expect(((res.body as Envelope).data as { valid: boolean }).valid).toBe(
+        true,
+      );
+    });
+
+    it('subtotal 0 con cupón sin mínimo no rompe', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/validate')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({ code: manualCouponCode, subtotal: 0 })
+        .expect(201);
+      expect(((res.body as Envelope).data as { valid: boolean }).valid).toBe(
+        true,
+      );
+    });
+
+    it('minPurchaseAmount = 0 acepta subtotal 0 (se comporta como sin mínimo)', async () => {
+      const withZero = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+          minPurchaseAmount: 0,
+        })
+        .expect(201);
+      const zeroCoupon = (withZero.body as Envelope).data as CouponData;
+
+      const res = await request(app.getHttpServer())
+        .post('/coupons/validate')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({ code: zeroCoupon.code, subtotal: 0 })
+        .expect(201);
+      expect(((res.body as Envelope).data as { valid: boolean }).valid).toBe(
+        true,
+      );
     });
 
     it('400 si el código no existe', async () => {
@@ -506,6 +674,88 @@ describe('Coupons (e2e)', () => {
         .expect(201);
       const order = (res.body as Envelope).data as OrderData;
       expect(order.total).toBe(39.8);
+    });
+
+    it('rechaza el canje con mensaje claro si el subtotal es menor al mínimo y no crea el pedido', async () => {
+      const withMin = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+          minPurchaseAmount: 50,
+        })
+        .expect(201);
+      const minCoupon = (withMin.body as Envelope).data as CouponData;
+
+      const meBefore = await request(app.getHttpServer())
+        .get('/orders/me')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(200);
+      const countBefore = ((meBefore.body as Envelope).data as OrderData[])
+        .length;
+
+      // Subtotal: 24.9 * 1 = 24.9 < 50 → rechazado
+      const res = await request(app.getHttpServer())
+        .post('/orders')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          addressId,
+          items: [{ menuItemId: itemId, quantity: 1 }],
+          couponCode: minCoupon.code,
+        })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+      expect((res.body as ErrorResponse).message).toBe(
+        'Este cupón requiere un pedido mínimo de S/50.00',
+      );
+
+      const meAfter = await request(app.getHttpServer())
+        .get('/orders/me')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(200);
+      const countAfter = ((meAfter.body as Envelope).data as OrderData[])
+        .length;
+      expect(countAfter).toBe(countBefore); // el pedido no se creó (rollback)
+
+      // El cupón sigue activo (no se marcó como usado).
+      const stored = await couponsRepo.findOne({
+        where: { code: minCoupon.code },
+      });
+      expect(stored!.status).toBe(CouponStatus.ACTIVE);
+    });
+
+    it('aplica el descuento si el subtotal supera el mínimo de compra', async () => {
+      const withMin = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+          minPurchaseAmount: 50,
+        })
+        .expect(201);
+      const minCoupon = (withMin.body as Envelope).data as CouponData;
+
+      // Subtotal: 24.9 * 3 = 74.7 ≥ 50 → 10% = 67.23
+      const res = await request(app.getHttpServer())
+        .post('/orders')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          addressId,
+          items: [{ menuItemId: itemId, quantity: 3 }],
+          couponCode: minCoupon.code,
+        })
+        .expect(201);
+      const order = (res.body as Envelope).data as OrderData;
+      expect(order.total).toBe(67.23);
+
+      const stored = await couponsRepo.findOne({
+        where: { code: minCoupon.code },
+      });
+      expect(stored!.status).toBe(CouponStatus.USED);
     });
 
     it('el cliente no puede usar el cupón de otro usuario en un pedido', async () => {
@@ -689,6 +939,7 @@ describe('Coupons (e2e)', () => {
       expect(auto).toHaveLength(1);
       expect(auto[0].discountType).toBe('percentage');
       expect(auto[0].discountValue).toBe(10);
+      expect(auto[0].minPurchaseAmount).toBeNull(); // los automáticos no llevan mínimo
     });
 
     it('no genera un segundo cupón si ya hay uno activo sin usar', async () => {

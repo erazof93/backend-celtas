@@ -1,5 +1,11 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Min,
+} from 'class-validator';
 
 /** Validar un cupón antes de confirmar el pedido (POST /coupons/validate). */
 export class ValidateCouponDto {
@@ -10,4 +16,14 @@ export class ValidateCouponDto {
   @IsString({ message: 'El código debe ser texto' })
   @IsNotEmpty({ message: 'El código del cupón es obligatorio' })
   code: string;
+
+  @ApiPropertyOptional({
+    example: 49.8,
+    description:
+      'Subtotal del pedido (opcional). Si el cupón tiene un monto mínimo de compra, se valida contra este valor y se rechaza si el subtotal es menor.',
+  })
+  @IsOptional()
+  @IsNumber({}, { message: 'subtotal debe ser un número' })
+  @Min(0, { message: 'subtotal no puede ser negativo' })
+  subtotal?: number;
 }
