@@ -69,6 +69,14 @@ describe('Banners (e2e)', () => {
     return (res.body as Envelope).data as Banner;
   };
 
+  /** Día de la semana actual (0=domingo ... 6=sábado) en la zona horaria de Lima. */
+  const limaDayOfWeek = (): number => {
+    const limaWallClock = new Date(
+      new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }),
+    );
+    return limaWallClock.getDay();
+  };
+
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -225,6 +233,185 @@ describe('Banners (e2e)', () => {
         (b) => b.title,
       );
       expect(titles).toContain(title);
+    });
+  });
+
+  describe('GET /banners/active — recurrencia por día de la semana (daysOfWeek)', () => {
+    const today = limaDayOfWeek();
+    const tomorrow = (today + 1) % 7;
+
+    it('incluye banner cuyo daysOfWeek incluye hoy', async () => {
+      const title = `Hoy sí ${suffix}`;
+      await createBanner({ title, daysOfWeek: [today] });
+
+      const res = await request(app.getHttpServer())
+        .get('/banners/active')
+        .expect(200);
+      const titles = ((res.body as Envelope).data as Banner[]).map(
+        (b) => b.title,
+      );
+      expect(titles).toContain(title);
+    });
+
+    it('excluye banner cuyo daysOfWeek NO incluye hoy', async () => {
+      const title = `Hoy no ${suffix}`;
+      await createBanner({ title, daysOfWeek: [tomorrow] });
+
+      const res = await request(app.getHttpServer())
+        .get('/banners/active')
+        .expect(200);
+      const titles = ((res.body as Envelope).data as Banner[]).map(
+        (b) => b.title,
+      );
+      expect(titles).not.toContain(title);
+    });
+
+    it('incluye banner con varios días (p. ej. [martes, jueves]) cuando hoy está entre ellos', async () => {
+      const title = `Varios días ${suffix}`;
+      await createBanner({ title, daysOfWeek: [tomorrow, today] });
+
+      const res = await request(app.getHttpServer())
+        .get('/banners/active')
+        .expect(200);
+      const titles = ((res.body as Envelope).data as Banner[]).map(
+        (b) => b.title,
+      );
+      expect(titles).toContain(title);
+    });
+
+    it('trata daysOfWeek vacío como "todos los días" (sin regresión)', async () => {
+      const title = `Días vacíos ${suffix}`;
+      await createBanner({ title, daysOfWeek: [] });
+
+      const res = await request(app.getHttpServer())
+        .get('/banners/active')
+        .expect(200);
+      const titles = ((res.body as Envelope).data as Banner[]).map(
+        (b) => b.title,
+      );
+      expect(titles).toContain(title);
+    });
+
+    it('combinado con fechas: vigente por rango pero día incorrecto → no aparece', async () => {
+      const title = `Fecha ok, día mal ${suffix}`;
+      await createBanner({
+        title,
+        startDate: '2020-01-01T00:00:00.000Z',
+        endDate: '2099-12-31T00:00:00.000Z',
+        daysOfWeek: [tomorrow],
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/banners/active')
+        .expect(200);
+      const titles = ((res.body as Envelope).data as Banner[]).map(
+        (b) => b.title,
+      );
+      expect(titles).not.toContain(title);
+    });
+
+    it('combinado con fechas: día correcto pero fuera de rango → no aparece', async () => {
+      const title = `Día ok, fecha mal ${suffix}`;
+      await createBanner({
+        title,
+        startDate: '2020-01-01T00:00:00.000Z',
+        endDate: '2020-01-02T00:00:00.000Z',
+        daysOfWeek: [today],
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/banners/active')
+        .expect(200);
+      const titles = ((res.body as Envelope).data as Banner[]).map(
+        (b) => b.title,
+      );
+      expect(titles).not.toContain(title);
+    });
+  });
+
+  describe('CRUD admin — validación de daysOfWeek', () => {
+    it('rechaza daysOfWeek con valores fuera de 0-6', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/banners')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ title: 'Día inválido', daysOfWeek: [7] })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('rechaza daysOfWeek con valores negativos', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/banners')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ title: 'Día inválido', daysOfWeek: [-1] })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('rechaza daysOfWeek con valores no enteros', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/banners')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ title: 'Día inválido', daysOfWeek: [1.5] })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('rechaza daysOfWeek que no es un array', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/banners')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ title: 'Día inválido', daysOfWeek: 'lunes' })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('acepta crear un banner con daysOfWeek válido y lo devuelve', async () => {
+      const banner = await createBanner({
+        title: 'Recurrente',
+        daysOfWeek: [2, 4],
+      });
+      expect(banner.daysOfWeek).toEqual([2, 4]);
+    });
+
+    it('acepta daysOfWeek: null explícito y el banner aparece cualquier día', async () => {
+      const title = `Null explícito ${suffix}`;
+      const banner = await createBanner({ title, daysOfWeek: null });
+      expect(banner.daysOfWeek).toBeNull();
+
+      const res = await request(app.getHttpServer())
+        .get('/banners/active')
+        .expect(200);
+      const titles = ((res.body as Envelope).data as Banner[]).map(
+        (b) => b.title,
+      );
+      expect(titles).toContain(title);
+    });
+
+    it('edita daysOfWeek con PATCH parcial', async () => {
+      const created = await createBanner({ title: 'Editar días' });
+      const res = await request(app.getHttpServer())
+        .patch(`/banners/${created.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ daysOfWeek: [1, 3, 5] })
+        .expect(200);
+      expect(((res.body as Envelope).data as Banner).daysOfWeek).toEqual([
+        1, 3, 5,
+      ]);
+    });
+
+    it('PATCH sin daysOfWeek conserva el valor existente (merge, sin undefined)', async () => {
+      const created = await createBanner({
+        title: 'Conservar días',
+        daysOfWeek: [0, 6],
+      });
+      const res = await request(app.getHttpServer())
+        .patch(`/banners/${created.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ title: 'Conservar días editado' })
+        .expect(200);
+      const data = (res.body as Envelope).data as Banner;
+      expect(data.daysOfWeek).toEqual([0, 6]);
     });
   });
 

@@ -74,9 +74,15 @@ cuando pasa lo aplicable de este checklist.
 
 ## Banners
 
-- [ ] `GET /banners/active` respeta `startDate`/`endDate` y el flag `activo`
-- [ ] Orden de banners respeta el campo `order`
-- [ ] Subida de imagen falla de forma controlada si el archivo no es una imagen válida
+- [x] `GET /banners/active` respeta `startDate`/`endDate` y el flag `activo`
+- [x] Orden de banners respeta el campo `order`
+- [x] Subida de imagen falla de forma controlada si el archivo no es una imagen válida
+- [x] Recurrencia por día de la semana (`daysOfWeek`, 0=domingo...6=sábado): `GET /banners/active` incluye banners cuyo array contiene el día actual calculado en `America/Lima` y excluye los que no lo contienen
+- [x] `daysOfWeek` null o array vacío = todos los días (sin regresión sobre el comportamiento previo)
+- [x] Las 3 condiciones (`active`, rango de fechas y `daysOfWeek`) son independientes y TODAS deben cumplirse: rango ok + día incorrecto → no aparece; día correcto + fuera de rango → no aparece
+- [x] DTOs (create/update) validan `daysOfWeek`: array de enteros 0-6 → 400 para `[7]`, `[-1]`, `[1.5]` y para no-array (string)
+- [x] PATCH parcial de `daysOfWeek`: edita solo el campo enviado; PATCH sin `daysOfWeek` conserva el valor existente (merge, sin `undefined`)
+- [x] Migración `AddDaysOfWeekToBanners`: columna `integer[]` nullable verificada en `information_schema`, registrada en la tabla `migrations`
 
 ## Notifications
 

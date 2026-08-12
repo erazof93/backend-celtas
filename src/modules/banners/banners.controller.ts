@@ -47,7 +47,7 @@ export class BannersController {
   @ApiOperation({
     summary: 'Banners vigentes (público, para la app)',
     description:
-      'Devuelve los banners con active=true y dentro de su rango de fechas (si no hay fechas, siempre vigentes), ordenados por posición.',
+      'Devuelve los banners con active=true, dentro de su rango de fechas (si no hay fechas, siempre vigentes) y cuyo daysOfWeek incluye el día de hoy en Lima (si daysOfWeek es null o vacío, se muestra cualquier día), ordenados por posición.',
   })
   @ApiResponse({ status: 200, description: 'Lista de banners vigentes' })
   getActiveBanners() {

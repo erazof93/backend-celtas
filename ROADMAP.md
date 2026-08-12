@@ -210,6 +210,12 @@ celtas-backend/
 - [x] CRUD protegido para admin (subida de imagen vía Cloudinary)
 - ⚠️ **Corrección (módulo 8)**: la validación `startDate < endDate` tenía el mismo `@Validate`
   inline muerto que Coupons. Reemplazado por `is-banner-date-range-valid.ts`. Confirmado por `@tester`.
+- [x] **Recurrencia por día de la semana (`daysOfWeek`)**: columna `int[]` nullable (null/vacío =
+  todos los días, comportamiento previo intacto; 0=domingo...6=sábado). `GET /banners/active` agrega
+  una 4ª condición independiente: si `daysOfWeek` está definido y no vacío, el día actual en
+  `America/Lima` debe estar incluido (`:day = ANY(daysOfWeek)`). DTOs con `@IsArray @IsInt @Min(0)
+  @Max(6)` each. Migración `AddDaysOfWeekToBanners` aplicada localmente y verificada. Auditado por
+  `@tester`: **LISTO PARA MARCAR COMPLETO** — 212 unit + 226 e2e, build/lint limpios.
 
 ### 7. Módulo Notifications
 - [x] Integración con Firebase Cloud Messaging

@@ -30,6 +30,7 @@ describe('BannersService', () => {
     startDate: null,
     endDate: null,
     active: true,
+    daysOfWeek: null,
     order: 0,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -72,7 +73,7 @@ describe('BannersService', () => {
   });
 
   describe('findActive', () => {
-    it('filtra por active=true y rango de fechas, ordenado por order ASC', async () => {
+    it('filtra por active=true, rango de fechas y daysOfWeek, ordenado por order ASC', async () => {
       const qb = {
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
@@ -87,9 +88,33 @@ describe('BannersService', () => {
       expect(qb.where).toHaveBeenCalledWith('banner.active = :active', {
         active: true,
       });
-      expect(qb.andWhere).toHaveBeenCalledTimes(2);
+      expect(qb.andWhere).toHaveBeenCalledTimes(3);
       expect(qb.orderBy).toHaveBeenCalledWith('banner.order', 'ASC');
       expect(result).toHaveLength(1);
+    });
+
+    it('agrega la condición de daysOfWeek con el día actual (0-6) en Lima', async () => {
+      const qb = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      };
+      bannersRepo.createQueryBuilder.mockReturnValue(qb);
+
+      await service.findActive();
+
+      const calls = qb.andWhere.mock.calls as [
+        string,
+        Record<string, unknown>,
+      ][];
+      const [condition, params] = calls[2];
+      expect(condition).toContain('banner.daysOfWeek IS NULL');
+      expect(condition).toContain('array_length(banner.daysOfWeek, 1) IS NULL');
+      expect(condition).toContain(':dayOfWeek = ANY(banner.daysOfWeek)');
+      expect(params.dayOfWeek).toEqual(expect.any(Number));
+      expect(params.dayOfWeek).toBeGreaterThanOrEqual(0);
+      expect(params.dayOfWeek).toBeLessThanOrEqual(6);
     });
   });
 

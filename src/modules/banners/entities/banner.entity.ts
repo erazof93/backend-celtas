@@ -19,6 +19,9 @@ export enum BannerActionType {
  * - `active` controla si está habilitado.
  * - `startDate`/`endDate` (opcionales) acotan la vigencia. Si no se configuran,
  *   el banner se considera vigente mientras `active` sea true.
+ * - `daysOfWeek` (opcional) restringe la recurrencia a días específicos de la
+ *   semana (0=domingo ... 6=sábado). `null` o array vacío = todos los días
+ *   (comportamiento actual sin cambios).
  * - `order` define la posición de visualización (ascendente).
  */
 @Entity('banners')
@@ -55,6 +58,14 @@ export class Banner {
 
   @Column({ type: 'boolean', default: true })
   active: boolean;
+
+  /**
+   * Días de la semana en que el banner se muestra (0=domingo ... 6=sábado).
+   * `null` o array vacío = todos los días. El día actual se evalúa en la zona
+   * horaria de Lima (America/Lima), mismo criterio que el resto del proyecto.
+   */
+  @Column({ type: 'int', array: true, nullable: true })
+  daysOfWeek: number[] | null;
 
   @Column({ type: 'int', default: 0 })
   order: number;
