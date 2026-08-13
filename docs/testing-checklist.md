@@ -44,6 +44,8 @@ cuando pasa lo aplicable de este checklist.
 - [ ] Solo una dirección puede ser `isDefault` a la vez para un usuario
 - [ ] `GET /users` devuelve 403 para un usuario con rol `cliente` y la lista paginada sin password para un admin
 - [x] `GET /users/:id/addresses` (admin): `401` sin token, `403` cliente, `404` si el usuario no existe, `400` si el id no es UUID, devuelve solo las direcciones de ese usuario (array vacío si no tiene)
+- [x] `GET /users?sortBy&order` (admin, ranking por consumo): whitelist estricta vía `@IsEnum(UsersSortBy)` (solo `totalSpent`/`createdAt`) — cualquier otro valor, incluidos intentos de inyección de columna (`sortBy=password`, `sortBy=id); DROP TABLE users;--`), rechaza con 400 (nunca 500, nunca se cuela en el `ORDER BY` porque el valor ya pasó por el enum antes de llegar al `order: { [sortColumn]: direction }`); `order` inválido (no `asc`/`desc`) también 400
+- [x] `sortBy=totalSpent` ordena correctamente asc y desc; sin `sortBy`/`order` el comportamiento previo (`createdAt DESC`, paginación) queda 100% intacto (test explícito de no-regresión)
 - [ ] Endpoints protegidos devuelven 401 sin token
 
 ## Menu
@@ -71,6 +73,12 @@ cuando pasa lo aplicable de este checklist.
 - [x] Cancelar un pedido que canjeó un cupón reactiva el cupón (status `active`, `usedInOrderId`/`usedAt` null); el cupón reactivado puede reutilizarse en un pedido nuevo; `expiresAt` no se toca (si venció, se rechaza como expirado al usarse)
 - [x] `GET /coupons?userId=X` (admin) filtra solo los cupones de ese usuario; userId inexistente → lista vacía (200); userId malformado → 400; sin el param el comportamiento previo (paginación + status) queda intacto
 - [ ] `minPurchaseAmount` opcional en generación manual (null = sin mínimo); `POST /coupons/validate` y el canje en `POST /orders` rechazan con 400 y mensaje exacto `Este cupón requiere un pedido mínimo de S/X.XX` si el subtotal es menor; subtotal igual al mínimo se acepta; sin subtotal no se valida el mínimo; `minPurchaseAmount = 0` se comporta como sin mínimo; cupones automáticos siempre con `minPurchaseAmount: null`
+- [x] `POST /coupons/generate-bulk` (admin): genera un cupón individual (`code` único random) para CADA usuario `role: cliente`, excluye admins (`manager.find(User, { where: { role: UserRole.CLIENTE } } )` verificado); `campaignName` es solo una etiqueta compartida entre los cupones del lote, no reemplaza `code`
+- [x] `POST /coupons/generate-bulk` corre dentro de `dataSource.transaction` y usa batch insert real (`manager.insert()` en chunks de 500), no un loop de `save()` uno por uno — verificado leyendo el código y confirmado con un test de regresión que falla si se revierte a filtrar sin `where: { role }` (ver `coupons.service.spec.ts`)
+- [x] `expiresAt` opcional en `POST /coupons/generate` y `POST /coupons/generate-bulk`: si se indica, el cupón expira en la fecha EXACTA indicada (no aproximada); si se omite, se calcula automático (hoy + `COUPON_EXPIRATION_DAYS`)
+- [x] Los cupones automáticos (`CouponsService.checkAndGenerateForUser`) no tienen ningún parámetro/ruta para `expiresAt`; su fecha siempre sale de `addDays(new Date(), expirationDays())`, sin tocar por el cambio de `generate`/`generate-bulk`
+- [x] `POST /coupons/generate-bulk`: 401 sin token, 403 para rol cliente; `campaignName` requerido (400 si falta); `discountValue` porcentaje > 100 rechazado igual que en `generate`; `expiresAt` no-ISO rechazado con 400
+- [x] `POST /coupons/generate-bulk` con 0 clientes en la BD devuelve `{ count: 0 }` sin intentar ningún `insert` (transacción no rompe)
 
 ## Banners
 

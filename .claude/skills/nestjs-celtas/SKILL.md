@@ -4,7 +4,7 @@ description: Convenciones y patrones específicos del backend NestJS de Celtas (
 license: MIT
 metadata:
   project: celtas-backend
-  audience: opencode-agent
+  audience: claude-code
 ---
 
 ## Cuándo usar esta skill

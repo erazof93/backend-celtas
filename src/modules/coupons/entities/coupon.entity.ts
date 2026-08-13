@@ -87,6 +87,14 @@ export class Coupon {
   @Column({ type: 'enum', enum: CouponOrigin, default: CouponOrigin.MANUAL })
   origin: CouponOrigin;
 
+  /**
+   * Etiqueta de campaña para agrupar/filtrar cupones generados en masa
+   * (ej. "padre2026"). No reemplaza `code`, que sigue siendo único por cupón.
+   */
+  @Index()
+  @Column({ type: 'varchar', nullable: true })
+  campaignName: string | null;
+
   @Column({ type: 'timestamptz' })
   expiresAt: Date;
 

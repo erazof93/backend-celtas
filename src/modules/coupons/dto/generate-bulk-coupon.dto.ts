@@ -2,25 +2,22 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsDateString,
   IsEnum,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsPositive,
-  IsUUID,
+  IsString,
   Min,
   Validate,
 } from 'class-validator';
 import { CouponDiscountType } from '../entities/coupon.entity';
 import { IsPercentageWithinLimit } from './is-percentage-within-limit';
 
-/** Generación manual de un cupón desde el panel admin (campañas puntuales). */
-export class GenerateCouponDto {
-  @ApiProperty({
-    example: '3fa85f64-5717-4562-b3fc-2c963f66afa6',
-    description: 'UUID del usuario al que se le otorga el cupón',
-  })
-  @IsUUID('4', { message: 'userId debe ser un UUID válido' })
-  userId: string;
-
+/**
+ * Generación masiva de cupones para una campaña: un cupón individual (código
+ * único random) por cada usuario con role `cliente` (los admins quedan fuera).
+ */
+export class GenerateBulkCouponDto {
   @ApiProperty({
     enum: CouponDiscountType,
     description: 'Tipo de descuento: porcentaje o monto fijo',
@@ -38,14 +35,22 @@ export class GenerateCouponDto {
   @IsNumber({}, { message: 'discountValue debe ser un número' })
   @IsPositive({ message: 'discountValue debe ser mayor a 0' })
   @Min(0.01, { message: 'discountValue debe ser mayor a 0' })
-  // Un fixed_amount puede superar 100 (ej. S/150); el % no puede pasar de 100.
   @Validate(IsPercentageWithinLimit)
   discountValue: number;
+
+  @ApiProperty({
+    example: 'padre2026',
+    description:
+      'Etiqueta de campaña para agrupar/filtrar los cupones generados en masa. No es el código del cupón (ese se genera random por usuario).',
+  })
+  @IsString({ message: 'campaignName debe ser un texto' })
+  @IsNotEmpty({ message: 'campaignName es requerido' })
+  campaignName: string;
 
   @ApiPropertyOptional({
     example: 50,
     description:
-      'Monto mínimo de compra (subtotal del pedido) para poder usar el cupón. Omitido o null = sin mínimo. Pensado para campañas manuales.',
+      'Monto mínimo de compra (subtotal del pedido) para poder usar el cupón. Omitido o null = sin mínimo.',
   })
   @IsOptional()
   @IsNumber({}, { message: 'minPurchaseAmount debe ser un número' })
@@ -55,7 +60,7 @@ export class GenerateCouponDto {
   @ApiPropertyOptional({
     example: '2026-12-31T23:59:59.000Z',
     description:
-      'Fecha de expiración del cupón (ISO 8601). Omitido = se calcula automático (hoy + días configurados).',
+      'Fecha de expiración de todos los cupones de la campaña (ISO 8601). Omitido = se calcula automático (hoy + días configurados).',
   })
   @IsOptional()
   @IsDateString({}, { message: 'expiresAt debe ser una fecha ISO 8601 válida' })

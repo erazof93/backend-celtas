@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DeepPartial, Repository } from 'typeorm';
+import { QueryUsersDto, SortOrder, UsersSortBy } from './dto/query-users.dto';
 import { User, UserRole } from './entities/user.entity';
 
 export interface CreateUserData {
@@ -115,12 +116,22 @@ export class UsersService {
     return this.usersRepository.save(user);
   }
 
-  /** Listado paginado de usuarios para el panel admin. */
-  async findAll(page = 1, limit = 10): Promise<PaginatedUsers> {
+  /**
+   * Listado paginado de usuarios para el panel admin. `sortBy`/`order` son
+   * opcionales (whitelist validada en el DTO); sin `sortBy` el comportamiento
+   * previo (createdAt DESC) queda intacto.
+   */
+  async findAll(query: QueryUsersDto): Promise<PaginatedUsers> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 10;
+    const sortColumn = query.sortBy ?? UsersSortBy.CREATED_AT;
+    const direction = (query.order ?? SortOrder.DESC).toUpperCase() as
+      'ASC' | 'DESC';
+
     const [items, total] = await this.usersRepository.findAndCount({
       take: limit,
       skip: (page - 1) * limit,
-      order: { createdAt: 'DESC' },
+      order: { [sortColumn]: direction },
     });
 
     return {

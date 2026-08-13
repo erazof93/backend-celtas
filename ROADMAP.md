@@ -161,6 +161,13 @@ celtas-backend/
 - [x] `GET /users` solo admin, paginado, sin exponer password
 - [x] Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — build/lint limpios, 53 unit + 45 e2e. Cliente no edita/borra dirección de otro (403), DTO de perfil rechaza `role`/`totalSpent` (400), `GET /users` 403 para `cliente`. Corregido: `@IsNotEmpty` en `phone`/`reference`.
 - [x] `GET /users/:id/addresses` (admin): vista 360 del cliente. `UsersService.ensureExists` (404 si no existe) + `AddressesService.findByUser` reutilizado. Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — 191 unit + 190 e2e, build/lint limpios, Swagger 200/401/403/404, sin conflicto de rutas con `me/addresses`.
+- [x] Ranking de usuarios por consumo: `GET /users` acepta `sortBy` opcional (whitelist estricta
+  `totalSpent` | `createdAt`, 400 en cualquier otro valor — evita inyección de columna en el
+  `ORDER BY`) y `order` opcional (`asc` | `desc`, default `desc`). Sin estos params el
+  comportamiento previo (`createdAt DESC`) queda intacto. Auditado por `@tester`: **LISTO PARA
+  MARCAR COMPLETO** — 223 unit + 241 e2e, build/lint limpios; probado con intentos de inyección
+  de columna en `sortBy` (rechazados con 400 por `ValidationPipe` + `forbidNonWhitelisted`, nunca
+  llegan al ORM).
 
 ### 3. Módulo Menu — ✅ COMPLETO
 - [x] Entidad `Category` (Burgers, Chicken, Bebidas, etc.)
@@ -203,6 +210,26 @@ celtas-backend/
   `where.userId` solo si el param viene presente; sin él el comportamiento previo queda intacto.
   Swagger documenta el param (`@ApiQuery` + `@ApiPropertyOptional`). Auditado por `@tester`:
   **LISTO PARA MARCAR COMPLETO** — 186 unit + 179 e2e, build/lint limpios.
+
+### 5.2 Cupones de campaña masiva (`generate-bulk`) — ✅ COMPLETO
+- [x] Columna `campaignName` (nullable) en `Coupon`: etiqueta para agrupar/filtrar cupones
+  generados en masa (ej. "padre2026"); no reemplaza `code` (sigue siendo único random por
+  cupón). Migración `AddCampaignNameToCoupons` generada, revisada y aplicada localmente
+  (rollback verificado por `@tester`).
+- [x] `POST /coupons/generate-bulk` (admin): genera un cupón individual (código único random)
+  para CADA usuario `role: cliente` (excluye admins), dentro de una transacción con batch
+  insert en chunks de 500 (no un loop de saves uno por uno). Devuelve `{ count }`, no la lista
+  completa.
+- [x] `expiresAt` opcional (ISO 8601) en `GenerateCouponDto` (endpoint individual) y en
+  `GenerateBulkCouponDto`: si no se envía, se calcula automático (hoy + `COUPON_EXPIRATION_DAYS`),
+  igual que antes. Los cupones automáticos (`CouponsService.checkAndGenerateForUser`, cron/umbral
+  de gasto) no tienen ninguna ruta para recibir `expiresAt` manual — su cálculo automático quedó
+  intacto.
+- [x] Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — 223 unit + 241 e2e, build/lint
+  limpios. Confirmado con test de regresión manual (quitar el filtro `role: cliente` rompe el
+  test correspondiente) que la exclusión de admins es real, no un test que pasa igual. Nota
+  pendiente (no bloqueante): `campaignName` aún no es filtrable desde `GET /coupons` — agregar
+  en una siguiente iteración si el panel admin lo necesita.
 
 ### 6. Módulo Banners
 - [x] Entidad `Banner` (imagen, título, link/acción, fechas, activo, orden)

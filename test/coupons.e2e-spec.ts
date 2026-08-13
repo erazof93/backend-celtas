@@ -370,6 +370,166 @@ describe('Coupons (e2e)', () => {
       const data = (res.body as Envelope).data as CouponData;
       expect(data.minPurchaseAmount).toBe(0);
     });
+
+    it('respeta la fecha exacta de expiresAt cuando se indica', async () => {
+      const customExpiresAt = '2027-05-20T00:00:00.000Z';
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+          expiresAt: customExpiresAt,
+        })
+        .expect(201);
+      const data = (res.body as Envelope).data as CouponData;
+      expect(data.expiresAt).toBe(customExpiresAt);
+    });
+
+    it('400 si expiresAt no es una fecha ISO válida', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+          expiresAt: 'no-es-una-fecha',
+        })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('sin expiresAt sigue calculando la fecha automática (comportamiento previo intacto)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+        })
+        .expect(201);
+      const data = (res.body as Envelope).data as CouponData;
+      const expected = Date.now() + 15 * 24 * 60 * 60 * 1000;
+      expect(new Date(data.expiresAt).getTime()).toBeGreaterThan(
+        expected - 60_000,
+      );
+      expect(new Date(data.expiresAt).getTime()).toBeLessThan(
+        expected + 60_000,
+      );
+    });
+  });
+
+  describe('POST /coupons/generate-bulk (admin)', () => {
+    const campaignName = `padre-${suffix}`;
+
+    it('401 sin token', async () => {
+      await request(app.getHttpServer())
+        .post('/coupons/generate-bulk')
+        .send({ discountType: 'percentage', discountValue: 10, campaignName })
+        .expect(401);
+    });
+
+    it('403 para un cliente', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate-bulk')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({ discountType: 'percentage', discountValue: 10, campaignName })
+        .expect(403);
+      expect((res.body as ErrorResponse).statusCode).toBe(403);
+    });
+
+    it('400 si falta campaignName', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate-bulk')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ discountType: 'percentage', discountValue: 10 })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('400 si un percentage supera el 100%', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate-bulk')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          discountType: 'percentage',
+          discountValue: 150,
+          campaignName,
+        })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('genera un cupón por cada cliente (no por admin) y devuelve el count, no la lista', async () => {
+      const clientCount = await usersRepo.count({
+        where: { role: UserRole.CLIENTE },
+      });
+
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate-bulk')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          discountType: 'percentage',
+          discountValue: 20,
+          campaignName,
+        })
+        .expect(201);
+
+      const data = (res.body as Envelope).data as { count: number };
+      expect(data.count).toBe(clientCount);
+      expect(data).not.toHaveProperty('items');
+
+      const campaignCoupons = await couponsRepo.find({
+        where: { campaignName },
+      });
+      expect(campaignCoupons).toHaveLength(clientCount);
+      expect(
+        campaignCoupons.every((c) => c.status === CouponStatus.ACTIVE),
+      ).toBe(true);
+      // Código único por cupón, no un código de campaña compartido.
+      expect(new Set(campaignCoupons.map((c) => c.code)).size).toBe(
+        clientCount,
+      );
+
+      // Cada cliente recibe exactamente un cupón de la campaña; el admin, ninguno.
+      const clientACoupon = campaignCoupons.find((c) => c.userId === clientAId);
+      expect(clientACoupon).toBeDefined();
+      expect(clientACoupon!.discountType).toBe('percentage');
+      expect(clientACoupon!.discountValue).toBe(20);
+
+      const admin = await usersRepo.findOne({ where: { email: adminEmail } });
+      const adminCoupon = campaignCoupons.find((c) => c.userId === admin!.id);
+      expect(adminCoupon).toBeUndefined();
+    });
+
+    it('campaña con expiresAt custom respeta la fecha exacta para todos los cupones generados', async () => {
+      const campaignName2 = `${campaignName}-fecha`;
+      const customExpiresAt = '2028-01-01T00:00:00.000Z';
+
+      await request(app.getHttpServer())
+        .post('/coupons/generate-bulk')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          discountType: 'fixed_amount',
+          discountValue: 5,
+          campaignName: campaignName2,
+          expiresAt: customExpiresAt,
+        })
+        .expect(201);
+
+      const campaignCoupons = await couponsRepo.find({
+        where: { campaignName: campaignName2 },
+      });
+      expect(campaignCoupons.length).toBeGreaterThan(0);
+      expect(
+        campaignCoupons.every(
+          (c) => c.expiresAt.toISOString() === customExpiresAt,
+        ),
+      ).toBe(true);
+    });
   });
 
   describe('GET /coupons/me', () => {

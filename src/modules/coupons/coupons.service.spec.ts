@@ -202,6 +202,161 @@ describe('CouponsService', () => {
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
+
+    it('respeta la fecha exacta de expiresAt cuando se indica', async () => {
+      usersRepo.findOne.mockResolvedValue({ id: userId });
+      couponsRepo.create.mockImplementation(passthrough);
+      couponsRepo.save.mockImplementation(passthrough);
+      const customExpiresAt = '2027-03-15T00:00:00.000Z';
+
+      const result = await service.generateManual({
+        userId,
+        discountType: CouponDiscountType.PERCENTAGE,
+        discountValue: 10,
+        expiresAt: customExpiresAt,
+      });
+
+      expect(result.expiresAt.toISOString()).toBe(customExpiresAt);
+    });
+  });
+
+  describe('generateBulk', () => {
+    let manager: {
+      find: jest.Mock;
+      create: jest.Mock;
+      insert: jest.Mock<Promise<unknown>, [entity: unknown, values: Coupon[]]>;
+    };
+
+    const client = (id: string): User => ({ id }) as User;
+
+    beforeEach(() => {
+      manager = {
+        find: jest.fn(),
+        create: jest.fn((_entity: unknown, value: unknown) => value),
+        insert: jest
+          .fn<Promise<unknown>, [entity: unknown, values: Coupon[]]>()
+          .mockResolvedValue(undefined),
+      };
+      dataSource.transaction.mockImplementation(
+        (cb: (m: typeof manager) => Promise<unknown>) => cb(manager),
+      );
+    });
+
+    it('busca solo usuarios con role cliente (excluye admins) y genera un cupón por cada uno', async () => {
+      manager.find.mockResolvedValue([
+        client('c1'),
+        client('c2'),
+        client('c3'),
+      ]);
+
+      const result = await service.generateBulk({
+        discountType: CouponDiscountType.PERCENTAGE,
+        discountValue: 15,
+        campaignName: 'padre2026',
+      });
+
+      expect(manager.find).toHaveBeenCalledWith(User, {
+        select: { id: true },
+        where: { role: UserRole.CLIENTE },
+      });
+      expect(result.count).toBe(3);
+      expect(manager.insert).toHaveBeenCalledTimes(1);
+      const inserted = manager.insert.mock.calls[0][1];
+      expect(inserted).toHaveLength(3);
+      expect(inserted.map((c) => c.userId).sort()).toEqual(['c1', 'c2', 'c3']);
+      expect(inserted.every((c) => c.campaignName === 'padre2026')).toBe(true);
+      expect(inserted.every((c) => c.origin === CouponOrigin.MANUAL)).toBe(
+        true,
+      );
+      expect(inserted.every((c) => c.status === CouponStatus.ACTIVE)).toBe(
+        true,
+      );
+      // Códigos únicos entre sí dentro del lote.
+      expect(new Set(inserted.map((c) => c.code)).size).toBe(3);
+    });
+
+    it('respeta la fecha exacta de expiresAt cuando se indica en la campaña', async () => {
+      manager.find.mockResolvedValue([client('c1')]);
+      const customExpiresAt = '2027-06-01T00:00:00.000Z';
+
+      await service.generateBulk({
+        discountType: CouponDiscountType.FIXED_AMOUNT,
+        discountValue: 20,
+        campaignName: 'campaña-fija',
+        expiresAt: customExpiresAt,
+      });
+
+      const inserted = manager.insert.mock.calls[0][1];
+      expect(inserted[0].expiresAt.toISOString()).toBe(customExpiresAt);
+    });
+
+    it('calcula expiresAt automático (hoy + días configurados) cuando no se indica', async () => {
+      manager.find.mockResolvedValue([client('c1')]);
+
+      await service.generateBulk({
+        discountType: CouponDiscountType.PERCENTAGE,
+        discountValue: 10,
+        campaignName: 'sin-fecha',
+      });
+
+      const inserted = manager.insert.mock.calls[0][1];
+      const expected = Date.now() + 15 * 24 * 60 * 60 * 1000;
+      expect(inserted[0].expiresAt.getTime()).toBeGreaterThan(expected - 5000);
+      expect(inserted[0].expiresAt.getTime()).toBeLessThan(expected + 5000);
+    });
+
+    it('propaga minPurchaseAmount cuando se indica y null cuando no', async () => {
+      manager.find.mockResolvedValue([client('c1')]);
+
+      await service.generateBulk({
+        discountType: CouponDiscountType.PERCENTAGE,
+        discountValue: 10,
+        campaignName: 'con-minimo',
+        minPurchaseAmount: 30,
+      });
+
+      const inserted = manager.insert.mock.calls[0][1];
+      expect(inserted[0].minPurchaseAmount).toBe(30);
+    });
+
+    it('no hace batch insert y devuelve count 0 si no hay clientes', async () => {
+      manager.find.mockResolvedValue([]);
+
+      const result = await service.generateBulk({
+        discountType: CouponDiscountType.PERCENTAGE,
+        discountValue: 10,
+        campaignName: 'vacia',
+      });
+
+      expect(result.count).toBe(0);
+      expect(manager.insert).not.toHaveBeenCalled();
+    });
+
+    it('lanza 400 si el porcentaje supera el 100% (no consulta usuarios)', async () => {
+      await expect(
+        service.generateBulk({
+          discountType: CouponDiscountType.PERCENTAGE,
+          discountValue: 150,
+          campaignName: 'invalida',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('divide el insert en chunks cuando hay más usuarios que el tamaño del lote', async () => {
+      const clients = Array.from({ length: 1201 }, (_, i) => client(`c${i}`));
+      manager.find.mockResolvedValue(clients);
+
+      const result = await service.generateBulk({
+        discountType: CouponDiscountType.PERCENTAGE,
+        discountValue: 5,
+        campaignName: 'masiva',
+      });
+
+      expect(result.count).toBe(1201);
+      // Lotes de 500: 500 + 500 + 201 => 3 llamadas a insert.
+      expect(manager.insert).toHaveBeenCalledTimes(3);
+    });
   });
 
   describe('validateCoupon', () => {

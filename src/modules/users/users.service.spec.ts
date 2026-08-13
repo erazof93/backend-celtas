@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { SortOrder, UsersSortBy } from './dto/query-users.dto';
 import { User, UserRole } from './entities/user.entity';
 import { UsersService } from './users.service';
 
@@ -125,10 +126,10 @@ describe('UsersService', () => {
   });
 
   describe('findAll', () => {
-    it('devuelve la lista paginada con meta', async () => {
+    it('devuelve la lista paginada con meta (comportamiento previo intacto sin sortBy/order)', async () => {
       const user = makeUser();
       repo.findAndCount.mockResolvedValue([[user], 1]);
-      const result = await service.findAll(1, 10);
+      const result = await service.findAll({ page: 1, limit: 10 });
 
       expect(repo.findAndCount).toHaveBeenCalledWith({
         take: 10,
@@ -146,9 +147,39 @@ describe('UsersService', () => {
 
     it('calcula los totalPages correctamente', async () => {
       repo.findAndCount.mockResolvedValue([[makeUser()], 25]);
-      const result = await service.findAll(2, 10);
+      const result = await service.findAll({ page: 2, limit: 10 });
       expect(result.meta.totalPages).toBe(3);
       expect(result.meta.page).toBe(2);
+    });
+
+    it('ordena por totalSpent descendente cuando se pide sortBy=totalSpent', async () => {
+      repo.findAndCount.mockResolvedValue([[makeUser()], 1]);
+      await service.findAll({
+        sortBy: UsersSortBy.TOTAL_SPENT,
+        order: SortOrder.DESC,
+      });
+      expect(repo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ order: { totalSpent: 'DESC' } }),
+      );
+    });
+
+    it('ordena por totalSpent ascendente cuando se pide order=asc', async () => {
+      repo.findAndCount.mockResolvedValue([[makeUser()], 1]);
+      await service.findAll({
+        sortBy: UsersSortBy.TOTAL_SPENT,
+        order: SortOrder.ASC,
+      });
+      expect(repo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ order: { totalSpent: 'ASC' } }),
+      );
+    });
+
+    it('default de order es desc cuando solo se pide sortBy', async () => {
+      repo.findAndCount.mockResolvedValue([[makeUser()], 1]);
+      await service.findAll({ sortBy: UsersSortBy.CREATED_AT });
+      expect(repo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ order: { createdAt: 'DESC' } }),
+      );
     });
   });
 

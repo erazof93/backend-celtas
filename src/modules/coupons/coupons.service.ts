@@ -17,6 +17,7 @@ import {
 import { Order, OrderStatus } from '../orders/entities/order.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { User, UserRole } from '../users/entities/user.entity';
+import { GenerateBulkCouponDto } from './dto/generate-bulk-coupon.dto';
 import { GenerateCouponDto } from './dto/generate-coupon.dto';
 import { QueryCouponsDto } from './dto/query-coupons.dto';
 import {
@@ -29,6 +30,9 @@ import {
 /** Recompensa del cupón automático (10% de descuento). No es configurable por ahora. */
 const AUTO_COUPON_DISCOUNT_TYPE = CouponDiscountType.PERCENTAGE;
 const AUTO_COUPON_DISCOUNT_VALUE = 10;
+
+/** Tamaño de lote para el batch insert de `generateBulk` (límite de params de Postgres). */
+const BULK_INSERT_CHUNK_SIZE = 500;
 
 export interface PaginatedCoupons {
   items: Coupon[];
@@ -121,7 +125,9 @@ export class CouponsService {
       minPurchaseAmount: dto.minPurchaseAmount ?? null,
       status: CouponStatus.ACTIVE,
       origin: CouponOrigin.MANUAL,
-      expiresAt: this.addDays(new Date(), this.expirationDays()),
+      expiresAt: dto.expiresAt
+        ? new Date(dto.expiresAt)
+        : this.addDays(new Date(), this.expirationDays()),
     });
     const saved = await this.couponsRepository.save(coupon);
 
@@ -134,6 +140,69 @@ export class CouponsService {
     });
 
     return saved;
+  }
+
+  /**
+   * Genera un cupón individual (código único random) para CADA usuario con
+   * role `cliente` (excluye admins) — campañas masivas (ej. "padre2026").
+   * Todo dentro de una transacción con batch insert (en chunks, no un loop de
+   * saves uno por uno): puede haber cientos/miles de usuarios.
+   */
+  async generateBulk(dto: GenerateBulkCouponDto): Promise<{ count: number }> {
+    if (
+      dto.discountType === CouponDiscountType.PERCENTAGE &&
+      dto.discountValue > 100
+    ) {
+      throw new BadRequestException(
+        'El porcentaje de descuento no puede superar el 100%',
+      );
+    }
+
+    const expiresAt = dto.expiresAt
+      ? new Date(dto.expiresAt)
+      : this.addDays(new Date(), this.expirationDays());
+
+    const count = await this.dataSource.transaction(async (manager) => {
+      const clients = await manager.find(User, {
+        select: { id: true },
+        where: { role: UserRole.CLIENTE },
+      });
+      if (clients.length === 0) {
+        return 0;
+      }
+
+      // Códigos únicos dentro del lote (además del unique constraint en BD).
+      const usedCodes = new Set<string>();
+      const coupons = clients.map((client) => {
+        let code = this.generateCode();
+        while (usedCodes.has(code)) {
+          code = this.generateCode();
+        }
+        usedCodes.add(code);
+        return manager.create(Coupon, {
+          userId: client.id,
+          code,
+          discountType: dto.discountType,
+          discountValue: dto.discountValue,
+          minPurchaseAmount: dto.minPurchaseAmount ?? null,
+          campaignName: dto.campaignName,
+          status: CouponStatus.ACTIVE,
+          origin: CouponOrigin.MANUAL,
+          expiresAt,
+        });
+      });
+
+      for (let i = 0; i < coupons.length; i += BULK_INSERT_CHUNK_SIZE) {
+        await manager.insert(
+          Coupon,
+          coupons.slice(i, i + BULK_INSERT_CHUNK_SIZE),
+        );
+      }
+
+      return coupons.length;
+    });
+
+    return { count };
   }
 
   // ── Validación (cliente) ────────────────────────────────────────────────────

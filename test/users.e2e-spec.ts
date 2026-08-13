@@ -446,6 +446,80 @@ describe('Users (e2e)', () => {
     });
   });
 
+  describe('GET /users?sortBy&order (ranking por consumo)', () => {
+    // Valores extremos para no depender de otros usuarios que compartan la BD
+    // (otras suites e2e corren en la misma BD): clientA queda como el máximo
+    // absoluto de totalSpent y clientB como el mínimo absoluto.
+    beforeAll(async () => {
+      const clientB = await usersRepo.findOne({
+        where: { email: clientBEmail },
+      });
+      await usersRepo.update(clientAId, { totalSpent: 999999.99 });
+      await usersRepo.update(clientB!.id, { totalSpent: -999999.99 });
+    });
+
+    it('400 si sortBy no está en la whitelist (evita inyección de columna)', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/users?sortBy=password')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('400 si order no es asc/desc', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/users?sortBy=totalSpent&order=sideways')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('ordena por totalSpent descendente: el usuario con más gasto va primero', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/users?sortBy=totalSpent&order=desc&limit=5')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        items: Array<{ email: string }>;
+      };
+      expect(data.items[0].email).toBe(clientAEmail);
+    });
+
+    it('ordena por totalSpent ascendente: el usuario con menos gasto va primero', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/users?sortBy=totalSpent&order=asc&limit=5')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        items: Array<{ email: string }>;
+      };
+      expect(data.items[0].email).toBe(clientBEmail);
+    });
+
+    it('sin order, sortBy=totalSpent usa desc por defecto', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/users?sortBy=totalSpent&limit=5')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        items: Array<{ email: string }>;
+      };
+      expect(data.items[0].email).toBe(clientAEmail);
+    });
+
+    it('sin sortBy ni order, el comportamiento actual (createdAt DESC) queda intacto', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/users?page=1&limit=100')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        items: Array<{ email: string }>;
+      };
+      // El admin (creado antes que clientA/B) sigue apareciendo en el listado.
+      expect(data.items.some((u) => u.email === adminEmail)).toBe(true);
+    });
+  });
+
   describe('GET /users/:id/addresses (admin)', () => {
     it('401 sin token', async () => {
       await request(app.getHttpServer())

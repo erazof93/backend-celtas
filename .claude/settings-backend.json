@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(*)",
+      "Edit(*)",
+      "Grep(*)",
+      "Glob(*)",
+      "Bash(cat *)",
+      "Bash(find *)",
+      "Bash(pnpm *)",
+      "Bash(pnpm dlx *)",
+      "Bash(nest *)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)"
+    ]
+  }
+}

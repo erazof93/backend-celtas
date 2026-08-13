@@ -20,6 +20,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from '../users/entities/user.entity';
 import { CouponsService } from './coupons.service';
+import { GenerateBulkCouponDto } from './dto/generate-bulk-coupon.dto';
 import { GenerateCouponDto } from './dto/generate-coupon.dto';
 import { QueryCouponsDto } from './dto/query-coupons.dto';
 import { ValidateCouponDto } from './dto/validate-coupon.dto';
@@ -49,6 +50,26 @@ export class CouponsController {
   @ApiResponse({ status: 404, description: 'Usuario no encontrado' })
   generate(@Body() dto: GenerateCouponDto) {
     return this.couponsService.generateManual(dto);
+  }
+
+  @Post('generate-bulk')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Generar cupones masivos de campaña (solo admin, uno por cliente)',
+    description:
+      'Crea un cupón individual (código único random) para cada usuario con role cliente (excluye admins), etiquetados con campaignName para agrupar/filtrar. Devuelve el conteo generado, no la lista completa.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Cupones generados',
+    schema: { example: { count: 128 } },
+  })
+  @ApiResponse({ status: 400, description: 'Payload inválido' })
+  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
+  @ApiResponse({ status: 403, description: 'Requiere rol admin' })
+  generateBulk(@Body() dto: GenerateBulkCouponDto) {
+    return this.couponsService.generateBulk(dto);
   }
 
   @Get('me')

@@ -185,10 +185,27 @@ export class UsersController {
     example: 10,
     description: 'Usuarios por página (default 10, máx 100)',
   })
+  @ApiQuery({
+    name: 'sortBy',
+    required: false,
+    enum: ['totalSpent', 'createdAt'],
+    description:
+      'Columna de ordenamiento. Sin este param, el comportamiento actual (createdAt DESC) queda intacto.',
+  })
+  @ApiQuery({
+    name: 'order',
+    required: false,
+    enum: ['asc', 'desc'],
+    description: 'Orden ascendente o descendente (default desc)',
+  })
   @ApiResponse({ status: 200, description: 'Lista paginada de usuarios' })
+  @ApiResponse({
+    status: 400,
+    description: 'sortBy u order con un valor no permitido',
+  })
   @ApiResponse({ status: 403, description: 'Requiere rol admin' })
   listUsers(@Req() _req: AuthenticatedRequest, @Query() query: QueryUsersDto) {
-    return this.usersService.findAll(query.page, query.limit);
+    return this.usersService.findAll(query);
   }
 
   @Patch(':id/role')

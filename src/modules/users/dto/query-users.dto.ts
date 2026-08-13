@@ -1,6 +1,17 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
+
+/** Columnas por las que se puede ordenar GET /users (whitelist, evita inyección de columna). */
+export enum UsersSortBy {
+  TOTAL_SPENT = 'totalSpent',
+  CREATED_AT = 'createdAt',
+}
+
+export enum SortOrder {
+  ASC = 'asc',
+  DESC = 'desc',
+}
 
 /** Query params para el listado paginado de usuarios (GET /users). */
 export class QueryUsersDto {
@@ -26,4 +37,24 @@ export class QueryUsersDto {
   @Min(1, { message: 'El límite mínimo es 1' })
   @Max(100, { message: 'El límite máximo es 100' })
   limit?: number = 10;
+
+  @ApiPropertyOptional({
+    enum: UsersSortBy,
+    description:
+      'Columna de ordenamiento. Sin este param, el comportamiento actual (createdAt DESC) queda intacto.',
+  })
+  @IsOptional()
+  @IsEnum(UsersSortBy, {
+    message: `sortBy debe ser uno de: ${Object.values(UsersSortBy).join(', ')}`,
+  })
+  sortBy?: UsersSortBy;
+
+  @ApiPropertyOptional({
+    enum: SortOrder,
+    default: SortOrder.DESC,
+    description: 'Orden ascendente o descendente (default desc)',
+  })
+  @IsOptional()
+  @IsEnum(SortOrder, { message: 'order debe ser asc o desc' })
+  order?: SortOrder = SortOrder.DESC;
 }
