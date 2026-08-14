@@ -676,9 +676,27 @@ describe('CouponsService', () => {
       expect(result!.origin).toBe(CouponOrigin.AUTO);
       expect(result!.status).toBe(CouponStatus.ACTIVE);
       expect(result!.discountType).toBe(CouponDiscountType.PERCENTAGE);
+      expect(result!.discountValue).toBe(10); // default sin configurar env vars nuevas
       expect(result!.minPurchaseAmount).toBeNull(); // los automáticos no llevan mínimo
       expect(result!.code).toMatch(/^[0-9A-F]{8}$/);
       expect(manager.save).toHaveBeenCalled();
+    });
+
+    it('usa el tipo y valor de descuento configurados en AUTO_COUPON_DISCOUNT_TYPE/VALUE', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'coupons.thresholdAmount') return 50;
+        if (key === 'coupons.expirationDays') return 15;
+        if (key === 'coupons.autoDiscountType')
+          return CouponDiscountType.FIXED_AMOUNT;
+        if (key === 'coupons.autoDiscountValue') return 25;
+        return undefined;
+      });
+      setupTransaction({ user: { id: userId } as User, spent: '60' });
+
+      const result = await service.checkAndGenerateForUser(userId);
+
+      expect(result!.discountType).toBe(CouponDiscountType.FIXED_AMOUNT);
+      expect(result!.discountValue).toBe(25);
     });
 
     it('suma solo pedidos entregados DESDE el último cupón (corte por fecha)', async () => {

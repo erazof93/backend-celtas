@@ -123,4 +123,45 @@ describe('validationSchema (Módulo 0.5)', () => {
       'https://celtas-admin.vercel.app,https://celtas-app.flutter.app',
     );
   });
+
+  it('AUTO_COUPON_DISCOUNT_TYPE/VALUE son opcionales y aplican el default de 10% (sin regresión)', () => {
+    const { error, value } = validationSchema.validate(completeEnv, {
+      allowUnknown: true,
+    }) as { error?: Joi.ValidationError; value: Record<string, unknown> };
+    expect(error).toBeUndefined();
+    expect(value.AUTO_COUPON_DISCOUNT_TYPE).toBe('percentage');
+    expect(value.AUTO_COUPON_DISCOUNT_VALUE).toBe(10);
+  });
+
+  it('falla si AUTO_COUPON_DISCOUNT_VALUE > 100 con tipo percentage (default o explícito)', () => {
+    const { error } = validationSchema.validate(
+      { ...completeEnv, AUTO_COUPON_DISCOUNT_VALUE: '150' },
+      { allowUnknown: true },
+    );
+    expect(error).toBeDefined();
+    expect(error!.message).toContain('"AUTO_COUPON_DISCOUNT_VALUE"');
+
+    const explicit = validationSchema.validate(
+      {
+        ...completeEnv,
+        AUTO_COUPON_DISCOUNT_TYPE: 'percentage',
+        AUTO_COUPON_DISCOUNT_VALUE: '150',
+      },
+      { allowUnknown: true },
+    );
+    expect(explicit.error).toBeDefined();
+  });
+
+  it('permite AUTO_COUPON_DISCOUNT_VALUE > 100 con tipo fixed_amount (sin tope)', () => {
+    const { error, value } = validationSchema.validate(
+      {
+        ...completeEnv,
+        AUTO_COUPON_DISCOUNT_TYPE: 'fixed_amount',
+        AUTO_COUPON_DISCOUNT_VALUE: '150',
+      },
+      { allowUnknown: true },
+    ) as { error?: Joi.ValidationError; value: Record<string, unknown> };
+    expect(error).toBeUndefined();
+    expect(value.AUTO_COUPON_DISCOUNT_VALUE).toBe(150);
+  });
 });

@@ -50,6 +50,24 @@ export const validationSchema = Joi.object({
   // Cupones automáticos (módulo Coupons)
   COUPON_THRESHOLD_AMOUNT: Joi.number().positive().required(),
   COUPON_EXPIRATION_DAYS: Joi.number().integer().positive().required(),
+  // Descuento del cupón automático. Opcional: por defecto 10% (comportamiento
+  // actual sin configurar nada). Si el tipo es 'percentage' el valor no puede
+  // superar 100 (mismo límite que IsPercentageWithinLimit en cupones manuales) —
+  // evita reintroducir el bug de % > 100 generando un total negativo, ahora por
+  // una env var mal configurada en vez de un formulario. 'fixed_amount' no tiene
+  // tope (un monto fijo en soles sí puede superar 100).
+  AUTO_COUPON_DISCOUNT_TYPE: Joi.string()
+    .valid('percentage', 'fixed_amount')
+    .optional()
+    .default('percentage'),
+  AUTO_COUPON_DISCOUNT_VALUE: Joi.number()
+    .optional()
+    .default(10)
+    .when('AUTO_COUPON_DISCOUNT_TYPE', {
+      is: 'percentage',
+      then: Joi.number().min(0).max(100),
+      otherwise: Joi.number().min(0),
+    }),
 
   // Firebase Cloud Messaging (módulo Notifications)
   // Service account de Firebase: Project Settings > Service accounts > Generate new private key.

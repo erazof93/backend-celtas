@@ -27,10 +27,6 @@ import {
   CouponStatus,
 } from './entities/coupon.entity';
 
-/** Recompensa del cupón automático (10% de descuento). No es configurable por ahora. */
-const AUTO_COUPON_DISCOUNT_TYPE = CouponDiscountType.PERCENTAGE;
-const AUTO_COUPON_DISCOUNT_VALUE = 10;
-
 /** Tamaño de lote para el batch insert de `generateBulk` (límite de params de Postgres). */
 const BULK_INSERT_CHUNK_SIZE = 500;
 
@@ -359,8 +355,8 @@ export class CouponsService {
       const coupon = manager.create(Coupon, {
         userId,
         code: this.generateCode(),
-        discountType: AUTO_COUPON_DISCOUNT_TYPE,
-        discountValue: AUTO_COUPON_DISCOUNT_VALUE,
+        discountType: this.autoDiscountType(),
+        discountValue: this.autoDiscountValue(),
         minPurchaseAmount: null, // los automáticos nunca llevan mínimo de compra
         status: CouponStatus.ACTIVE,
         origin: CouponOrigin.AUTO,
@@ -527,6 +523,17 @@ export class CouponsService {
 
   private expirationDays(): number {
     return this.configService.get<number>('coupons.expirationDays') ?? 15;
+  }
+
+  private autoDiscountType(): CouponDiscountType {
+    return (
+      this.configService.get<CouponDiscountType>('coupons.autoDiscountType') ??
+      CouponDiscountType.PERCENTAGE
+    );
+  }
+
+  private autoDiscountValue(): number {
+    return this.configService.get<number>('coupons.autoDiscountValue') ?? 10;
   }
 
   private round2(value: number): number {

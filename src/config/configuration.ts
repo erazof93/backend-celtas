@@ -55,6 +55,10 @@ export default () => ({
   coupons: {
     thresholdAmount: parseFloat(env('COUPON_THRESHOLD_AMOUNT')),
     expirationDays: parseInt(env('COUPON_EXPIRATION_DAYS'), 10),
+    // Descuento del cupón automático. Opcional: por defecto 10% (mismo default
+    // y mismo rango que valida validation.schema.ts vía Joi.when).
+    autoDiscountType: process.env.AUTO_COUPON_DISCOUNT_TYPE ?? 'percentage',
+    autoDiscountValue: parseFloat(process.env.AUTO_COUPON_DISCOUNT_VALUE ?? '10'),
   },
   firebase: {
     projectId: env('FIREBASE_PROJECT_ID'),
