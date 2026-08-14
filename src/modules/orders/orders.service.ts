@@ -83,8 +83,8 @@ export class OrdersService {
     return this.dataSource.transaction(async (manager) => {
       let total = subtotal;
       let coupon:
-        Awaited<ReturnType<CouponsService['applyToOrder']>>['coupon'] | null =
-        null;
+        | Awaited<ReturnType<CouponsService['applyToOrder']>>['coupon']
+        | null = null;
       if (dto.couponCode) {
         const applied = await this.couponsService.applyToOrder(manager, {
           code: dto.couponCode,
@@ -354,7 +354,19 @@ export class OrdersService {
     const itemsText = items
       .map((item) => `${item.quantity}x ${item.name}`)
       .join(', ');
-    const message = `Pedido #${orderId} - ${itemsText} - Total: S/${total.toFixed(2)} - Dirección: ${this.readableAddress(addressSnapshot)}`;
+    //const message = `Pedido #${orderId} - ${itemsText} - Total: S/${total.toFixed(2)} - Dirección: ${this.readableAddress(addressSnapshot)}`;
+    const message = `📌 *NUEVO PEDIDO #${orderId.slice(0, 8).toUpperCase()}*
+
+🛒 *Detalle:*
+${itemsText
+  .split(', ')
+  .map((item) => `  • ${item}`)
+  .join('\n')}
+
+📍 *Dirección de entrega:*
+  ${this.readableAddress(addressSnapshot)}
+
+💰 *Total a pagar:* S/ ${total.toFixed(2)}`;
     return `https://wa.me/${number}?text=${encodeURIComponent(message)}`;
   }
 
