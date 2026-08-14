@@ -354,7 +354,6 @@ export class OrdersService {
     const itemsText = items
       .map((item) => `${item.quantity}x ${item.name}`)
       .join(', ');
-    //const message = `Pedido #${orderId} - ${itemsText} - Total: S/${total.toFixed(2)} - Dirección: ${this.readableAddress(addressSnapshot)}`;
     const message = `📌 *NUEVO PEDIDO #${orderId.slice(0, 8).toUpperCase()}*
 
 🛒 *Detalle:*

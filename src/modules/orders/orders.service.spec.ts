@@ -239,13 +239,22 @@ describe('OrdersService', () => {
       ordersRepo.create.mockImplementation(passthrough);
 
       const result = await service.create(userId, { ...dto, addressId });
-      const expectedMessage =
-        'Pedido #' +
-        result.id +
-        ' - 2x Celtas Clásica - Total: S/49.80 - Dirección: Av. Los Álamos 123, San Juan de Miraflores (ref: Portón verde)';
-      expect(result.whatsappUrl).toBe(
-        `https://wa.me/51999999999?text=${encodeURIComponent(expectedMessage)}`,
+
+      // Se verifican las partes clave por separado (no un string exacto completo):
+      // un cambio menor de formato del mensaje (agregar un emoji, un salto de
+      // línea) no debe romper todo el test, solo la parte que realmente cambió.
+      expect(result.whatsappUrl).toMatch(/^https:\/\/wa\.me\/51999999999\?text=/);
+      const message = decodeURIComponent(
+        result.whatsappUrl!.replace('https://wa.me/51999999999?text=', ''),
       );
+      expect(message).toContain(
+        `NUEVO PEDIDO #${result.id.slice(0, 8).toUpperCase()}`,
+      );
+      expect(message).toContain('2x Celtas Clásica');
+      expect(message).toContain(
+        'Av. Los Álamos 123, San Juan de Miraflores (ref: Portón verde)',
+      );
+      expect(message).toContain('Total a pagar:* S/ 49.80');
     });
 
     it('aplica el cupón y guarda el total descontado', async () => {

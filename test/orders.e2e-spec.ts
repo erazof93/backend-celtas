@@ -232,9 +232,11 @@ describe('Orders (e2e)', () => {
       expect(data.addressSnapshot).toContain('San Juan de Miraflores');
       expect(data.whatsappUrl).toContain('wa.me/51999999999');
       const decoded = decodeURIComponent(data.whatsappUrl);
-      expect(decoded).toContain(`Pedido #${data.id}`);
+      expect(decoded).toContain(
+        `NUEVO PEDIDO #${data.id.slice(0, 8).toUpperCase()}`,
+      );
       expect(decoded).toContain('2x Clásica');
-      expect(decoded).toContain('Total: S/81.30');
+      expect(decoded).toContain('Total a pagar:* S/ 81.30');
       expect(data.items).toHaveLength(2);
       expect(data.items[0].subtotal).toBe(49.8);
       expect(data.items[1].subtotal).toBe(31.5);
