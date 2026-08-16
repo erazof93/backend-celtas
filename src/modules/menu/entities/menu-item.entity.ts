@@ -4,10 +4,13 @@ import {
   Entity,
   Index,
   JoinColumn,
+  JoinTable,
+  ManyToMany,
   ManyToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { Sauce } from '../../sauces/entities/sauce.entity';
 import { Category } from './category.entity';
 
 @Entity('menu_items')
@@ -52,6 +55,20 @@ export class MenuItem {
   })
   @JoinColumn({ name: 'categoryId' })
   category: Category;
+
+  /**
+   * Salsas/cremas que este producto ofrece, del catálogo global de `sauces`. Vacío =
+   * el producto no necesita selector de salsas (ej. arroz chaufa) — la app no muestra
+   * la sección. Relación en vivo (a diferencia de `OrderItem.selectedSauces`, que es
+   * snapshot): editar el catálogo actualiza de inmediato qué ofrece cada producto.
+   */
+  @ManyToMany(() => Sauce, (sauce) => sauce.menuItems)
+  @JoinTable({
+    name: 'menu_item_sauces',
+    joinColumn: { name: 'menuItemId', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'sauceId', referencedColumnName: 'id' },
+  })
+  sauces: Sauce[];
 
   @CreateDateColumn()
   createdAt: Date;

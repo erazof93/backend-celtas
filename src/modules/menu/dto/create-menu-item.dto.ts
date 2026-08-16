@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsArray,
   IsBoolean,
   IsNotEmpty,
   IsNumber,
@@ -60,4 +61,15 @@ export class CreateMenuItemDto {
   })
   @IsUUID('4', { message: 'categoryId debe ser un UUID válido' })
   categoryId: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['3fa85f64-5717-4562-b3fc-2c963f66afa6'],
+    description:
+      'UUIDs de las salsas del catálogo que este producto ofrece (vacío u omitido = sin selector de salsas, ej. arroz chaufa)',
+  })
+  @IsOptional()
+  @IsArray({ message: 'sauceIds debe ser una lista' })
+  @IsUUID('4', { each: true, message: 'Cada sauceId debe ser un UUID válido' })
+  sauceIds?: string[];
 }

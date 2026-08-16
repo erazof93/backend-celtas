@@ -49,13 +49,22 @@ describe('OrdersService', () => {
   const addressId = '11111111-1111-4111-8111-111111111111';
   const menuItemId = '22222222-2222-4222-8222-222222222222';
 
-  const menuMenuItem = (overrides: Partial<MenuItem> = {}) =>
+  /** Referencia mínima de una salsa ofrecida por un producto (solo lo que el service lee). */
+  const sauceRef = (id: string, name: string) =>
+    ({ id, name }) as MenuItem['sauces'][number];
+
+  const menuMenuItem = (
+    overrides: Partial<Omit<MenuItem, 'sauces'>> & {
+      sauces?: { id: string; name: string }[];
+    } = {},
+  ) =>
     ({
       id: menuItemId,
       name: 'Celtas Clásica',
       price: 24.9,
       available: true,
       ...overrides,
+      sauces: overrides.sauces?.map((s) => sauceRef(s.id, s.name)),
     }) as MenuItem;
 
   const seedAddress = (overrides: Partial<Address> = {}) =>
@@ -243,9 +252,11 @@ describe('OrdersService', () => {
       // Se verifican las partes clave por separado (no un string exacto completo):
       // un cambio menor de formato del mensaje (agregar un emoji, un salto de
       // línea) no debe romper todo el test, solo la parte que realmente cambió.
-      expect(result.whatsappUrl).toMatch(/^https:\/\/wa\.me\/51999999999\?text=/);
+      expect(result.whatsappUrl).toMatch(
+        /^https:\/\/wa\.me\/51999999999\?text=/,
+      );
       const message = decodeURIComponent(
-        result.whatsappUrl!.replace('https://wa.me/51999999999?text=', ''),
+        result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
       );
       expect(message).toContain(
         `NUEVO PEDIDO #${result.id.slice(0, 8).toUpperCase()}`,
@@ -255,6 +266,82 @@ describe('OrdersService', () => {
         'Av. Los Álamos 123, San Juan de Miraflores (ref: Portón verde)',
       );
       expect(message).toContain('Total a pagar:* S/ 49.80');
+    });
+
+    it('valida y guarda el snapshot de salsas elegidas (sauceIds)', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          sauces: [
+            { id: 'sauce-mayo', name: 'Mayonesa' },
+            { id: 'sauce-ketchup', name: 'Ketchup' },
+          ],
+        }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [
+          {
+            menuItemId,
+            quantity: 2,
+            sauceIds: ['sauce-mayo', 'sauce-ketchup'],
+          },
+        ],
+      });
+
+      expect(result.items[0].selectedSauces).toEqual(['Mayonesa', 'Ketchup']);
+    });
+
+    it('sin sauceIds, el snapshot queda null (no falla ni inventa salsas)', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+
+      const result = await service.create(userId, { ...dto, addressId });
+      expect(result.items[0].selectedSauces).toBeNull();
+    });
+
+    it('lanza 400 si el sauceId no está entre las salsas que el producto ofrece', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({ sauces: [{ id: 'sauce-mayo', name: 'Mayonesa' }] }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 1, sauceIds: ['sauce-inexistente'] }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('el mensaje de WhatsApp incluye las salsas elegidas por ítem', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({ sauces: [{ id: 'sauce-mayo', name: 'Mayonesa' }] }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 1, sauceIds: ['sauce-mayo'] }],
+      });
+
+      const message = decodeURIComponent(
+        result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
+      );
+      expect(message).toContain('1x Celtas Clásica (Salsas: Mayonesa)');
+    });
+
+    it('el mensaje de WhatsApp no agrega "(Salsas: ...)" si el ítem no tiene ninguna', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+
+      const result = await service.create(userId, { ...dto, addressId });
+      const message = decodeURIComponent(
+        result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
+      );
+      expect(message).toContain('2x Celtas Clásica');
+      expect(message).not.toContain('Salsas:');
     });
 
     it('aplica el cupón y guarda el total descontado', async () => {

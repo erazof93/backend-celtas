@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { QueryFailedError, Repository } from 'typeorm';
+import { SaucesService } from '../sauces/sauces.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { CreateMenuItemDto } from './dto/create-menu-item.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
@@ -23,6 +24,7 @@ export interface PublicMenuCategory {
     description: string | null;
     price: number;
     image: string | null;
+    sauces: { id: string; name: string }[];
   }[];
 }
 
@@ -39,16 +41,18 @@ export class MenuService {
     private readonly categoriesRepository: Repository<Category>,
     @InjectRepository(MenuItem)
     private readonly itemsRepository: Repository<MenuItem>,
+    private readonly saucesService: SaucesService,
   ) {}
 
   /**
    * Menú optimizado para la app: categorías activas, ordenadas por sortOrder, que
    * contienen al menos un producto disponible. Los productos no disponibles se omiten.
+   * Cada producto incluye sus salsas activas (id+name); vacío = sin selector en la app.
    */
   async findPublicMenu(): Promise<PublicMenuCategory[]> {
     const categories = await this.categoriesRepository.find({
       where: { active: true },
-      relations: { items: true },
+      relations: { items: { sauces: true } },
       order: { sortOrder: 'ASC', name: 'ASC' },
     });
 
@@ -59,12 +63,24 @@ export class MenuService {
         description: category.description,
         items: category.items
           .filter((item) => item.available)
-          .map(({ id, name, description, price, image }) => ({
+          .map(({ id, name, description, price, image, sauces }) => ({
             id,
             name,
             description,
             price,
             image,
+            // Solo salsas activas: una desactivada sigue asignada al producto (el
+            // admin no pierde la relación) pero deja de ofrecerse en la app.
+            sauces: (sauces ?? [])
+              .filter((sauce) => sauce.active)
+              .sort(
+                (a, b) =>
+                  a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
+              )
+              .map(({ id: sauceId, name: sauceName }) => ({
+                id: sauceId,
+                name: sauceName,
+              })),
           }))
           .sort((a, b) => a.name.localeCompare(b.name)),
       }))
@@ -128,7 +144,13 @@ export class MenuService {
 
   async createItem(dto: CreateMenuItemDto): Promise<MenuItem> {
     await this.ensureCategory(dto.categoryId);
-    const item = this.itemsRepository.create(dto);
+    // sauceIds no es una columna propia de MenuItem (es la relación ManyToMany):
+    // se separa del resto del DTO antes de `create` y se resuelve aparte.
+    const { sauceIds, ...rest } = dto;
+    const item = this.itemsRepository.create(rest);
+    if (sauceIds !== undefined) {
+      item.sauces = await this.saucesService.findByIds(sauceIds);
+    }
     return this.runSaveWithUniqueFallback(
       this.itemsRepository.save(item),
       'Ya existe un producto con ese nombre',
@@ -137,7 +159,7 @@ export class MenuService {
 
   async findAllItems(): Promise<MenuItem[]> {
     return this.itemsRepository.find({
-      relations: { category: true },
+      relations: { category: true, sauces: true },
       order: { createdAt: 'DESC' },
     });
   }
@@ -145,7 +167,7 @@ export class MenuService {
   async updateItem(id: string, dto: UpdateMenuItemDto): Promise<MenuItem> {
     const item = await this.itemsRepository.findOne({
       where: { id },
-      relations: { category: true },
+      relations: { category: true, sauces: true },
     });
     if (!item) {
       throw new NotFoundException('Producto no encontrado');
@@ -153,10 +175,18 @@ export class MenuService {
     if (dto.categoryId !== undefined) {
       await this.ensureCategory(dto.categoryId);
     }
+    const { sauceIds, ...rest } = dto;
     // merge (no Object.assign): solo aplica los campos definidos del DTO. Con
     // Object.assign, los campos ausentes del PATCH (undefined) pisaban los valores
     // ya cargados de la entidad y la respuesta salía incompleta.
-    this.itemsRepository.merge(item, dto);
+    this.itemsRepository.merge(item, rest);
+    // La relación ManyToMany no la toca `merge` (no es una columna): se actualiza
+    // aparte, y SOLO si el PATCH la incluyó explícitamente — omitirla deja las
+    // salsas ya asignadas intactas (mismo criterio "guard explícito" que el resto
+    // del proyecto para campos que `merge` no puede cubrir).
+    if (sauceIds !== undefined) {
+      item.sauces = await this.saucesService.findByIds(sauceIds);
+    }
     return this.runSaveWithUniqueFallback(
       this.itemsRepository.save(item),
       'Ya existe un producto con ese nombre',

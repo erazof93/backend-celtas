@@ -64,6 +64,76 @@ cuando pasa lo aplicable de este checklist.
 - [ ] Un cliente solo puede ver sus propios pedidos; admin puede ver todos
 - [x] `GET /orders?userId=X` (admin) filtra solo los pedidos de ese usuario; userId inexistente → lista vacía (200); userId malformado → 400; combinado con `status`; sin el param el comportamiento previo (paginación + status) queda intacto
 
+## Salsas/cremas (catálogo `Sauce` + selección por producto)
+
+> Feature nueva (no estaba en el `ROADMAP.md` original): el cliente elige salsas al agregar un
+> producto al carrito (mobile), el admin configura qué salsas ofrece cada producto (algunos, como
+> arroz chaufa, no ofrecen ninguna), y el mensaje de WhatsApp las incluye por ítem.
+>
+> **Verificado por mí (esta sesión) contra el código real y una base de datos Postgres local real
+> — NO por el subagente `@tester` del flujo habitual del proyecto.** Antes de marcar esto
+> "completo" en `ROADMAP.md`, correr el pase real de `@tester` (build/lint/test + e2e +
+> checklist), como exige la convención del proyecto.
+
+- [x] `pnpm run build` compila sin errores
+- [x] `pnpm run lint` sin errores (`eslint --fix`, sin warnings nuevos)
+- [x] `pnpm run test`: 253/253 tests unitarios en verde (18 suites), incluye casos nuevos de
+      `SaucesService`, `MenuService` (asignación/reemplazo/limpieza de `sauceIds`) y
+      `OrdersService` (snapshot de salsas, validación de `sauceIds` contra las ofrecidas, mensaje
+      de WhatsApp con/sin salsas)
+- [x] Migración `AddSaucesCatalog` generada con `migration:generate` contra una BD Postgres real
+      (no escrita a mano), revisada línea por línea, aplicada con `migration:run` contra un
+      Postgres local real, y confirmada limpia (`migration:generate` posterior reporta "No
+      changes in database schema were found")
+- [x] **Bug real encontrado y corregido antes de aplicar la migración**: `src/data-source.ts` (el
+      `DataSource` que usa el CLI de `typeorm migration:*`, fuera de Nest) declara la lista de
+      entidades a mano — no tiene `autoLoadEntities` como el `AppModule` en runtime. La entidad
+      `Sauce` nueva no estaba en esa lista; `migration:generate` fallaba con
+      `Entity metadata for MenuItem#sauces was not found`. Corregido agregando `Sauce` al array
+      `entities` de `data-source.ts`. Bug de clase a vigilar: **toda entidad nueva futura debe
+      agregarse en los DOS lugares** (`app.module.ts` vía `autoLoadEntities` ya lo resuelve solo,
+      pero `data-source.ts` no).
+- [x] **Bug real encontrado y corregido con evidencia de la migración generada, antes de
+      aplicarla**: la FK de la tabla de unión `menu_item_sauces.sauceId → sauces.id` quedó
+      `ON DELETE NO ACTION` (default de TypeORM para el lado inverso de un `@JoinTable`; el lado
+      dueño, `menuItemId → menu_items.id`, sí quedó `ON DELETE CASCADE`). Sin corregirlo,
+      `DELETE /sauces/:id` habría devuelto `500` (violación de FK) para cualquier salsa todavía
+      asignada a un producto, contradiciendo el diseño ("catálogo de etiquetas, sin bloqueo por
+      uso"). Corregido en `SaucesService.remove()`: limpia primero las filas de
+      `menu_item_sauces` para ese `sauceId` (`DELETE FROM menu_item_sauces WHERE "sauceId" = $1`)
+      antes de borrar la salsa — verificado end-to-end contra el servidor real corriendo (ver
+      abajo), no solo en el test unitario.
+- [x] **Prueba real end-to-end contra el servidor corriendo (`pnpm run start:dev`) y Postgres
+      local real**, vía `curl` (no simulado): admin real registrado y promovido, categoría real,
+      2 salsas reales (Mayonesa, Mostaza), un producto CON esas 2 salsas asignadas
+      (`sauceIds` en `POST /menu/items`) y un producto SIN ninguna (Arroz Chaufa):
+      - `GET /menu` (público): el producto con salsas expone `sauces: [{id,name}]` (2 elementos);
+        Arroz Chaufa expone `sauces: []` — nunca `undefined`, así el frontend no necesita un
+        chequeo de nulidad especial para "sin selector".
+      - `POST /orders` con `sauceIds` en un ítem y sin `sauceIds` en el otro: el `OrderItem` del
+        primero guarda `selectedSauces: ["Mayonesa","Mostaza"]` (snapshot, no referencia); el
+        segundo guarda `selectedSauces: null`.
+      - El `whatsappUrl` decodificado real: `"2x Celtas Burguesa Clasica (Salsas: Mayonesa,
+        Mostaza)"` en una línea y `"1x Arroz Chaufa"` en la otra, sin el sufijo `(Salsas: ...)`
+        cuando el ítem no tiene ninguna.
+      - `DELETE /sauces/:id` sobre una salsa todavía asignada a un producto: `200` (no `500`), y
+        `GET /menu/items` confirma que el producto quedó con la salsa restante únicamente (la
+        relación se limpió, el producto no se tocó de ninguna otra forma).
+      - `POST /orders` con un `sauceId` que el producto NO ofrece (probado con la salsa de un
+        producto distinto): `400` con mensaje real
+        `"El producto \"Arroz Chaufa\" no ofrece la salsa seleccionada"` — nunca guarda una
+        salsa inventada en el snapshot.
+      - `GET /docs-json`: `/sauces` y `/sauces/{id}` documentados; `CreateOrderItemDto` incluye
+        `sauceIds` en el schema.
+- [x] `pnpm run test:e2e`: 241/241 en verde (12 suites) — la suite existente no tiene casos
+      propios de `sauces` todavía (nada e2e cubre `/sauces` ni `sauceIds` en `POST /orders`), pero
+      confirma cero regresiones en los endpoints ya existentes
+- [ ] Agregar casos e2e propios de `sauces` (`POST/GET/PATCH/DELETE /sauces`, `sauceIds` en
+      `POST /menu/items` y `POST /orders`) — hoy esa cobertura vive solo en unit tests +
+      la verificación manual con curl de arriba
+- [ ] Pase real de `@tester` (independiente, con mutación de al menos un fix para confirmar que
+      los tests nuevos realmente fallan sin él — mismo patrón que el resto del proyecto)
+
 ## Coupons
 
 - [x] El cron no genera cupones duplicados para el mismo ciclo de gasto

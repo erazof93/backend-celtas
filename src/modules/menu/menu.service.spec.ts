@@ -2,6 +2,8 @@ import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { QueryFailedError } from 'typeorm';
+import { Sauce } from '../sauces/entities/sauce.entity';
+import { SaucesService } from '../sauces/sauces.service';
 import { Category } from './entities/category.entity';
 import { MenuItem } from './entities/menu-item.entity';
 import { MenuService } from './menu.service';
@@ -47,9 +49,12 @@ describe('MenuService', () => {
     save: jest.Mock;
     remove: jest.Mock;
   };
+  let saucesService: { findByIds: jest.Mock };
 
   const catId = '11111111-1111-1111-1111-111111111111';
   const otherCatId = '22222222-2222-2222-2222-222222222222';
+  const sauceId1 = '44444444-4444-4444-4444-444444444444';
+  const sauceId2 = '55555555-5555-5555-5555-555555555555';
 
   const seedCategory = (overrides: Partial<Category> = {}) =>
     ({
@@ -73,8 +78,18 @@ describe('MenuService', () => {
       available: true,
       categoryId: catId,
       category: null,
+      sauces: [],
       ...overrides,
     }) as MenuItem;
+
+  const seedSauce = (overrides: Partial<Sauce> = {}) =>
+    ({
+      id: sauceId1,
+      name: 'Mayonesa',
+      active: true,
+      sortOrder: 0,
+      ...overrides,
+    }) as Sauce;
 
   beforeEach(async () => {
     categoriesRepo = {
@@ -93,11 +108,13 @@ describe('MenuService', () => {
       save: jest.fn(),
       remove: jest.fn(),
     };
+    saucesService = { findByIds: jest.fn() };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         MenuService,
         { provide: getRepositoryToken(Category), useValue: categoriesRepo },
         { provide: getRepositoryToken(MenuItem), useValue: itemsRepo },
+        { provide: SaucesService, useValue: saucesService },
       ],
     }).compile();
 
@@ -123,7 +140,7 @@ describe('MenuService', () => {
 
       expect(categoriesRepo.find).toHaveBeenCalledWith({
         where: { active: true },
-        relations: { items: true },
+        relations: { items: { sauces: true } },
         order: { sortOrder: 'ASC', name: 'ASC' },
       });
       expect(result).toHaveLength(1);
@@ -132,6 +149,8 @@ describe('MenuService', () => {
       expect(result[0].items[0].id).toBe('i-1');
       // La app no recibe el flag available: se omiten los productos no disponibles.
       expect(result[0].items[0].available).toBeUndefined();
+      // Producto sin salsas asignadas (ej. arroz chaufa): array vacío, no undefined.
+      expect(result[0].items[0].sauces).toEqual([]);
     });
 
     it('omite categorías activas sin productos disponibles', async () => {
@@ -140,6 +159,24 @@ describe('MenuService', () => {
       ]);
       const result = await service.findPublicMenu();
       expect(result).toEqual([]);
+    });
+
+    it('expone solo salsas activas, ordenadas por sortOrder', async () => {
+      const item = seedItem({
+        sauces: [
+          seedSauce({ id: sauceId2, name: 'Ketchup', sortOrder: 2 }),
+          seedSauce({ id: sauceId1, name: 'Mayonesa', sortOrder: 1 }),
+          seedSauce({ id: 'inactiva', name: 'Ají', active: false }),
+        ],
+      });
+      categoriesRepo.find.mockResolvedValue([seedCategory({ items: [item] })]);
+
+      const result = await service.findPublicMenu();
+
+      expect(result[0].items[0].sauces).toEqual([
+        { id: sauceId1, name: 'Mayonesa' },
+        { id: sauceId2, name: 'Ketchup' },
+      ]);
     });
   });
 
@@ -314,15 +351,65 @@ describe('MenuService', () => {
         service.createItem({ name: 'Celta', price: 15, categoryId: catId }),
       ).rejects.toBeInstanceOf(ConflictException);
     });
+
+    it('asigna las salsas indicadas por sauceIds', async () => {
+      categoriesRepo.findOne.mockResolvedValue(seedCategory());
+      itemsRepo.create.mockImplementation(passthrough);
+      itemsRepo.save.mockImplementation(passthrough);
+      saucesService.findByIds.mockResolvedValue([seedSauce({ id: sauceId1 })]);
+
+      const result = await service.createItem({
+        name: 'Celta',
+        price: 15,
+        categoryId: catId,
+        sauceIds: [sauceId1],
+      });
+
+      expect(saucesService.findByIds).toHaveBeenCalledWith([sauceId1]);
+      expect(result.sauces).toEqual([seedSauce({ id: sauceId1 })]);
+    });
+
+    it('lanza 404 si algún sauceId no existe en el catálogo (propagado de SaucesService)', async () => {
+      categoriesRepo.findOne.mockResolvedValue(seedCategory());
+      itemsRepo.create.mockImplementation(passthrough);
+      saucesService.findByIds.mockRejectedValue(
+        new NotFoundException('Una o más salsas no existen'),
+      );
+
+      await expect(
+        service.createItem({
+          name: 'Celta',
+          price: 15,
+          categoryId: catId,
+          sauceIds: [sauceId1],
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(itemsRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('producto sin sauceIds (u omitido) queda sin salsas — ej. arroz chaufa', async () => {
+      categoriesRepo.findOne.mockResolvedValue(seedCategory());
+      itemsRepo.create.mockImplementation(passthrough);
+      itemsRepo.save.mockImplementation(passthrough);
+
+      const result = await service.createItem({
+        name: 'Arroz Chaufa',
+        price: 18,
+        categoryId: catId,
+      });
+
+      expect(result.sauces).toBeUndefined();
+      expect(saucesService.findByIds).not.toHaveBeenCalled();
+    });
   });
 
   describe('findAllItems', () => {
-    it('devuelve productos con su categoría', async () => {
+    it('devuelve productos con su categoría y sus salsas', async () => {
       itemsRepo.find.mockResolvedValue([seedItem()]);
       const result = await service.findAllItems();
       expect(result).toHaveLength(1);
       expect(itemsRepo.find).toHaveBeenCalledWith({
-        relations: { category: true },
+        relations: { category: true, sauces: true },
         order: { createdAt: 'DESC' },
       });
     });
@@ -366,6 +453,43 @@ describe('MenuService', () => {
         service.updateItem('item-1', { categoryId: otherCatId }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(itemsRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('sin sauceIds en el PATCH, deja las salsas ya asignadas intactas', async () => {
+      const existing = seedItem({ sauces: [seedSauce({ id: sauceId1 })] });
+      itemsRepo.findOne.mockResolvedValue(existing);
+      itemsRepo.save.mockImplementation(passthrough);
+
+      const result = await service.updateItem('item-1', { price: 30 });
+      expect(result.sauces).toEqual([seedSauce({ id: sauceId1 })]);
+      expect(saucesService.findByIds).not.toHaveBeenCalled();
+    });
+
+    it('con sauceIds: [] en el PATCH, quita todas las salsas asignadas', async () => {
+      const existing = seedItem({ sauces: [seedSauce({ id: sauceId1 })] });
+      itemsRepo.findOne.mockResolvedValue(existing);
+      itemsRepo.save.mockImplementation(passthrough);
+      saucesService.findByIds.mockResolvedValue([]);
+
+      const result = await service.updateItem('item-1', { sauceIds: [] });
+      expect(saucesService.findByIds).toHaveBeenCalledWith([]);
+      expect(result.sauces).toEqual([]);
+    });
+
+    it('con sauceIds en el PATCH, reemplaza las salsas asignadas', async () => {
+      const existing = seedItem({ sauces: [seedSauce({ id: sauceId1 })] });
+      itemsRepo.findOne.mockResolvedValue(existing);
+      itemsRepo.save.mockImplementation(passthrough);
+      saucesService.findByIds.mockResolvedValue([
+        seedSauce({ id: sauceId2, name: 'Ketchup' }),
+      ]);
+
+      const result = await service.updateItem('item-1', {
+        sauceIds: [sauceId2],
+      });
+      expect(result.sauces).toEqual([
+        seedSauce({ id: sauceId2, name: 'Ketchup' }),
+      ]);
     });
   });
 

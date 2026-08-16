@@ -55,6 +55,15 @@ export class OrderItem {
   @Column({ type: 'int' })
   quantity: number;
 
+  /**
+   * Nombres de las salsas/cremas elegidas, copiados al crear el pedido (snapshot,
+   * mismo criterio que `name`/`unitPrice`: borrar o renombrar una salsa del catálogo
+   * después nunca altera este historial). `null` = producto sin salsas ofrecidas o
+   * el cliente no eligió ninguna.
+   */
+  @Column({ type: 'text', array: true, nullable: true })
+  selectedSauces: string[] | null;
+
   /** unitPrice * quantity, calculado en el backend. */
   @Column({
     type: 'decimal',

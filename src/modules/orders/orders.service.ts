@@ -83,8 +83,8 @@ export class OrdersService {
     return this.dataSource.transaction(async (manager) => {
       let total = subtotal;
       let coupon:
-        | Awaited<ReturnType<CouponsService['applyToOrder']>>['coupon']
-        | null = null;
+        Awaited<ReturnType<CouponsService['applyToOrder']>>['coupon'] | null =
+        null;
       if (dto.couponCode) {
         const applied = await this.couponsService.applyToOrder(manager, {
           code: dto.couponCode,
@@ -311,6 +311,7 @@ export class OrdersService {
     const ids = items.map((item) => item.menuItemId);
     const menuItems = await this.menuItemsRepository.find({
       where: { id: In(ids) },
+      relations: { sauces: true },
     });
     const byId = new Map(menuItems.map((menuItem) => [menuItem.id, menuItem]));
 
@@ -327,6 +328,7 @@ export class OrdersService {
           `El producto "${menuItem.name}" no está disponible`,
         );
       }
+      const selectedSauces = this.resolveSelectedSauces(menuItem, item);
       const subtotal = this.round2(menuItem.price * item.quantity);
       result.push(
         this.orderItemsRepository.create({
@@ -335,16 +337,49 @@ export class OrdersService {
           unitPrice: menuItem.price,
           quantity: item.quantity,
           subtotal,
+          selectedSauces,
         }),
       );
     }
     return result;
   }
 
+  /**
+   * Valida `sauceIds` contra las salsas que el producto realmente ofrece (400 si el
+   * cliente manda una que no está en su lista) y devuelve el SNAPSHOT de nombres a
+   * guardar en el OrderItem. `null` si no se mandó nada o la lista vino vacía.
+   */
+  private resolveSelectedSauces(
+    menuItem: MenuItem,
+    item: CreateOrderItemDto,
+  ): string[] | null {
+    if (!item.sauceIds || item.sauceIds.length === 0) {
+      return null;
+    }
+    const offeredById = new Map(
+      (menuItem.sauces ?? []).map((sauce) => [sauce.id, sauce.name]),
+    );
+    const names: string[] = [];
+    for (const sauceId of item.sauceIds) {
+      const name = offeredById.get(sauceId);
+      if (!name) {
+        throw new BadRequestException(
+          `El producto "${menuItem.name}" no ofrece la salsa seleccionada`,
+        );
+      }
+      names.push(name);
+    }
+    return names;
+  }
+
   /** Link de WhatsApp: https://wa.me/<número>?text=<mensaje codificado>. */
   private async buildWhatsappUrl(
     orderId: string,
-    items: { name: string; quantity: number }[],
+    items: {
+      name: string;
+      quantity: number;
+      selectedSauces: string[] | null;
+    }[],
     total: number,
     addressSnapshot: string,
   ): Promise<string> {
@@ -352,15 +387,18 @@ export class OrdersService {
     // está vacía, SettingsService cae al valor de .env y loguea un warning.
     const number = await this.settingsService.getWhatsappNumber();
     const itemsText = items
-      .map((item) => `${item.quantity}x ${item.name}`)
-      .join(', ');
+      .map((item) => {
+        const sauces =
+          item.selectedSauces && item.selectedSauces.length > 0
+            ? ` (Salsas: ${item.selectedSauces.join(', ')})`
+            : '';
+        return `  • ${item.quantity}x ${item.name}${sauces}`;
+      })
+      .join('\n');
     const message = `📌 *NUEVO PEDIDO #${orderId.slice(0, 8).toUpperCase()}*
 
 🛒 *Detalle:*
-${itemsText
-  .split(', ')
-  .map((item) => `  • ${item}`)
-  .join('\n')}
+${itemsText}
 
 📍 *Dirección de entrega:*
   ${this.readableAddress(addressSnapshot)}

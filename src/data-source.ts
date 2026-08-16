@@ -7,6 +7,7 @@ import { Category } from './modules/menu/entities/category.entity';
 import { MenuItem } from './modules/menu/entities/menu-item.entity';
 import { OrderItem } from './modules/orders/entities/order-item.entity';
 import { Order } from './modules/orders/entities/order.entity';
+import { Sauce } from './modules/sauces/entities/sauce.entity';
 import { Setting } from './modules/settings/entities/setting.entity';
 import { Address } from './modules/users/entities/address.entity';
 import { User } from './modules/users/entities/user.entity';
@@ -51,6 +52,7 @@ export const AppDataSource = new DataSource({
     MenuItem,
     Order,
     OrderItem,
+    Sauce,
     Coupon,
     Banner,
     Setting,

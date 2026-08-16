@@ -177,6 +177,29 @@ celtas-backend/
 - [x] Subida de imágenes a Cloudinary (`CloudinaryService` reutilizable) + endpoints `POST /menu/items/:id/image` y `POST /menu/categories/:id/image` (multipart, solo imágenes, máx 5MB → 400, admin)
 - [x] Auditado por `@tester` (**LISTO PARA MARCAR COMPLETO**): build/lint limpios, 84 unit + 69 e2e. `GET /menu` filtra inactivos/no disponibles, admin rechaza 401/403, borrar categoría con productos → 409, nombre duplicado → 409 (corregido: antes 500), subida de imagen 200/400/404, Swagger multipart usable, credenciales Cloudinary no expuestas.
 - [x] Nota de concurrencia resuelta: fallback `QueryFailedError` 23505 → 409 en `createCategory`/`updateCategory`/`createItem`/`updateItem` (no reemplaza el chequeo previo). Confirmado por `@tester` (**NOTA DE CONCURRENCIA RESUELTA**): 88 unit + 69 e2e.
+- [ ] **Mejora nueva (en curso): catálogo de salsas/cremas (`Sauce`) + selección por producto.**
+      Módulo nuevo `sauces` (`entities/sauce.entity.ts`, CRUD admin en `/sauces`): catálogo global
+      (`name` único, `active`, `sortOrder`) sin FK de historial — un pedido ya creado nunca
+      depende de que la salsa siga existiendo (ver mejora del módulo Orders). `MenuItem` gana una
+      relación `ManyToMany` (`sauces`, tabla de unión `menu_item_sauces`) — vacía = el producto no
+      ofrece selector (ej. arroz chaufa). `CreateMenuItemDto`/`UpdateMenuItemDto` aceptan
+      `sauceIds?: string[]`; el PATCH solo toca la relación si el campo viene explícito (mismo
+      criterio "guard explícito" que el resto del proyecto para lo que `merge()` no cubre).
+      `GET /menu` (público) expone `sauces: {id,name}[]` por producto, solo las activas, ordenadas
+      por `sortOrder`. Migración `AddSaucesCatalog` generada contra una BD real, revisada y
+      aplicada — **dos bugs reales encontrados y corregidos antes de aplicarla** (detalle completo
+      en `docs/testing-checklist.md`, sección "Salsas/cremas"): (1) `src/data-source.ts` no tenía
+      `Sauce` en su lista manual de entidades (el CLI de migraciones no usa
+      `autoLoadEntities`) — `migration:generate` fallaba; (2) la FK del lado inverso del
+      `@JoinTable` (`menu_item_sauces.sauceId`) quedó `ON DELETE NO ACTION` por default de
+      TypeORM (el lado dueño sí cascadea) — sin corregirlo, borrar una salsa todavía asignada a
+      un producto revienta con 500; `SaucesService.remove()` limpia la relación primero.
+      Verificado end-to-end con curl contra el servidor real y Postgres local real (creación de
+      categoría/salsas/productos, `GET /menu`, borrado de una salsa en uso, mensaje de WhatsApp
+      con las salsas — ver mejora del módulo Orders). 253/253 tests unitarios, build/lint limpios.
+      **Pendiente antes de marcar completo**: tests e2e (`test:e2e`) y pase real del subagente
+      `@tester` (lo de arriba lo verifiqué yo directamente contra el código y una BD real, no es
+      el pase habitual de `@tester` del proyecto).
 
 ### 4. Módulo Orders
 - [x] Entidad `Order` + `OrderItem`
@@ -186,6 +209,23 @@ celtas-backend/
 - [x] Endpoint para listar pedidos (admin) y pedidos propios (cliente)
 - [x] Generar el texto/link de WhatsApp en el backend (para mantenerlo consistente) o dejarlo al frontend — **definir en el setup**
 - [x] Filtro `userId` (UUID v4 validado) en `GET /orders` (admin): `OrdersService.findAll` agrega `where.userId` solo si el param viene presente; sin él el comportamiento previo queda intacto. Swagger documenta el param (`@ApiQuery` + `@ApiPropertyOptional`). Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — 191 unit + 190 e2e, build/lint limpios.
+- [ ] **Mejora nueva (en curso): salsas elegidas por ítem, snapshot + WhatsApp.**
+      `CreateOrderItemDto.sauceIds?: string[]` (opcional, por ítem — aplica a las `quantity`
+      unidades de ese ítem, no una selección por unidad individual). `OrdersService.buildItems`
+      valida cada `sauceId` contra las salsas que el `MenuItem` realmente ofrece (400 con mensaje
+      real si no está entre ellas — nunca guarda algo que el cliente no pudo haber visto en la
+      app) y guarda el resultado como **snapshot de nombres** en la columna nueva
+      `OrderItem.selectedSauces` (`text[]`, nullable) — mismo criterio que `name`/`unitPrice`:
+      borrar o renombrar una salsa del catálogo después nunca altera un pedido ya creado.
+      `buildWhatsappUrl` agrega `(Salsas: X, Y)` al final de la línea del ítem cuando corresponde
+      (nada si el ítem no tiene ninguna). De paso, se simplificó la construcción del texto de
+      `itemsText` (antes hacía `join(', ')` seguido de `split(', ')` para reconstruir líneas —
+      fràgil si un nombre de producto contuviera literalmente `", "`; ahora arma cada línea
+      directo). Verificado con un pedido real de 2 ítems (uno con 2 salsas, otro sin ninguna)
+      contra el servidor corriendo: `selectedSauces` guardado correcto en ambos, mensaje de
+      WhatsApp decodificado con el formato esperado — detalle completo en
+      `docs/testing-checklist.md`, sección "Salsas/cremas". Mismo pendiente que la mejora del
+      módulo Menu: falta `test:e2e` y el pase real de `@tester`.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)

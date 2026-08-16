@@ -26,6 +26,17 @@ export class CreateOrderItemDto {
   @Min(1, { message: 'La cantidad mínima es 1' })
   @Max(99, { message: 'La cantidad máxima por producto es 99' })
   quantity: number;
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['3fa85f64-5717-4562-b3fc-2c963f66afa6'],
+    description:
+      'UUIDs de las salsas elegidas para este ítem (deben estar entre las que el producto ofrece; se aplican a las `quantity` unidades del ítem, no una selección por unidad individual). Omitido o vacío = sin salsas.',
+  })
+  @IsOptional()
+  @IsArray({ message: 'sauceIds debe ser una lista' })
+  @IsUUID('4', { each: true, message: 'Cada sauceId debe ser un UUID válido' })
+  sauceIds?: string[];
 }
 
 /**
