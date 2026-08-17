@@ -226,6 +226,32 @@ celtas-backend/
       WhatsApp decodificado con el formato esperado — detalle completo en
       `docs/testing-checklist.md`, sección "Salsas/cremas". Mismo pendiente que la mejora del
       módulo Menu: falta `test:e2e` y el pase real de `@tester`.
+- [ ] **Refinamiento (en curso): tri-state real de `sauceIds` — distinguir "no aplica" de "Sin
+      salsas" elegido a propósito.** Antes, `sauceIds` no enviado (`undefined`) y `sauceIds: []`
+      enviado explícito colapsaban al mismo `selectedSauces: null` — no había forma de saber si el
+      cliente vio el selector y no quiso ninguna, o si el producto ni siquiera ofrece salsas.
+      Pedido explícito del dueño del negocio: que "Sin salsas" viaje como dato real (visible/
+      editable en el carrito mobile) y aparezca literal en el mensaje de WhatsApp para que el
+      cocinero sepa que fue una elección, no un olvido. `resolveSelectedSauces` ahora distingue
+      los tres casos reales: `undefined` → `null` (no aplica, sin sufijo); `[]` enviado explícito
+      → `[]` (nunca colapsado a `null`); con ids → nombres validados (sin cambios). `buildWhatsappUrl`
+      agrega `(Salsas: Sin salsas)` cuando `selectedSauces` es `[]` no-null, y sigue sin sufijo
+      solo cuando es `null`. No hizo falta migración (la columna `selectedSauces` ya era `text[]`
+      nullable, un array vacío es válido ahí). DTO: `sauceIds` nunca tuvo `@ArrayNotEmpty`, así que
+      `[]` ya pasaba la validación; solo se actualizó la descripción de Swagger para reflejar el
+      tri-state. Verificado con dos `POST /orders` reales lado a lado contra el servidor y Postgres
+      local reales (mismo ítem, uno con `sauceIds: []`, otro sin el campo): el primero devolvió
+      `selectedSauces: []` y `whatsappUrl` con `(Salsas: Sin salsas)`; el segundo, `selectedSauces:
+      null` y sin sufijo. Auditado por `@tester` con mutación real (revirtió el chequeo de `[]` a
+      `null` a propósito): los 2 tests nuevos fallaron exactamente como se esperaba y ningún otro
+      de los 41 de `orders.service.spec.ts` se vio afectado — **veredicto "LISTO"** para este
+      refinamiento puntual (255/255 unit, 241/241 e2e, build/lint limpios). Sigue pendiente, sin
+      variación por este cambio, lo ya anotado arriba: casos e2e propios de `sauceIds` en
+      `POST /orders` y el pase completo de `@tester` sobre la feature de salsas en conjunto.
+      **Esta es la base de la que dependen `celtas-admin`** (mostrar "Sin salsas" en el detalle de
+      pedido, distinto de no mostrar nada) **y `celtas-app`** (mandar `sauceIds: []` explícito
+      desde el carrito cuando el cliente elige deliberadamente ninguna salsa) — ambos ya en curso
+      con el mismo criterio.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)

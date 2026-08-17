@@ -1,0 +1,1581 @@
+From 6368c5709061c2bc7af68659b3d9a7025bd71606 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 16 Aug 2026 02:52:29 +0000
+Subject: [PATCH] =?UTF-8?q?feat(menu,orders):=20cat=C3=A1logo=20de=20salsa?=
+ =?UTF-8?q?s/cremas=20por=20producto=20y=20selecci=C3=B3n=20en=20pedidos?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Nuevo módulo Sauce (CRUD admin-only) relacionado ManyToMany con MenuItem;
+GET /menu expone las salsas activas de cada producto (lista vacía = el
+producto no ofrece selector, ej. arroz chaufa). CreateOrderDto acepta
+sauceIds opcional por ítem, validado contra lo que el producto realmente
+ofrece y guardado como snapshot de nombres en OrderItem.selectedSauces
+(no depende de que la salsa siga existiendo en el catálogo). El mensaje de
+WhatsApp concatena las salsas elegidas por ítem.
+
+Corrige dos bugs de clase encontrados al agregar la relación: Sauce faltaba
+en data-source.ts (entities explícitas del CLI de migraciones, no usa
+autoLoadEntities) y el join table menu_item_sauces solo tenía ON DELETE
+CASCADE del lado menuItemId por default de TypeORM — SaucesService.remove
+limpia la fila del join table a mano antes de borrar la salsa.
+
+Verificado contra Postgres real (migración generada y revisada a mano) y
+un servidor local real, no solo con mocks. Pendiente: e2e de Jest y
+auditoría del subagente @tester (ver docs/testing-checklist.md).
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CH29SPjv7tbUH7nxpMdv8Z
+---
+ ROADMAP.md                                    |  40 ++++
+ docs/testing-checklist.md                     |  70 ++++++
+ src/app.module.ts                             |   2 +
+ src/config/configuration.ts                   |   4 +-
+ src/data-source.ts                            |   2 +
+ .../1786846925971-AddSaucesCatalog.ts         |  49 ++++
+ src/modules/menu/dto/create-menu-item.dto.ts  |  12 +
+ src/modules/menu/entities/menu-item.entity.ts |  17 ++
+ src/modules/menu/menu.module.ts               |   7 +-
+ src/modules/menu/menu.service.spec.ts         | 130 ++++++++++-
+ src/modules/menu/menu.service.ts              |  42 +++-
+ src/modules/orders/dto/create-order.dto.ts    |  11 +
+ .../orders/entities/order-item.entity.ts      |   9 +
+ src/modules/orders/orders.service.spec.ts     |  93 +++++++-
+ src/modules/orders/orders.service.ts          |  56 ++++-
+ src/modules/sauces/dto/create-sauce.dto.ts    |  37 ++++
+ src/modules/sauces/dto/update-sauce.dto.ts    |   4 +
+ src/modules/sauces/entities/sauce.entity.ts   |  47 ++++
+ src/modules/sauces/sauces.controller.ts       |  94 ++++++++
+ src/modules/sauces/sauces.module.ts           |  13 ++
+ src/modules/sauces/sauces.service.spec.ts     | 209 ++++++++++++++++++
+ src/modules/sauces/sauces.service.ts          | 123 +++++++++++
+ 22 files changed, 1048 insertions(+), 23 deletions(-)
+ create mode 100644 src/migrations/1786846925971-AddSaucesCatalog.ts
+ create mode 100644 src/modules/sauces/dto/create-sauce.dto.ts
+ create mode 100644 src/modules/sauces/dto/update-sauce.dto.ts
+ create mode 100644 src/modules/sauces/entities/sauce.entity.ts
+ create mode 100644 src/modules/sauces/sauces.controller.ts
+ create mode 100644 src/modules/sauces/sauces.module.ts
+ create mode 100644 src/modules/sauces/sauces.service.spec.ts
+ create mode 100644 src/modules/sauces/sauces.service.ts
+
+diff --git a/ROADMAP.md b/ROADMAP.md
+index 2bb442c..1d3448b 100644
+--- a/ROADMAP.md
++++ b/ROADMAP.md
+@@ -177,6 +177,29 @@ celtas-backend/
+ - [x] Subida de imágenes a Cloudinary (`CloudinaryService` reutilizable) + endpoints `POST /menu/items/:id/image` y `POST /menu/categories/:id/image` (multipart, solo imágenes, máx 5MB → 400, admin)
+ - [x] Auditado por `@tester` (**LISTO PARA MARCAR COMPLETO**): build/lint limpios, 84 unit + 69 e2e. `GET /menu` filtra inactivos/no disponibles, admin rechaza 401/403, borrar categoría con productos → 409, nombre duplicado → 409 (corregido: antes 500), subida de imagen 200/400/404, Swagger multipart usable, credenciales Cloudinary no expuestas.
+ - [x] Nota de concurrencia resuelta: fallback `QueryFailedError` 23505 → 409 en `createCategory`/`updateCategory`/`createItem`/`updateItem` (no reemplaza el chequeo previo). Confirmado por `@tester` (**NOTA DE CONCURRENCIA RESUELTA**): 88 unit + 69 e2e.
++- [ ] **Mejora nueva (en curso): catálogo de salsas/cremas (`Sauce`) + selección por producto.**
++      Módulo nuevo `sauces` (`entities/sauce.entity.ts`, CRUD admin en `/sauces`): catálogo global
++      (`name` único, `active`, `sortOrder`) sin FK de historial — un pedido ya creado nunca
++      depende de que la salsa siga existiendo (ver mejora del módulo Orders). `MenuItem` gana una
++      relación `ManyToMany` (`sauces`, tabla de unión `menu_item_sauces`) — vacía = el producto no
++      ofrece selector (ej. arroz chaufa). `CreateMenuItemDto`/`UpdateMenuItemDto` aceptan
++      `sauceIds?: string[]`; el PATCH solo toca la relación si el campo viene explícito (mismo
++      criterio "guard explícito" que el resto del proyecto para lo que `merge()` no cubre).
++      `GET /menu` (público) expone `sauces: {id,name}[]` por producto, solo las activas, ordenadas
++      por `sortOrder`. Migración `AddSaucesCatalog` generada contra una BD real, revisada y
++      aplicada — **dos bugs reales encontrados y corregidos antes de aplicarla** (detalle completo
++      en `docs/testing-checklist.md`, sección "Salsas/cremas"): (1) `src/data-source.ts` no tenía
++      `Sauce` en su lista manual de entidades (el CLI de migraciones no usa
++      `autoLoadEntities`) — `migration:generate` fallaba; (2) la FK del lado inverso del
++      `@JoinTable` (`menu_item_sauces.sauceId`) quedó `ON DELETE NO ACTION` por default de
++      TypeORM (el lado dueño sí cascadea) — sin corregirlo, borrar una salsa todavía asignada a
++      un producto revienta con 500; `SaucesService.remove()` limpia la relación primero.
++      Verificado end-to-end con curl contra el servidor real y Postgres local real (creación de
++      categoría/salsas/productos, `GET /menu`, borrado de una salsa en uso, mensaje de WhatsApp
++      con las salsas — ver mejora del módulo Orders). 253/253 tests unitarios, build/lint limpios.
++      **Pendiente antes de marcar completo**: tests e2e (`test:e2e`) y pase real del subagente
++      `@tester` (lo de arriba lo verifiqué yo directamente contra el código y una BD real, no es
++      el pase habitual de `@tester` del proyecto).
+ 
+ ### 4. Módulo Orders
+ - [x] Entidad `Order` + `OrderItem`
+@@ -186,6 +209,23 @@ celtas-backend/
+ - [x] Endpoint para listar pedidos (admin) y pedidos propios (cliente)
+ - [x] Generar el texto/link de WhatsApp en el backend (para mantenerlo consistente) o dejarlo al frontend — **definir en el setup**
+ - [x] Filtro `userId` (UUID v4 validado) en `GET /orders` (admin): `OrdersService.findAll` agrega `where.userId` solo si el param viene presente; sin él el comportamiento previo queda intacto. Swagger documenta el param (`@ApiQuery` + `@ApiPropertyOptional`). Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — 191 unit + 190 e2e, build/lint limpios.
++- [ ] **Mejora nueva (en curso): salsas elegidas por ítem, snapshot + WhatsApp.**
++      `CreateOrderItemDto.sauceIds?: string[]` (opcional, por ítem — aplica a las `quantity`
++      unidades de ese ítem, no una selección por unidad individual). `OrdersService.buildItems`
++      valida cada `sauceId` contra las salsas que el `MenuItem` realmente ofrece (400 con mensaje
++      real si no está entre ellas — nunca guarda algo que el cliente no pudo haber visto en la
++      app) y guarda el resultado como **snapshot de nombres** en la columna nueva
++      `OrderItem.selectedSauces` (`text[]`, nullable) — mismo criterio que `name`/`unitPrice`:
++      borrar o renombrar una salsa del catálogo después nunca altera un pedido ya creado.
++      `buildWhatsappUrl` agrega `(Salsas: X, Y)` al final de la línea del ítem cuando corresponde
++      (nada si el ítem no tiene ninguna). De paso, se simplificó la construcción del texto de
++      `itemsText` (antes hacía `join(', ')` seguido de `split(', ')` para reconstruir líneas —
++      fràgil si un nombre de producto contuviera literalmente `", "`; ahora arma cada línea
++      directo). Verificado con un pedido real de 2 ítems (uno con 2 salsas, otro sin ninguna)
++      contra el servidor corriendo: `selectedSauces` guardado correcto en ambos, mensaje de
++      WhatsApp decodificado con el formato esperado — detalle completo en
++      `docs/testing-checklist.md`, sección "Salsas/cremas". Mismo pendiente que la mejora del
++      módulo Menu: falta `test:e2e` y el pase real de `@tester`.
+ 
+ ### 5. Módulo Coupons
+ - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)
+diff --git a/docs/testing-checklist.md b/docs/testing-checklist.md
+index f8a3dda..29e4390 100644
+--- a/docs/testing-checklist.md
++++ b/docs/testing-checklist.md
+@@ -64,6 +64,76 @@ cuando pasa lo aplicable de este checklist.
+ - [ ] Un cliente solo puede ver sus propios pedidos; admin puede ver todos
+ - [x] `GET /orders?userId=X` (admin) filtra solo los pedidos de ese usuario; userId inexistente → lista vacía (200); userId malformado → 400; combinado con `status`; sin el param el comportamiento previo (paginación + status) queda intacto
+ 
++## Salsas/cremas (catálogo `Sauce` + selección por producto)
++
++> Feature nueva (no estaba en el `ROADMAP.md` original): el cliente elige salsas al agregar un
++> producto al carrito (mobile), el admin configura qué salsas ofrece cada producto (algunos, como
++> arroz chaufa, no ofrecen ninguna), y el mensaje de WhatsApp las incluye por ítem.
++>
++> **Verificado por mí (esta sesión) contra el código real y una base de datos Postgres local real
++> — NO por el subagente `@tester` del flujo habitual del proyecto.** Antes de marcar esto
++> "completo" en `ROADMAP.md`, correr el pase real de `@tester` (build/lint/test + e2e +
++> checklist), como exige la convención del proyecto.
++
++- [x] `pnpm run build` compila sin errores
++- [x] `pnpm run lint` sin errores (`eslint --fix`, sin warnings nuevos)
++- [x] `pnpm run test`: 253/253 tests unitarios en verde (18 suites), incluye casos nuevos de
++      `SaucesService`, `MenuService` (asignación/reemplazo/limpieza de `sauceIds`) y
++      `OrdersService` (snapshot de salsas, validación de `sauceIds` contra las ofrecidas, mensaje
++      de WhatsApp con/sin salsas)
++- [x] Migración `AddSaucesCatalog` generada con `migration:generate` contra una BD Postgres real
++      (no escrita a mano), revisada línea por línea, aplicada con `migration:run` contra un
++      Postgres local real, y confirmada limpia (`migration:generate` posterior reporta "No
++      changes in database schema were found")
++- [x] **Bug real encontrado y corregido antes de aplicar la migración**: `src/data-source.ts` (el
++      `DataSource` que usa el CLI de `typeorm migration:*`, fuera de Nest) declara la lista de
++      entidades a mano — no tiene `autoLoadEntities` como el `AppModule` en runtime. La entidad
++      `Sauce` nueva no estaba en esa lista; `migration:generate` fallaba con
++      `Entity metadata for MenuItem#sauces was not found`. Corregido agregando `Sauce` al array
++      `entities` de `data-source.ts`. Bug de clase a vigilar: **toda entidad nueva futura debe
++      agregarse en los DOS lugares** (`app.module.ts` vía `autoLoadEntities` ya lo resuelve solo,
++      pero `data-source.ts` no).
++- [x] **Bug real encontrado y corregido con evidencia de la migración generada, antes de
++      aplicarla**: la FK de la tabla de unión `menu_item_sauces.sauceId → sauces.id` quedó
++      `ON DELETE NO ACTION` (default de TypeORM para el lado inverso de un `@JoinTable`; el lado
++      dueño, `menuItemId → menu_items.id`, sí quedó `ON DELETE CASCADE`). Sin corregirlo,
++      `DELETE /sauces/:id` habría devuelto `500` (violación de FK) para cualquier salsa todavía
++      asignada a un producto, contradiciendo el diseño ("catálogo de etiquetas, sin bloqueo por
++      uso"). Corregido en `SaucesService.remove()`: limpia primero las filas de
++      `menu_item_sauces` para ese `sauceId` (`DELETE FROM menu_item_sauces WHERE "sauceId" = $1`)
++      antes de borrar la salsa — verificado end-to-end contra el servidor real corriendo (ver
++      abajo), no solo en el test unitario.
++- [x] **Prueba real end-to-end contra el servidor corriendo (`pnpm run start:dev`) y Postgres
++      local real**, vía `curl` (no simulado): admin real registrado y promovido, categoría real,
++      2 salsas reales (Mayonesa, Mostaza), un producto CON esas 2 salsas asignadas
++      (`sauceIds` en `POST /menu/items`) y un producto SIN ninguna (Arroz Chaufa):
++      - `GET /menu` (público): el producto con salsas expone `sauces: [{id,name}]` (2 elementos);
++        Arroz Chaufa expone `sauces: []` — nunca `undefined`, así el frontend no necesita un
++        chequeo de nulidad especial para "sin selector".
++      - `POST /orders` con `sauceIds` en un ítem y sin `sauceIds` en el otro: el `OrderItem` del
++        primero guarda `selectedSauces: ["Mayonesa","Mostaza"]` (snapshot, no referencia); el
++        segundo guarda `selectedSauces: null`.
++      - El `whatsappUrl` decodificado real: `"2x Celtas Burguesa Clasica (Salsas: Mayonesa,
++        Mostaza)"` en una línea y `"1x Arroz Chaufa"` en la otra, sin el sufijo `(Salsas: ...)`
++        cuando el ítem no tiene ninguna.
++      - `DELETE /sauces/:id` sobre una salsa todavía asignada a un producto: `200` (no `500`), y
++        `GET /menu/items` confirma que el producto quedó con la salsa restante únicamente (la
++        relación se limpió, el producto no se tocó de ninguna otra forma).
++      - `POST /orders` con un `sauceId` que el producto NO ofrece (probado con la salsa de un
++        producto distinto): `400` con mensaje real
++        `"El producto \"Arroz Chaufa\" no ofrece la salsa seleccionada"` — nunca guarda una
++        salsa inventada en el snapshot.
++      - `GET /docs-json`: `/sauces` y `/sauces/{id}` documentados; `CreateOrderItemDto` incluye
++        `sauceIds` en el schema.
++- [x] `pnpm run test:e2e`: 241/241 en verde (12 suites) — la suite existente no tiene casos
++      propios de `sauces` todavía (nada e2e cubre `/sauces` ni `sauceIds` en `POST /orders`), pero
++      confirma cero regresiones en los endpoints ya existentes
++- [ ] Agregar casos e2e propios de `sauces` (`POST/GET/PATCH/DELETE /sauces`, `sauceIds` en
++      `POST /menu/items` y `POST /orders`) — hoy esa cobertura vive solo en unit tests +
++      la verificación manual con curl de arriba
++- [ ] Pase real de `@tester` (independiente, con mutación de al menos un fix para confirmar que
++      los tests nuevos realmente fallan sin él — mismo patrón que el resto del proyecto)
++
+ ## Coupons
+ 
+ - [x] El cron no genera cupones duplicados para el mismo ciclo de gasto
+diff --git a/src/app.module.ts b/src/app.module.ts
+index 9b96015..f7c3095 100644
+--- a/src/app.module.ts
++++ b/src/app.module.ts
+@@ -13,6 +13,7 @@ import { CouponsModule } from './modules/coupons/coupons.module';
+ import { MenuModule } from './modules/menu/menu.module';
+ import { NotificationsModule } from './modules/notifications/notifications.module';
+ import { OrdersModule } from './modules/orders/orders.module';
++import { SaucesModule } from './modules/sauces/sauces.module';
+ import { SettingsModule } from './modules/settings/settings.module';
+ import { UsersModule } from './modules/users/users.module';
+ 
+@@ -54,6 +55,7 @@ import { UsersModule } from './modules/users/users.module';
+     UsersModule,
+     AuthModule,
+     MenuModule,
++    SaucesModule,
+     OrdersModule,
+     CouponsModule,
+     BannersModule,
+diff --git a/src/config/configuration.ts b/src/config/configuration.ts
+index 04936bf..97686b3 100644
+--- a/src/config/configuration.ts
++++ b/src/config/configuration.ts
+@@ -58,7 +58,9 @@ export default () => ({
+     // Descuento del cupón automático. Opcional: por defecto 10% (mismo default
+     // y mismo rango que valida validation.schema.ts vía Joi.when).
+     autoDiscountType: process.env.AUTO_COUPON_DISCOUNT_TYPE ?? 'percentage',
+-    autoDiscountValue: parseFloat(process.env.AUTO_COUPON_DISCOUNT_VALUE ?? '10'),
++    autoDiscountValue: parseFloat(
++      process.env.AUTO_COUPON_DISCOUNT_VALUE ?? '10',
++    ),
+   },
+   firebase: {
+     projectId: env('FIREBASE_PROJECT_ID'),
+diff --git a/src/data-source.ts b/src/data-source.ts
+index 4351d93..777a9fd 100644
+--- a/src/data-source.ts
++++ b/src/data-source.ts
+@@ -7,6 +7,7 @@ import { Category } from './modules/menu/entities/category.entity';
+ import { MenuItem } from './modules/menu/entities/menu-item.entity';
+ import { OrderItem } from './modules/orders/entities/order-item.entity';
+ import { Order } from './modules/orders/entities/order.entity';
++import { Sauce } from './modules/sauces/entities/sauce.entity';
+ import { Setting } from './modules/settings/entities/setting.entity';
+ import { Address } from './modules/users/entities/address.entity';
+ import { User } from './modules/users/entities/user.entity';
+@@ -51,6 +52,7 @@ export const AppDataSource = new DataSource({
+     MenuItem,
+     Order,
+     OrderItem,
++    Sauce,
+     Coupon,
+     Banner,
+     Setting,
+diff --git a/src/migrations/1786846925971-AddSaucesCatalog.ts b/src/migrations/1786846925971-AddSaucesCatalog.ts
+new file mode 100644
+index 0000000..792cfd6
+--- /dev/null
++++ b/src/migrations/1786846925971-AddSaucesCatalog.ts
+@@ -0,0 +1,49 @@
++import { MigrationInterface, QueryRunner } from 'typeorm';
++
++export class AddSaucesCatalog1786846925971 implements MigrationInterface {
++  name = 'AddSaucesCatalog1786846925971';
++
++  public async up(queryRunner: QueryRunner): Promise<void> {
++    await queryRunner.query(
++      `CREATE TABLE "sauces" ("id" uuid NOT NULL DEFAULT uuid_generate_v4(), "name" character varying NOT NULL, "active" boolean NOT NULL DEFAULT true, "sort_order" integer NOT NULL DEFAULT '0', "createdAt" TIMESTAMP NOT NULL DEFAULT now(), "updatedAt" TIMESTAMP NOT NULL DEFAULT now(), CONSTRAINT "UQ_fb8709a2f803cdf48a1987f933f" UNIQUE ("name"), CONSTRAINT "PK_782d0a478f4cbea6fbc52d01032" PRIMARY KEY ("id"))`,
++    );
++    await queryRunner.query(
++      `CREATE TABLE "menu_item_sauces" ("menuItemId" uuid NOT NULL, "sauceId" uuid NOT NULL, CONSTRAINT "PK_9b5564272dbc67fea233b57206f" PRIMARY KEY ("menuItemId", "sauceId"))`,
++    );
++    await queryRunner.query(
++      `CREATE INDEX "IDX_eb39515d8759c6828d63ce6b5a" ON "menu_item_sauces"  ("menuItemId") `,
++    );
++    await queryRunner.query(
++      `CREATE INDEX "IDX_81b7f07ad4e2d7bd67d8a9dc84" ON "menu_item_sauces"  ("sauceId") `,
++    );
++    await queryRunner.query(
++      `ALTER TABLE "order_items" ADD "selectedSauces" text array`,
++    );
++    await queryRunner.query(
++      `ALTER TABLE "menu_item_sauces" ADD CONSTRAINT "FK_eb39515d8759c6828d63ce6b5a7" FOREIGN KEY ("menuItemId") REFERENCES "menu_items"("id") ON DELETE CASCADE ON UPDATE CASCADE`,
++    );
++    await queryRunner.query(
++      `ALTER TABLE "menu_item_sauces" ADD CONSTRAINT "FK_81b7f07ad4e2d7bd67d8a9dc84a" FOREIGN KEY ("sauceId") REFERENCES "sauces"("id") ON DELETE NO ACTION ON UPDATE NO ACTION`,
++    );
++  }
++
++  public async down(queryRunner: QueryRunner): Promise<void> {
++    await queryRunner.query(
++      `ALTER TABLE "menu_item_sauces" DROP CONSTRAINT "FK_81b7f07ad4e2d7bd67d8a9dc84a"`,
++    );
++    await queryRunner.query(
++      `ALTER TABLE "menu_item_sauces" DROP CONSTRAINT "FK_eb39515d8759c6828d63ce6b5a7"`,
++    );
++    await queryRunner.query(
++      `ALTER TABLE "order_items" DROP COLUMN "selectedSauces"`,
++    );
++    await queryRunner.query(
++      `DROP INDEX "public"."IDX_81b7f07ad4e2d7bd67d8a9dc84"`,
++    );
++    await queryRunner.query(
++      `DROP INDEX "public"."IDX_eb39515d8759c6828d63ce6b5a"`,
++    );
++    await queryRunner.query(`DROP TABLE "menu_item_sauces"`);
++    await queryRunner.query(`DROP TABLE "sauces"`);
++  }
++}
+diff --git a/src/modules/menu/dto/create-menu-item.dto.ts b/src/modules/menu/dto/create-menu-item.dto.ts
+index 04e5ba1..5e0060b 100644
+--- a/src/modules/menu/dto/create-menu-item.dto.ts
++++ b/src/modules/menu/dto/create-menu-item.dto.ts
+@@ -1,5 +1,6 @@
+ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+ import {
++  IsArray,
+   IsBoolean,
+   IsNotEmpty,
+   IsNumber,
+@@ -60,4 +61,15 @@ export class CreateMenuItemDto {
+   })
+   @IsUUID('4', { message: 'categoryId debe ser un UUID válido' })
+   categoryId: string;
++
++  @ApiPropertyOptional({
++    type: [String],
++    example: ['3fa85f64-5717-4562-b3fc-2c963f66afa6'],
++    description:
++      'UUIDs de las salsas del catálogo que este producto ofrece (vacío u omitido = sin selector de salsas, ej. arroz chaufa)',
++  })
++  @IsOptional()
++  @IsArray({ message: 'sauceIds debe ser una lista' })
++  @IsUUID('4', { each: true, message: 'Cada sauceId debe ser un UUID válido' })
++  sauceIds?: string[];
+ }
+diff --git a/src/modules/menu/entities/menu-item.entity.ts b/src/modules/menu/entities/menu-item.entity.ts
+index 627d2e5..9c87e04 100644
+--- a/src/modules/menu/entities/menu-item.entity.ts
++++ b/src/modules/menu/entities/menu-item.entity.ts
+@@ -4,10 +4,13 @@ import {
+   Entity,
+   Index,
+   JoinColumn,
++  JoinTable,
++  ManyToMany,
+   ManyToOne,
+   PrimaryGeneratedColumn,
+   UpdateDateColumn,
+ } from 'typeorm';
++import { Sauce } from '../../sauces/entities/sauce.entity';
+ import { Category } from './category.entity';
+ 
+ @Entity('menu_items')
+@@ -53,6 +56,20 @@ export class MenuItem {
+   @JoinColumn({ name: 'categoryId' })
+   category: Category;
+ 
++  /**
++   * Salsas/cremas que este producto ofrece, del catálogo global de `sauces`. Vacío =
++   * el producto no necesita selector de salsas (ej. arroz chaufa) — la app no muestra
++   * la sección. Relación en vivo (a diferencia de `OrderItem.selectedSauces`, que es
++   * snapshot): editar el catálogo actualiza de inmediato qué ofrece cada producto.
++   */
++  @ManyToMany(() => Sauce, (sauce) => sauce.menuItems)
++  @JoinTable({
++    name: 'menu_item_sauces',
++    joinColumn: { name: 'menuItemId', referencedColumnName: 'id' },
++    inverseJoinColumn: { name: 'sauceId', referencedColumnName: 'id' },
++  })
++  sauces: Sauce[];
++
+   @CreateDateColumn()
+   createdAt: Date;
+ 
+diff --git a/src/modules/menu/menu.module.ts b/src/modules/menu/menu.module.ts
+index 2e4c5fe..e46a64b 100644
+--- a/src/modules/menu/menu.module.ts
++++ b/src/modules/menu/menu.module.ts
+@@ -1,13 +1,18 @@
+ import { Module } from '@nestjs/common';
+ import { TypeOrmModule } from '@nestjs/typeorm';
+ import { CloudinaryModule } from '../../shared/cloudinary/cloudinary.module';
++import { SaucesModule } from '../sauces/sauces.module';
+ import { Category } from './entities/category.entity';
+ import { MenuItem } from './entities/menu-item.entity';
+ import { MenuController } from './menu.controller';
+ import { MenuService } from './menu.service';
+ 
+ @Module({
+-  imports: [TypeOrmModule.forFeature([Category, MenuItem]), CloudinaryModule],
++  imports: [
++    TypeOrmModule.forFeature([Category, MenuItem]),
++    CloudinaryModule,
++    SaucesModule,
++  ],
+   controllers: [MenuController],
+   providers: [MenuService],
+   exports: [MenuService],
+diff --git a/src/modules/menu/menu.service.spec.ts b/src/modules/menu/menu.service.spec.ts
+index a71e413..feac54b 100644
+--- a/src/modules/menu/menu.service.spec.ts
++++ b/src/modules/menu/menu.service.spec.ts
+@@ -2,6 +2,8 @@ import { ConflictException, NotFoundException } from '@nestjs/common';
+ import { Test, TestingModule } from '@nestjs/testing';
+ import { getRepositoryToken } from '@nestjs/typeorm';
+ import { QueryFailedError } from 'typeorm';
++import { Sauce } from '../sauces/entities/sauce.entity';
++import { SaucesService } from '../sauces/sauces.service';
+ import { Category } from './entities/category.entity';
+ import { MenuItem } from './entities/menu-item.entity';
+ import { MenuService } from './menu.service';
+@@ -47,9 +49,12 @@ describe('MenuService', () => {
+     save: jest.Mock;
+     remove: jest.Mock;
+   };
++  let saucesService: { findByIds: jest.Mock };
+ 
+   const catId = '11111111-1111-1111-1111-111111111111';
+   const otherCatId = '22222222-2222-2222-2222-222222222222';
++  const sauceId1 = '44444444-4444-4444-4444-444444444444';
++  const sauceId2 = '55555555-5555-5555-5555-555555555555';
+ 
+   const seedCategory = (overrides: Partial<Category> = {}) =>
+     ({
+@@ -73,9 +78,19 @@ describe('MenuService', () => {
+       available: true,
+       categoryId: catId,
+       category: null,
++      sauces: [],
+       ...overrides,
+     }) as MenuItem;
+ 
++  const seedSauce = (overrides: Partial<Sauce> = {}) =>
++    ({
++      id: sauceId1,
++      name: 'Mayonesa',
++      active: true,
++      sortOrder: 0,
++      ...overrides,
++    }) as Sauce;
++
+   beforeEach(async () => {
+     categoriesRepo = {
+       find: jest.fn(),
+@@ -93,11 +108,13 @@ describe('MenuService', () => {
+       save: jest.fn(),
+       remove: jest.fn(),
+     };
++    saucesService = { findByIds: jest.fn() };
+     const module: TestingModule = await Test.createTestingModule({
+       providers: [
+         MenuService,
+         { provide: getRepositoryToken(Category), useValue: categoriesRepo },
+         { provide: getRepositoryToken(MenuItem), useValue: itemsRepo },
++        { provide: SaucesService, useValue: saucesService },
+       ],
+     }).compile();
+ 
+@@ -123,7 +140,7 @@ describe('MenuService', () => {
+ 
+       expect(categoriesRepo.find).toHaveBeenCalledWith({
+         where: { active: true },
+-        relations: { items: true },
++        relations: { items: { sauces: true } },
+         order: { sortOrder: 'ASC', name: 'ASC' },
+       });
+       expect(result).toHaveLength(1);
+@@ -132,6 +149,8 @@ describe('MenuService', () => {
+       expect(result[0].items[0].id).toBe('i-1');
+       // La app no recibe el flag available: se omiten los productos no disponibles.
+       expect(result[0].items[0].available).toBeUndefined();
++      // Producto sin salsas asignadas (ej. arroz chaufa): array vacío, no undefined.
++      expect(result[0].items[0].sauces).toEqual([]);
+     });
+ 
+     it('omite categorías activas sin productos disponibles', async () => {
+@@ -141,6 +160,24 @@ describe('MenuService', () => {
+       const result = await service.findPublicMenu();
+       expect(result).toEqual([]);
+     });
++
++    it('expone solo salsas activas, ordenadas por sortOrder', async () => {
++      const item = seedItem({
++        sauces: [
++          seedSauce({ id: sauceId2, name: 'Ketchup', sortOrder: 2 }),
++          seedSauce({ id: sauceId1, name: 'Mayonesa', sortOrder: 1 }),
++          seedSauce({ id: 'inactiva', name: 'Ají', active: false }),
++        ],
++      });
++      categoriesRepo.find.mockResolvedValue([seedCategory({ items: [item] })]);
++
++      const result = await service.findPublicMenu();
++
++      expect(result[0].items[0].sauces).toEqual([
++        { id: sauceId1, name: 'Mayonesa' },
++        { id: sauceId2, name: 'Ketchup' },
++      ]);
++    });
+   });
+ 
+   describe('createCategory', () => {
+@@ -314,15 +351,65 @@ describe('MenuService', () => {
+         service.createItem({ name: 'Celta', price: 15, categoryId: catId }),
+       ).rejects.toBeInstanceOf(ConflictException);
+     });
++
++    it('asigna las salsas indicadas por sauceIds', async () => {
++      categoriesRepo.findOne.mockResolvedValue(seedCategory());
++      itemsRepo.create.mockImplementation(passthrough);
++      itemsRepo.save.mockImplementation(passthrough);
++      saucesService.findByIds.mockResolvedValue([seedSauce({ id: sauceId1 })]);
++
++      const result = await service.createItem({
++        name: 'Celta',
++        price: 15,
++        categoryId: catId,
++        sauceIds: [sauceId1],
++      });
++
++      expect(saucesService.findByIds).toHaveBeenCalledWith([sauceId1]);
++      expect(result.sauces).toEqual([seedSauce({ id: sauceId1 })]);
++    });
++
++    it('lanza 404 si algún sauceId no existe en el catálogo (propagado de SaucesService)', async () => {
++      categoriesRepo.findOne.mockResolvedValue(seedCategory());
++      itemsRepo.create.mockImplementation(passthrough);
++      saucesService.findByIds.mockRejectedValue(
++        new NotFoundException('Una o más salsas no existen'),
++      );
++
++      await expect(
++        service.createItem({
++          name: 'Celta',
++          price: 15,
++          categoryId: catId,
++          sauceIds: [sauceId1],
++        }),
++      ).rejects.toBeInstanceOf(NotFoundException);
++      expect(itemsRepo.save).not.toHaveBeenCalled();
++    });
++
++    it('producto sin sauceIds (u omitido) queda sin salsas — ej. arroz chaufa', async () => {
++      categoriesRepo.findOne.mockResolvedValue(seedCategory());
++      itemsRepo.create.mockImplementation(passthrough);
++      itemsRepo.save.mockImplementation(passthrough);
++
++      const result = await service.createItem({
++        name: 'Arroz Chaufa',
++        price: 18,
++        categoryId: catId,
++      });
++
++      expect(result.sauces).toBeUndefined();
++      expect(saucesService.findByIds).not.toHaveBeenCalled();
++    });
+   });
+ 
+   describe('findAllItems', () => {
+-    it('devuelve productos con su categoría', async () => {
++    it('devuelve productos con su categoría y sus salsas', async () => {
+       itemsRepo.find.mockResolvedValue([seedItem()]);
+       const result = await service.findAllItems();
+       expect(result).toHaveLength(1);
+       expect(itemsRepo.find).toHaveBeenCalledWith({
+-        relations: { category: true },
++        relations: { category: true, sauces: true },
+         order: { createdAt: 'DESC' },
+       });
+     });
+@@ -367,6 +454,43 @@ describe('MenuService', () => {
+       ).rejects.toBeInstanceOf(NotFoundException);
+       expect(itemsRepo.save).not.toHaveBeenCalled();
+     });
++
++    it('sin sauceIds en el PATCH, deja las salsas ya asignadas intactas', async () => {
++      const existing = seedItem({ sauces: [seedSauce({ id: sauceId1 })] });
++      itemsRepo.findOne.mockResolvedValue(existing);
++      itemsRepo.save.mockImplementation(passthrough);
++
++      const result = await service.updateItem('item-1', { price: 30 });
++      expect(result.sauces).toEqual([seedSauce({ id: sauceId1 })]);
++      expect(saucesService.findByIds).not.toHaveBeenCalled();
++    });
++
++    it('con sauceIds: [] en el PATCH, quita todas las salsas asignadas', async () => {
++      const existing = seedItem({ sauces: [seedSauce({ id: sauceId1 })] });
++      itemsRepo.findOne.mockResolvedValue(existing);
++      itemsRepo.save.mockImplementation(passthrough);
++      saucesService.findByIds.mockResolvedValue([]);
++
++      const result = await service.updateItem('item-1', { sauceIds: [] });
++      expect(saucesService.findByIds).toHaveBeenCalledWith([]);
++      expect(result.sauces).toEqual([]);
++    });
++
++    it('con sauceIds en el PATCH, reemplaza las salsas asignadas', async () => {
++      const existing = seedItem({ sauces: [seedSauce({ id: sauceId1 })] });
++      itemsRepo.findOne.mockResolvedValue(existing);
++      itemsRepo.save.mockImplementation(passthrough);
++      saucesService.findByIds.mockResolvedValue([
++        seedSauce({ id: sauceId2, name: 'Ketchup' }),
++      ]);
++
++      const result = await service.updateItem('item-1', {
++        sauceIds: [sauceId2],
++      });
++      expect(result.sauces).toEqual([
++        seedSauce({ id: sauceId2, name: 'Ketchup' }),
++      ]);
++    });
+   });
+ 
+   describe('removeItem', () => {
+diff --git a/src/modules/menu/menu.service.ts b/src/modules/menu/menu.service.ts
+index 654f809..f584337 100644
+--- a/src/modules/menu/menu.service.ts
++++ b/src/modules/menu/menu.service.ts
+@@ -5,6 +5,7 @@ import {
+ } from '@nestjs/common';
+ import { InjectRepository } from '@nestjs/typeorm';
+ import { QueryFailedError, Repository } from 'typeorm';
++import { SaucesService } from '../sauces/sauces.service';
+ import { CreateCategoryDto } from './dto/create-category.dto';
+ import { CreateMenuItemDto } from './dto/create-menu-item.dto';
+ import { UpdateCategoryDto } from './dto/update-category.dto';
+@@ -23,6 +24,7 @@ export interface PublicMenuCategory {
+     description: string | null;
+     price: number;
+     image: string | null;
++    sauces: { id: string; name: string }[];
+   }[];
+ }
+ 
+@@ -39,16 +41,18 @@ export class MenuService {
+     private readonly categoriesRepository: Repository<Category>,
+     @InjectRepository(MenuItem)
+     private readonly itemsRepository: Repository<MenuItem>,
++    private readonly saucesService: SaucesService,
+   ) {}
+ 
+   /**
+    * Menú optimizado para la app: categorías activas, ordenadas por sortOrder, que
+    * contienen al menos un producto disponible. Los productos no disponibles se omiten.
++   * Cada producto incluye sus salsas activas (id+name); vacío = sin selector en la app.
+    */
+   async findPublicMenu(): Promise<PublicMenuCategory[]> {
+     const categories = await this.categoriesRepository.find({
+       where: { active: true },
+-      relations: { items: true },
++      relations: { items: { sauces: true } },
+       order: { sortOrder: 'ASC', name: 'ASC' },
+     });
+ 
+@@ -59,12 +63,24 @@ export class MenuService {
+         description: category.description,
+         items: category.items
+           .filter((item) => item.available)
+-          .map(({ id, name, description, price, image }) => ({
++          .map(({ id, name, description, price, image, sauces }) => ({
+             id,
+             name,
+             description,
+             price,
+             image,
++            // Solo salsas activas: una desactivada sigue asignada al producto (el
++            // admin no pierde la relación) pero deja de ofrecerse en la app.
++            sauces: (sauces ?? [])
++              .filter((sauce) => sauce.active)
++              .sort(
++                (a, b) =>
++                  a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
++              )
++              .map(({ id: sauceId, name: sauceName }) => ({
++                id: sauceId,
++                name: sauceName,
++              })),
+           }))
+           .sort((a, b) => a.name.localeCompare(b.name)),
+       }))
+@@ -128,7 +144,13 @@ export class MenuService {
+ 
+   async createItem(dto: CreateMenuItemDto): Promise<MenuItem> {
+     await this.ensureCategory(dto.categoryId);
+-    const item = this.itemsRepository.create(dto);
++    // sauceIds no es una columna propia de MenuItem (es la relación ManyToMany):
++    // se separa del resto del DTO antes de `create` y se resuelve aparte.
++    const { sauceIds, ...rest } = dto;
++    const item = this.itemsRepository.create(rest);
++    if (sauceIds !== undefined) {
++      item.sauces = await this.saucesService.findByIds(sauceIds);
++    }
+     return this.runSaveWithUniqueFallback(
+       this.itemsRepository.save(item),
+       'Ya existe un producto con ese nombre',
+@@ -137,7 +159,7 @@ export class MenuService {
+ 
+   async findAllItems(): Promise<MenuItem[]> {
+     return this.itemsRepository.find({
+-      relations: { category: true },
++      relations: { category: true, sauces: true },
+       order: { createdAt: 'DESC' },
+     });
+   }
+@@ -145,7 +167,7 @@ export class MenuService {
+   async updateItem(id: string, dto: UpdateMenuItemDto): Promise<MenuItem> {
+     const item = await this.itemsRepository.findOne({
+       where: { id },
+-      relations: { category: true },
++      relations: { category: true, sauces: true },
+     });
+     if (!item) {
+       throw new NotFoundException('Producto no encontrado');
+@@ -153,10 +175,18 @@ export class MenuService {
+     if (dto.categoryId !== undefined) {
+       await this.ensureCategory(dto.categoryId);
+     }
++    const { sauceIds, ...rest } = dto;
+     // merge (no Object.assign): solo aplica los campos definidos del DTO. Con
+     // Object.assign, los campos ausentes del PATCH (undefined) pisaban los valores
+     // ya cargados de la entidad y la respuesta salía incompleta.
+-    this.itemsRepository.merge(item, dto);
++    this.itemsRepository.merge(item, rest);
++    // La relación ManyToMany no la toca `merge` (no es una columna): se actualiza
++    // aparte, y SOLO si el PATCH la incluyó explícitamente — omitirla deja las
++    // salsas ya asignadas intactas (mismo criterio "guard explícito" que el resto
++    // del proyecto para campos que `merge` no puede cubrir).
++    if (sauceIds !== undefined) {
++      item.sauces = await this.saucesService.findByIds(sauceIds);
++    }
+     return this.runSaveWithUniqueFallback(
+       this.itemsRepository.save(item),
+       'Ya existe un producto con ese nombre',
+diff --git a/src/modules/orders/dto/create-order.dto.ts b/src/modules/orders/dto/create-order.dto.ts
+index 8579656..63da323 100644
+--- a/src/modules/orders/dto/create-order.dto.ts
++++ b/src/modules/orders/dto/create-order.dto.ts
+@@ -26,6 +26,17 @@ export class CreateOrderItemDto {
+   @Min(1, { message: 'La cantidad mínima es 1' })
+   @Max(99, { message: 'La cantidad máxima por producto es 99' })
+   quantity: number;
++
++  @ApiPropertyOptional({
++    type: [String],
++    example: ['3fa85f64-5717-4562-b3fc-2c963f66afa6'],
++    description:
++      'UUIDs de las salsas elegidas para este ítem (deben estar entre las que el producto ofrece; se aplican a las `quantity` unidades del ítem, no una selección por unidad individual). Omitido o vacío = sin salsas.',
++  })
++  @IsOptional()
++  @IsArray({ message: 'sauceIds debe ser una lista' })
++  @IsUUID('4', { each: true, message: 'Cada sauceId debe ser un UUID válido' })
++  sauceIds?: string[];
+ }
+ 
+ /**
+diff --git a/src/modules/orders/entities/order-item.entity.ts b/src/modules/orders/entities/order-item.entity.ts
+index 067f669..4ab30ba 100644
+--- a/src/modules/orders/entities/order-item.entity.ts
++++ b/src/modules/orders/entities/order-item.entity.ts
+@@ -55,6 +55,15 @@ export class OrderItem {
+   @Column({ type: 'int' })
+   quantity: number;
+ 
++  /**
++   * Nombres de las salsas/cremas elegidas, copiados al crear el pedido (snapshot,
++   * mismo criterio que `name`/`unitPrice`: borrar o renombrar una salsa del catálogo
++   * después nunca altera este historial). `null` = producto sin salsas ofrecidas o
++   * el cliente no eligió ninguna.
++   */
++  @Column({ type: 'text', array: true, nullable: true })
++  selectedSauces: string[] | null;
++
+   /** unitPrice * quantity, calculado en el backend. */
+   @Column({
+     type: 'decimal',
+diff --git a/src/modules/orders/orders.service.spec.ts b/src/modules/orders/orders.service.spec.ts
+index 183db9b..e0b9985 100644
+--- a/src/modules/orders/orders.service.spec.ts
++++ b/src/modules/orders/orders.service.spec.ts
+@@ -49,13 +49,22 @@ describe('OrdersService', () => {
+   const addressId = '11111111-1111-4111-8111-111111111111';
+   const menuItemId = '22222222-2222-4222-8222-222222222222';
+ 
+-  const menuMenuItem = (overrides: Partial<MenuItem> = {}) =>
++  /** Referencia mínima de una salsa ofrecida por un producto (solo lo que el service lee). */
++  const sauceRef = (id: string, name: string) =>
++    ({ id, name }) as MenuItem['sauces'][number];
++
++  const menuMenuItem = (
++    overrides: Partial<Omit<MenuItem, 'sauces'>> & {
++      sauces?: { id: string; name: string }[];
++    } = {},
++  ) =>
+     ({
+       id: menuItemId,
+       name: 'Celtas Clásica',
+       price: 24.9,
+       available: true,
+       ...overrides,
++      sauces: overrides.sauces?.map((s) => sauceRef(s.id, s.name)),
+     }) as MenuItem;
+ 
+   const seedAddress = (overrides: Partial<Address> = {}) =>
+@@ -243,9 +252,11 @@ describe('OrdersService', () => {
+       // Se verifican las partes clave por separado (no un string exacto completo):
+       // un cambio menor de formato del mensaje (agregar un emoji, un salto de
+       // línea) no debe romper todo el test, solo la parte que realmente cambió.
+-      expect(result.whatsappUrl).toMatch(/^https:\/\/wa\.me\/51999999999\?text=/);
++      expect(result.whatsappUrl).toMatch(
++        /^https:\/\/wa\.me\/51999999999\?text=/,
++      );
+       const message = decodeURIComponent(
+-        result.whatsappUrl!.replace('https://wa.me/51999999999?text=', ''),
++        result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
+       );
+       expect(message).toContain(
+         `NUEVO PEDIDO #${result.id.slice(0, 8).toUpperCase()}`,
+@@ -257,6 +268,82 @@ describe('OrdersService', () => {
+       expect(message).toContain('Total a pagar:* S/ 49.80');
+     });
+ 
++    it('valida y guarda el snapshot de salsas elegidas (sauceIds)', async () => {
++      addressesRepo.findOne.mockResolvedValue(seedAddress());
++      menuItemsRepo.find.mockResolvedValue([
++        menuMenuItem({
++          sauces: [
++            { id: 'sauce-mayo', name: 'Mayonesa' },
++            { id: 'sauce-ketchup', name: 'Ketchup' },
++          ],
++        }),
++      ]);
++
++      const result = await service.create(userId, {
++        addressId,
++        items: [
++          {
++            menuItemId,
++            quantity: 2,
++            sauceIds: ['sauce-mayo', 'sauce-ketchup'],
++          },
++        ],
++      });
++
++      expect(result.items[0].selectedSauces).toEqual(['Mayonesa', 'Ketchup']);
++    });
++
++    it('sin sauceIds, el snapshot queda null (no falla ni inventa salsas)', async () => {
++      addressesRepo.findOne.mockResolvedValue(seedAddress());
++      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
++
++      const result = await service.create(userId, { ...dto, addressId });
++      expect(result.items[0].selectedSauces).toBeNull();
++    });
++
++    it('lanza 400 si el sauceId no está entre las salsas que el producto ofrece', async () => {
++      addressesRepo.findOne.mockResolvedValue(seedAddress());
++      menuItemsRepo.find.mockResolvedValue([
++        menuMenuItem({ sauces: [{ id: 'sauce-mayo', name: 'Mayonesa' }] }),
++      ]);
++
++      await expect(
++        service.create(userId, {
++          addressId,
++          items: [{ menuItemId, quantity: 1, sauceIds: ['sauce-inexistente'] }],
++        }),
++      ).rejects.toBeInstanceOf(BadRequestException);
++    });
++
++    it('el mensaje de WhatsApp incluye las salsas elegidas por ítem', async () => {
++      addressesRepo.findOne.mockResolvedValue(seedAddress());
++      menuItemsRepo.find.mockResolvedValue([
++        menuMenuItem({ sauces: [{ id: 'sauce-mayo', name: 'Mayonesa' }] }),
++      ]);
++
++      const result = await service.create(userId, {
++        addressId,
++        items: [{ menuItemId, quantity: 1, sauceIds: ['sauce-mayo'] }],
++      });
++
++      const message = decodeURIComponent(
++        result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
++      );
++      expect(message).toContain('1x Celtas Clásica (Salsas: Mayonesa)');
++    });
++
++    it('el mensaje de WhatsApp no agrega "(Salsas: ...)" si el ítem no tiene ninguna', async () => {
++      addressesRepo.findOne.mockResolvedValue(seedAddress());
++      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
++
++      const result = await service.create(userId, { ...dto, addressId });
++      const message = decodeURIComponent(
++        result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
++      );
++      expect(message).toContain('2x Celtas Clásica');
++      expect(message).not.toContain('Salsas:');
++    });
++
+     it('aplica el cupón y guarda el total descontado', async () => {
+       addressesRepo.findOne.mockResolvedValue(seedAddress());
+       menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+diff --git a/src/modules/orders/orders.service.ts b/src/modules/orders/orders.service.ts
+index 5d29f1d..a42e4cd 100644
+--- a/src/modules/orders/orders.service.ts
++++ b/src/modules/orders/orders.service.ts
+@@ -83,8 +83,8 @@ export class OrdersService {
+     return this.dataSource.transaction(async (manager) => {
+       let total = subtotal;
+       let coupon:
+-        | Awaited<ReturnType<CouponsService['applyToOrder']>>['coupon']
+-        | null = null;
++        Awaited<ReturnType<CouponsService['applyToOrder']>>['coupon'] | null =
++        null;
+       if (dto.couponCode) {
+         const applied = await this.couponsService.applyToOrder(manager, {
+           code: dto.couponCode,
+@@ -311,6 +311,7 @@ export class OrdersService {
+     const ids = items.map((item) => item.menuItemId);
+     const menuItems = await this.menuItemsRepository.find({
+       where: { id: In(ids) },
++      relations: { sauces: true },
+     });
+     const byId = new Map(menuItems.map((menuItem) => [menuItem.id, menuItem]));
+ 
+@@ -327,6 +328,7 @@ export class OrdersService {
+           `El producto "${menuItem.name}" no está disponible`,
+         );
+       }
++      const selectedSauces = this.resolveSelectedSauces(menuItem, item);
+       const subtotal = this.round2(menuItem.price * item.quantity);
+       result.push(
+         this.orderItemsRepository.create({
+@@ -335,16 +337,49 @@ export class OrdersService {
+           unitPrice: menuItem.price,
+           quantity: item.quantity,
+           subtotal,
++          selectedSauces,
+         }),
+       );
+     }
+     return result;
+   }
+ 
++  /**
++   * Valida `sauceIds` contra las salsas que el producto realmente ofrece (400 si el
++   * cliente manda una que no está en su lista) y devuelve el SNAPSHOT de nombres a
++   * guardar en el OrderItem. `null` si no se mandó nada o la lista vino vacía.
++   */
++  private resolveSelectedSauces(
++    menuItem: MenuItem,
++    item: CreateOrderItemDto,
++  ): string[] | null {
++    if (!item.sauceIds || item.sauceIds.length === 0) {
++      return null;
++    }
++    const offeredById = new Map(
++      (menuItem.sauces ?? []).map((sauce) => [sauce.id, sauce.name]),
++    );
++    const names: string[] = [];
++    for (const sauceId of item.sauceIds) {
++      const name = offeredById.get(sauceId);
++      if (!name) {
++        throw new BadRequestException(
++          `El producto "${menuItem.name}" no ofrece la salsa seleccionada`,
++        );
++      }
++      names.push(name);
++    }
++    return names;
++  }
++
+   /** Link de WhatsApp: https://wa.me/<número>?text=<mensaje codificado>. */
+   private async buildWhatsappUrl(
+     orderId: string,
+-    items: { name: string; quantity: number }[],
++    items: {
++      name: string;
++      quantity: number;
++      selectedSauces: string[] | null;
++    }[],
+     total: number,
+     addressSnapshot: string,
+   ): Promise<string> {
+@@ -352,15 +387,18 @@ export class OrdersService {
+     // está vacía, SettingsService cae al valor de .env y loguea un warning.
+     const number = await this.settingsService.getWhatsappNumber();
+     const itemsText = items
+-      .map((item) => `${item.quantity}x ${item.name}`)
+-      .join(', ');
++      .map((item) => {
++        const sauces =
++          item.selectedSauces && item.selectedSauces.length > 0
++            ? ` (Salsas: ${item.selectedSauces.join(', ')})`
++            : '';
++        return `  • ${item.quantity}x ${item.name}${sauces}`;
++      })
++      .join('\n');
+     const message = `📌 *NUEVO PEDIDO #${orderId.slice(0, 8).toUpperCase()}*
+ 
+ 🛒 *Detalle:*
+-${itemsText
+-  .split(', ')
+-  .map((item) => `  • ${item}`)
+-  .join('\n')}
++${itemsText}
+ 
+ 📍 *Dirección de entrega:*
+   ${this.readableAddress(addressSnapshot)}
+diff --git a/src/modules/sauces/dto/create-sauce.dto.ts b/src/modules/sauces/dto/create-sauce.dto.ts
+new file mode 100644
+index 0000000..ae92036
+--- /dev/null
++++ b/src/modules/sauces/dto/create-sauce.dto.ts
+@@ -0,0 +1,37 @@
++import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
++import {
++  IsBoolean,
++  IsInt,
++  IsNotEmpty,
++  IsOptional,
++  IsString,
++  Min,
++} from 'class-validator';
++
++export class CreateSauceDto {
++  @ApiProperty({
++    example: 'Mayonesa',
++    description: 'Nombre de la salsa/crema',
++  })
++  @IsString({ message: 'El nombre debe ser texto' })
++  @IsNotEmpty({ message: 'El nombre es obligatorio' })
++  name: string;
++
++  @ApiPropertyOptional({
++    example: true,
++    description:
++      'Si la salsa está disponible para asignarse a productos (default true)',
++  })
++  @IsOptional()
++  @IsBoolean({ message: 'active debe ser true o false' })
++  active?: boolean;
++
++  @ApiPropertyOptional({
++    example: 1,
++    description: 'Orden de aparición en el selector (menor = primero)',
++  })
++  @IsOptional()
++  @IsInt({ message: 'sortOrder debe ser un número entero' })
++  @Min(0, { message: 'sortOrder no puede ser negativo' })
++  sortOrder?: number;
++}
+diff --git a/src/modules/sauces/dto/update-sauce.dto.ts b/src/modules/sauces/dto/update-sauce.dto.ts
+new file mode 100644
+index 0000000..b8e6986
+--- /dev/null
++++ b/src/modules/sauces/dto/update-sauce.dto.ts
+@@ -0,0 +1,4 @@
++import { PartialType } from '@nestjs/swagger';
++import { CreateSauceDto } from './create-sauce.dto';
++
++export class UpdateSauceDto extends PartialType(CreateSauceDto) {}
+diff --git a/src/modules/sauces/entities/sauce.entity.ts b/src/modules/sauces/entities/sauce.entity.ts
+new file mode 100644
+index 0000000..cd3d2f1
+--- /dev/null
++++ b/src/modules/sauces/entities/sauce.entity.ts
+@@ -0,0 +1,47 @@
++import {
++  Column,
++  CreateDateColumn,
++  Entity,
++  ManyToMany,
++  PrimaryGeneratedColumn,
++  UpdateDateColumn,
++} from 'typeorm';
++import { MenuItem } from '../../menu/entities/menu-item.entity';
++
++/**
++ * Catálogo global de salsas/cremas (ej. Mayonesa, Mostaza, Ketchup). Un producto del
++ * menú ofrece un subconjunto de este catálogo (relación ManyToMany vía `menu_item_sauces`,
++ * ver MenuItem.sauces) — productos que no lo necesitan (ej. arroz chaufa) simplemente no
++ * tienen ninguna asociada, y la app no muestra el selector para ellos.
++ *
++ * La elección real de un pedido NO referencia esta tabla en vivo: `OrderItem.selectedSauces`
++ * guarda los NOMBRES elegidos como snapshot al momento del pedido (mismo criterio que
++ * `OrderItem.name`/`unitPrice`), así que borrar o renombrar una salsa acá nunca altera el
++ * historial de pedidos ya creados.
++ */
++@Entity('sauces')
++export class Sauce {
++  @PrimaryGeneratedColumn('uuid')
++  id: string;
++
++  /** Nombre visible (ej. Mayonesa, Mostaza, Ketchup, Ají). */
++  @Column({ type: 'varchar', unique: true })
++  name: string;
++
++  /** Si la salsa está disponible para asignarse a productos (ocultarla no la borra). */
++  @Column({ type: 'boolean', default: true })
++  active: boolean;
++
++  /** Orden de aparición en el selector (menor = primero). */
++  @Column({ name: 'sort_order', type: 'int', default: 0 })
++  sortOrder: number;
++
++  @ManyToMany(() => MenuItem, (menuItem) => menuItem.sauces)
++  menuItems: MenuItem[];
++
++  @CreateDateColumn()
++  createdAt: Date;
++
++  @UpdateDateColumn()
++  updatedAt: Date;
++}
+diff --git a/src/modules/sauces/sauces.controller.ts b/src/modules/sauces/sauces.controller.ts
+new file mode 100644
+index 0000000..ff3d619
+--- /dev/null
++++ b/src/modules/sauces/sauces.controller.ts
+@@ -0,0 +1,94 @@
++import {
++  Body,
++  Controller,
++  Delete,
++  Get,
++  Param,
++  ParseUUIDPipe,
++  Patch,
++  Post,
++  UseGuards,
++} from '@nestjs/common';
++import {
++  ApiBearerAuth,
++  ApiOperation,
++  ApiParam,
++  ApiResponse,
++  ApiTags,
++} from '@nestjs/swagger';
++import { Roles } from '../../common/decorators/roles.decorator';
++import { RolesGuard } from '../../common/guards/roles.guard';
++import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
++import { UserRole } from '../users/entities/user.entity';
++import { CreateSauceDto } from './dto/create-sauce.dto';
++import { UpdateSauceDto } from './dto/update-sauce.dto';
++import { SaucesService } from './sauces.service';
++
++/**
++ * Catálogo de salsas/cremas, gestionado solo por admin. La app cliente NO consume
++ * este endpoint directamente: recibe las salsas de cada producto embebidas en la
++ * respuesta de `GET /menu` (ver MenuService.findPublicMenu), consistente con el
++ * patrón ya usado para categorías/productos.
++ */
++@ApiTags('sauces')
++@Controller('sauces')
++@UseGuards(JwtAuthGuard, RolesGuard)
++@Roles(UserRole.ADMIN)
++@ApiBearerAuth()
++export class SaucesController {
++  constructor(private readonly saucesService: SaucesService) {}
++
++  @Get()
++  @ApiOperation({ summary: 'Listar todas las salsas del catálogo (admin)' })
++  @ApiResponse({ status: 200, description: 'Lista de salsas' })
++  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
++  @ApiResponse({ status: 403, description: 'Requiere rol admin' })
++  findAll() {
++    return this.saucesService.findAll();
++  }
++
++  @Post()
++  @ApiOperation({ summary: 'Crear una salsa en el catálogo (admin)' })
++  @ApiResponse({ status: 201, description: 'Salsa creada' })
++  @ApiResponse({ status: 400, description: 'Payload inválido' })
++  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
++  @ApiResponse({ status: 403, description: 'Requiere rol admin' })
++  @ApiResponse({
++    status: 409,
++    description: 'Ya existe una salsa con ese nombre',
++  })
++  create(@Body() dto: CreateSauceDto) {
++    return this.saucesService.create(dto);
++  }
++
++  @Patch(':id')
++  @ApiOperation({ summary: 'Editar una salsa del catálogo (admin)' })
++  @ApiParam({ name: 'id', description: 'UUID de la salsa' })
++  @ApiResponse({ status: 200, description: 'Salsa actualizada' })
++  @ApiResponse({ status: 400, description: 'Payload inválido' })
++  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
++  @ApiResponse({ status: 403, description: 'Requiere rol admin' })
++  @ApiResponse({ status: 404, description: 'La salsa no existe' })
++  @ApiResponse({
++    status: 409,
++    description: 'Ya existe otra salsa con ese nombre',
++  })
++  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateSauceDto) {
++    return this.saucesService.update(id, dto);
++  }
++
++  @Delete(':id')
++  @ApiOperation({
++    summary: 'Eliminar una salsa del catálogo (admin)',
++    description:
++      'No afecta pedidos ya creados (guardan un snapshot de texto); solo la quita de la oferta futura de los productos que la tenían asignada.',
++  })
++  @ApiParam({ name: 'id', description: 'UUID de la salsa' })
++  @ApiResponse({ status: 200, description: 'Salsa eliminada' })
++  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
++  @ApiResponse({ status: 403, description: 'Requiere rol admin' })
++  @ApiResponse({ status: 404, description: 'La salsa no existe' })
++  remove(@Param('id', ParseUUIDPipe) id: string) {
++    return this.saucesService.remove(id);
++  }
++}
+diff --git a/src/modules/sauces/sauces.module.ts b/src/modules/sauces/sauces.module.ts
+new file mode 100644
+index 0000000..05cea89
+--- /dev/null
++++ b/src/modules/sauces/sauces.module.ts
+@@ -0,0 +1,13 @@
++import { Module } from '@nestjs/common';
++import { TypeOrmModule } from '@nestjs/typeorm';
++import { Sauce } from './entities/sauce.entity';
++import { SaucesController } from './sauces.controller';
++import { SaucesService } from './sauces.service';
++
++@Module({
++  imports: [TypeOrmModule.forFeature([Sauce])],
++  controllers: [SaucesController],
++  providers: [SaucesService],
++  exports: [SaucesService],
++})
++export class SaucesModule {}
+diff --git a/src/modules/sauces/sauces.service.spec.ts b/src/modules/sauces/sauces.service.spec.ts
+new file mode 100644
+index 0000000..8a1b81e
+--- /dev/null
++++ b/src/modules/sauces/sauces.service.spec.ts
+@@ -0,0 +1,209 @@
++import { ConflictException, NotFoundException } from '@nestjs/common';
++import { Test, TestingModule } from '@nestjs/testing';
++import { getRepositoryToken } from '@nestjs/typeorm';
++import { QueryFailedError } from 'typeorm';
++import { Sauce } from './entities/sauce.entity';
++import { SaucesService } from './sauces.service';
++
++/** Mock de repositorio: devuelve el mismo objeto que recibe (identity tipado). */
++const passthrough = <T>(value: T): T => value;
++
++/** Construye un QueryFailedError de Postgres con SQLSTATE 23505 (unique_violation). */
++const uniqueViolationError = (): QueryFailedError => {
++  const driverError = new Error(
++    'duplicate key value violates unique constraint "UQ_sauces_name"',
++  );
++  (driverError as { code?: string }).code = '23505';
++  return new QueryFailedError('INSERT INTO sauces ...', [], driverError);
++};
++
++/** Replica Repository.merge de TypeORM: solo copia las propiedades definidas. */
++const mergeImplementation = <T extends object>(target: T, dto: object) => {
++  for (const key of Object.keys(dto)) {
++    const value = (dto as Record<string, unknown>)[key];
++    if (value !== undefined) {
++      (target as Record<string, unknown>)[key] = value;
++    }
++  }
++  return target;
++};
++
++describe('SaucesService', () => {
++  let service: SaucesService;
++  let saucesRepo: {
++    find: jest.Mock;
++    findOne: jest.Mock;
++    findBy: jest.Mock;
++    create: jest.Mock;
++    merge: jest.Mock;
++    save: jest.Mock;
++    remove: jest.Mock;
++    manager: { query: jest.Mock };
++  };
++
++  const sauceId = '11111111-1111-1111-1111-111111111111';
++  const otherId = '22222222-2222-2222-2222-222222222222';
++
++  const seedSauce = (overrides: Partial<Sauce> = {}) =>
++    ({
++      id: sauceId,
++      name: 'Mayonesa',
++      active: true,
++      sortOrder: 0,
++      ...overrides,
++    }) as Sauce;
++
++  beforeEach(async () => {
++    saucesRepo = {
++      find: jest.fn(),
++      findOne: jest.fn(),
++      findBy: jest.fn(),
++      create: jest.fn(),
++      merge: jest.fn(mergeImplementation),
++      save: jest.fn(),
++      remove: jest.fn(),
++      manager: { query: jest.fn().mockResolvedValue(undefined) },
++    };
++    const module: TestingModule = await Test.createTestingModule({
++      providers: [
++        SaucesService,
++        { provide: getRepositoryToken(Sauce), useValue: saucesRepo },
++      ],
++    }).compile();
++
++    service = module.get(SaucesService);
++  });
++
++  describe('create', () => {
++    it('crea y guarda la salsa con el dto', async () => {
++      const dto = { name: 'Mostaza' };
++      saucesRepo.create.mockImplementation(passthrough);
++      saucesRepo.save.mockImplementation(passthrough);
++      const result = await service.create(dto);
++      expect(saucesRepo.save).toHaveBeenCalledWith(dto);
++      expect(result).toEqual(dto);
++    });
++
++    it('lanza 409 si ya existe una salsa con ese nombre', async () => {
++      saucesRepo.findOne.mockResolvedValue(seedSauce({ name: 'Mostaza' }));
++      await expect(service.create({ name: 'Mostaza' })).rejects.toBeInstanceOf(
++        ConflictException,
++      );
++      expect(saucesRepo.save).not.toHaveBeenCalled();
++    });
++
++    it('convierte una violación UNIQUE de la BD (23505) en 409 (fallback de concurrencia)', async () => {
++      saucesRepo.findOne.mockResolvedValue(null);
++      saucesRepo.create.mockImplementation(passthrough);
++      saucesRepo.save.mockRejectedValue(uniqueViolationError());
++
++      await expect(service.create({ name: 'Mostaza' })).rejects.toBeInstanceOf(
++        ConflictException,
++      );
++    });
++  });
++
++  describe('findAll', () => {
++    it('devuelve todas las salsas ordenadas por sortOrder', async () => {
++      saucesRepo.find.mockResolvedValue([seedSauce()]);
++      const result = await service.findAll();
++      expect(result).toHaveLength(1);
++      expect(saucesRepo.find).toHaveBeenCalledWith({
++        order: { sortOrder: 'ASC', name: 'ASC' },
++      });
++    });
++  });
++
++  describe('update', () => {
++    it('actualiza los campos recibidos', async () => {
++      const existing = seedSauce();
++      saucesRepo.findOne.mockResolvedValue(existing);
++      saucesRepo.save.mockImplementation(passthrough);
++
++      const result = await service.update(sauceId, { active: false });
++      expect(result.active).toBe(false);
++      expect(saucesRepo.save).toHaveBeenCalledWith(existing);
++    });
++
++    it('lanza 404 si la salsa no existe', async () => {
++      saucesRepo.findOne.mockResolvedValue(null);
++      await expect(
++        service.update(sauceId, { name: 'X' }),
++      ).rejects.toBeInstanceOf(NotFoundException);
++      expect(saucesRepo.save).not.toHaveBeenCalled();
++    });
++
++    it('lanza 409 si se renombra a un nombre ya usado por otra salsa', async () => {
++      saucesRepo.findOne.mockResolvedValueOnce(seedSauce());
++      saucesRepo.findOne.mockResolvedValueOnce(
++        seedSauce({ id: otherId, name: 'Ketchup' }),
++      );
++      await expect(
++        service.update(sauceId, { name: 'Ketchup' }),
++      ).rejects.toBeInstanceOf(ConflictException);
++      expect(saucesRepo.save).not.toHaveBeenCalled();
++    });
++
++    it('permite conservar el mismo nombre (no se considera duplicado)', async () => {
++      const existing = seedSauce({ name: 'Mayonesa' });
++      saucesRepo.findOne.mockResolvedValue(existing);
++      saucesRepo.save.mockImplementation(passthrough);
++
++      const result = await service.update(sauceId, { name: 'Mayonesa' });
++      expect(result.name).toBe('Mayonesa');
++      expect(saucesRepo.save).toHaveBeenCalled();
++    });
++  });
++
++  describe('remove', () => {
++    it('lanza 404 si la salsa no existe', async () => {
++      saucesRepo.findOne.mockResolvedValue(null);
++      await expect(service.remove(sauceId)).rejects.toBeInstanceOf(
++        NotFoundException,
++      );
++      expect(saucesRepo.remove).not.toHaveBeenCalled();
++    });
++
++    it('elimina la salsa sin bloquear por uso (catálogo de etiquetas, no FK de historial)', async () => {
++      const existing = seedSauce();
++      saucesRepo.findOne.mockResolvedValue(existing);
++      saucesRepo.remove.mockResolvedValue(existing);
++
++      await service.remove(sauceId);
++      expect(saucesRepo.remove).toHaveBeenCalledWith(existing);
++    });
++
++    it('limpia primero la relación en menu_item_sauces (la FK de sauceId no cascadea sola)', async () => {
++      const existing = seedSauce();
++      saucesRepo.findOne.mockResolvedValue(existing);
++      saucesRepo.remove.mockResolvedValue(existing);
++
++      await service.remove(sauceId);
++      expect(saucesRepo.manager.query).toHaveBeenCalledWith(
++        'DELETE FROM menu_item_sauces WHERE "sauceId" = $1',
++        [sauceId],
++      );
++    });
++  });
++
++  describe('findByIds', () => {
++    it('devuelve array vacío sin consultar la BD si no se pasan ids', async () => {
++      const result = await service.findByIds([]);
++      expect(result).toEqual([]);
++      expect(saucesRepo.findBy).not.toHaveBeenCalled();
++    });
++
++    it('lanza 404 si algún id no existe', async () => {
++      saucesRepo.findBy.mockResolvedValue([seedSauce()]);
++      await expect(
++        service.findByIds([sauceId, otherId]),
++      ).rejects.toBeInstanceOf(NotFoundException);
++    });
++
++    it('devuelve las entidades si todos los ids existen', async () => {
++      saucesRepo.findBy.mockResolvedValue([seedSauce()]);
++      const result = await service.findByIds([sauceId]);
++      expect(result).toEqual([seedSauce()]);
++    });
++  });
++});
+diff --git a/src/modules/sauces/sauces.service.ts b/src/modules/sauces/sauces.service.ts
+new file mode 100644
+index 0000000..4c43e1f
+--- /dev/null
++++ b/src/modules/sauces/sauces.service.ts
+@@ -0,0 +1,123 @@
++import {
++  ConflictException,
++  Injectable,
++  NotFoundException,
++} from '@nestjs/common';
++import { InjectRepository } from '@nestjs/typeorm';
++import { In, QueryFailedError, Repository } from 'typeorm';
++import { CreateSauceDto } from './dto/create-sauce.dto';
++import { UpdateSauceDto } from './dto/update-sauce.dto';
++import { Sauce } from './entities/sauce.entity';
++
++/**
++ * Catálogo de salsas/cremas (admin). Sin dependencia de MenuItem: el borrado o
++ * renombrado de una salsa nunca toca pedidos ya creados (esos guardan un snapshot
++ * de texto en `OrderItem.selectedSauces`, ver skill nestjs-celtas).
++ */
++@Injectable()
++export class SaucesService {
++  constructor(
++    @InjectRepository(Sauce)
++    private readonly saucesRepository: Repository<Sauce>,
++  ) {}
++
++  async create(dto: CreateSauceDto): Promise<Sauce> {
++    await this.ensureNameAvailable(dto.name);
++    const sauce = this.saucesRepository.create(dto);
++    return this.runSaveWithUniqueFallback(
++      this.saucesRepository.save(sauce),
++      'Ya existe una salsa con ese nombre',
++    );
++  }
++
++  async findAll(): Promise<Sauce[]> {
++    return this.saucesRepository.find({
++      order: { sortOrder: 'ASC', name: 'ASC' },
++    });
++  }
++
++  async update(id: string, dto: UpdateSauceDto): Promise<Sauce> {
++    const sauce = await this.saucesRepository.findOne({ where: { id } });
++    if (!sauce) {
++      throw new NotFoundException('Salsa no encontrada');
++    }
++    if (dto.name !== undefined && dto.name !== sauce.name) {
++      await this.ensureNameAvailable(dto.name, id);
++    }
++    // merge (no Object.assign): mismo criterio que el resto del proyecto — solo
++    // aplica los campos definidos del DTO, sin pisar con undefined los ya cargados.
++    this.saucesRepository.merge(sauce, dto);
++    return this.runSaveWithUniqueFallback(
++      this.saucesRepository.save(sauce),
++      'Ya existe una salsa con ese nombre',
++    );
++  }
++
++  async remove(id: string): Promise<void> {
++    const sauce = await this.saucesRepository.findOne({ where: { id } });
++    if (!sauce) {
++      throw new NotFoundException('Salsa no encontrada');
++    }
++    // Sin bloqueo por uso: es un catálogo de etiquetas, no una FK con historial —
++    // los pedidos ya creados guardan el nombre como snapshot (OrderItem.selectedSauces),
++    // así que borrarla solo la quita de la oferta futura de los productos que la tenían.
++    //
++    // La FK de `menu_item_sauces.sauceId` quedó en ON DELETE NO ACTION (default de
++    // TypeORM para el lado inverso de un ManyToMany con @JoinTable — solo el lado
++    // dueño, menuItemId, cascadea; ver migración AddSaucesCatalog). Confirmado contra
++    // el schema real: sin este borrado explícito, eliminar una salsa todavía asignada
++    // a algún producto revienta con un 500 (violación de FK) en vez de simplemente
++    // quitarla de la oferta futura. Se limpia la relación primero, en la misma
++    // operación lógica.
++    await this.saucesRepository.manager.query(
++      'DELETE FROM menu_item_sauces WHERE "sauceId" = $1',
++      [id],
++    );
++    await this.saucesRepository.remove(sauce);
++  }
++
++  /** Resuelve una lista de UUIDs a entidades Sauce reales; 404 si alguno no existe. */
++  async findByIds(ids: string[]): Promise<Sauce[]> {
++    if (ids.length === 0) {
++      return [];
++    }
++    const sauces = await this.saucesRepository.findBy({
++      id: In(ids),
++    });
++    if (sauces.length !== new Set(ids).size) {
++      throw new NotFoundException('Una o más salsas no existen');
++    }
++    return sauces;
++  }
++
++  private async ensureNameAvailable(
++    name: string,
++    exceptId?: string,
++  ): Promise<void> {
++    const existing = await this.saucesRepository.findOne({ where: { name } });
++    if (existing && existing.id !== exceptId) {
++      throw new ConflictException('Ya existe una salsa con ese nombre');
++    }
++  }
++
++  private async runSaveWithUniqueFallback<T>(
++    savePromise: Promise<T>,
++    message: string,
++  ): Promise<T> {
++    try {
++      return await savePromise;
++    } catch (error) {
++      if (this.isUniqueViolation(error)) {
++        throw new ConflictException(message);
++      }
++      throw error;
++    }
++  }
++
++  private isUniqueViolation(error: unknown): boolean {
++    return (
++      error instanceof QueryFailedError &&
++      (error.driverError as { code?: string })?.code === '23505'
++    );
++  }
++}
+-- 
+2.43.0
+

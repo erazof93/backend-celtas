@@ -134,6 +134,52 @@ cuando pasa lo aplicable de este checklist.
 - [ ] Pase real de `@tester` (independiente, con mutación de al menos un fix para confirmar que
       los tests nuevos realmente fallan sin él — mismo patrón que el resto del proyecto)
 
+### Refinamiento: tri-state real de `sauceIds` (`undefined` vs `[]` vs con ids)
+
+> Pedido explícito del dueño del negocio: antes, `sauceIds` no enviado y `sauceIds: []` enviado
+> explícito colapsaban al mismo `selectedSauces: null` — no se podía distinguir "el producto no
+> ofrece salsas / el cliente nunca llegó al selector" de "el cliente vio el selector y eligió
+> deliberadamente Sin salsas". Ahora es tri-state real. Base de la que dependen `celtas-admin`
+> (mostrar "Sin salsas" en el detalle de pedido) y `celtas-app` (mandar `sauceIds: []` explícito
+> desde el carrito), ambos ya en curso con el mismo criterio.
+>
+> **Auditado por `@tester` (pase independiente, con mutación real) — veredicto "LISTO" para este
+> refinamiento puntual.**
+
+- [x] `resolveSelectedSauces`: `undefined` → `null`; `[]` explícito → `[]` (nunca colapsado a
+      `null`); con ids → nombres validados contra las salsas que el `MenuItem` ofrece (sin cambios
+      en este caso). No hizo falta migración: `OrderItem.selectedSauces` ya era `text[]` nullable,
+      un array vacío es un valor válido en esa columna, distinto de `NULL`.
+- [x] `buildWhatsappUrl`: agrega `(Salsas: Sin salsas)` cuando `selectedSauces` es `[]` no-null;
+      sigue sin sufijo solo cuando es `null`; sin cambios cuando trae nombres.
+- [x] DTO (`CreateOrderItemDto.sauceIds`): confirmado que nunca tuvo `@ArrayNotEmpty` — `[]` ya
+      pasaba la validación de `class-validator` antes de este cambio, sin tocar decoradores. Se
+      actualizó `@ApiPropertyOptional({ description: ... })` para documentar el tri-state real
+      (antes decía "omitido o vacío = sin salsas", ya no es exacto).
+- [x] `pnpm test`: 255/255 en verde (18 suites), incluye 2 tests nuevos en
+      `orders.service.spec.ts` (`sauceIds: []` → `selectedSauces` queda `[]` y `.not.toBeNull()`;
+      el `whatsappUrl` decodificado contiene literal `"(Salsas: Sin salsas)"`) + el test
+      preexistente de "sin sauceIds, el snapshot queda null" intacto y en verde.
+- [x] `pnpm run build` y `pnpm run test:e2e` limpios (241/241, 12 suites) — cero regresiones.
+- [x] **Verificación real end-to-end lado a lado** contra el servidor (`start:dev`) y Postgres
+      local reales: dos `POST /orders` con el mismo ítem (mismo producto, misma salsa ofrecida),
+      uno con `sauceIds: []` y otro sin el campo. El primero devolvió `selectedSauces: []` y el
+      `whatsappUrl` decodificado contenía `"1x Burger QA Salsas (Salsas: Sin salsas)"`; el segundo
+      devolvió `selectedSauces: null` y el mensaje quedó `"1x Burger QA Salsas"` sin ningún sufijo.
+      Datos de prueba limpiados de la BD después.
+- [x] **Mutación real ejecutada por `@tester`**: revirtió temporalmente el chequeo
+      `if (item.sauceIds.length === 0) return [];` a `return null;` (el bug exacto que corrige
+      este refinamiento — volver a colapsar `undefined` y `[]`). Con la mutación, los 2 tests
+      nuevos fallaron exactamente como se esperaba (`selectedSauces` no era `[]`; el mensaje no
+      contenía `"Sin salsas"`) y ningún otro de los 41 tests de `orders.service.spec.ts` se vio
+      afectado — confirma que la cobertura nueva es real, no un test que pasaría igual con el bug
+      de vuelta. Mutación revertida, suite completa vuelve a 255/255.
+- [ ] Riesgos/casos borde anotados por `@tester`, no cubiertos todavía (bajo riesgo, no bloquean
+      el veredicto "LISTO" de este refinamiento puntual): un mismo `POST /orders` con un ítem
+      `sauceIds: []` y otro ítem sin el campo en la misma llamada (verificar que cada `OrderItem`
+      mantenga su propio estado independiente); `sauceIds: []` en un producto que no ofrece
+      ninguna salsa (`menuItem.sauces` vacío/`undefined`).
+
 ## Coupons
 
 - [x] El cron no genera cupones duplicados para el mismo ciclo de gasto

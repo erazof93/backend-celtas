@@ -347,14 +347,20 @@ export class OrdersService {
   /**
    * Valida `sauceIds` contra las salsas que el producto realmente ofrece (400 si el
    * cliente manda una que no está en su lista) y devuelve el SNAPSHOT de nombres a
-   * guardar en el OrderItem. `null` si no se mandó nada o la lista vino vacía.
+   * guardar en el OrderItem. Tri-state real, no colapsar `undefined` y `[]`:
+   * - `undefined` (nunca se mandó el campo) → `null`: no aplica.
+   * - `[]` (mandado explícito) → `[]`: el cliente eligió "Sin salsas" a propósito.
+   * - con ids → nombres validados contra las salsas que ofrece el producto.
    */
   private resolveSelectedSauces(
     menuItem: MenuItem,
     item: CreateOrderItemDto,
   ): string[] | null {
-    if (!item.sauceIds || item.sauceIds.length === 0) {
+    if (item.sauceIds === undefined) {
       return null;
+    }
+    if (item.sauceIds.length === 0) {
+      return [];
     }
     const offeredById = new Map(
       (menuItem.sauces ?? []).map((sauce) => [sauce.id, sauce.name]),
@@ -388,10 +394,12 @@ export class OrdersService {
     const number = await this.settingsService.getWhatsappNumber();
     const itemsText = items
       .map((item) => {
+        // null = no aplica (sin sufijo); [] = "Sin salsas" elegido a propósito;
+        // con nombres = las salsas elegidas. No confundir [] con null.
         const sauces =
-          item.selectedSauces && item.selectedSauces.length > 0
-            ? ` (Salsas: ${item.selectedSauces.join(', ')})`
-            : '';
+          item.selectedSauces === null
+            ? ''
+            : ` (Salsas: ${item.selectedSauces.length > 0 ? item.selectedSauces.join(', ') : 'Sin salsas'})`;
         return `  • ${item.quantity}x ${item.name}${sauces}`;
       })
       .join('\n');

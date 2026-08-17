@@ -301,6 +301,42 @@ describe('OrdersService', () => {
       expect(result.items[0].selectedSauces).toBeNull();
     });
 
+    it('con sauceIds: [] explícito, el snapshot queda [] (no null) — "Sin salsas" elegido a propósito', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          sauces: [{ id: 'sauce-mayo', name: 'Mayonesa' }],
+        }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 2, sauceIds: [] }],
+      });
+
+      expect(result.items[0].selectedSauces).toEqual([]);
+      expect(result.items[0].selectedSauces).not.toBeNull();
+    });
+
+    it('el mensaje de WhatsApp muestra "(Salsas: Sin salsas)" cuando sauceIds vino [] explícito', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          sauces: [{ id: 'sauce-mayo', name: 'Mayonesa' }],
+        }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 2, sauceIds: [] }],
+      });
+
+      const message = decodeURIComponent(
+        result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
+      );
+      expect(message).toContain('(Salsas: Sin salsas)');
+    });
+
     it('lanza 400 si el sauceId no está entre las salsas que el producto ofrece', async () => {
       addressesRepo.findOne.mockResolvedValue(seedAddress());
       menuItemsRepo.find.mockResolvedValue([
