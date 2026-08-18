@@ -18,7 +18,12 @@ import { Category } from './../src/modules/menu/entities/category.entity';
 import { MenuItem } from './../src/modules/menu/entities/menu-item.entity';
 import { Order } from './../src/modules/orders/entities/order.entity';
 import { Setting } from './../src/modules/settings/entities/setting.entity';
-import { WHATSAPP_NUMBER_KEY } from './../src/modules/settings/settings.service';
+import {
+  BUSINESS_HOURS_SCHEDULE_KEY,
+  BUSINESS_MANUAL_CLOSED_KEY,
+  BUSINESS_MANUAL_CLOSED_REASON_KEY,
+  WHATSAPP_NUMBER_KEY,
+} from './../src/modules/settings/settings.service';
 import { Address } from './../src/modules/users/entities/address.entity';
 import {
   User,
@@ -177,6 +182,16 @@ describe('Settings (e2e)', () => {
           'Número de WhatsApp del negocio (formato internacional sin +)',
       }),
     );
+    // Restaurar el horario de atención (este suite lo muta para probar el
+    // cierre manual) por si algún test falló antes de revertirlo por su cuenta.
+    await settingsRepo.update(
+      { key: BUSINESS_MANUAL_CLOSED_KEY },
+      { value: 'false' },
+    );
+    await settingsRepo.update(
+      { key: BUSINESS_MANUAL_CLOSED_REASON_KEY },
+      { value: '' },
+    );
     await app.close();
   });
 
@@ -187,6 +202,15 @@ describe('Settings (e2e)', () => {
         .expect(200);
       const data = (res.body as Envelope).data as Record<string, string>;
       expect(data[WHATSAPP_NUMBER_KEY]).toBeTruthy();
+      // Las 3 keys del horario de atención se siembran en onModuleInit y no
+      // son sensibles: deben salir junto con el número de WhatsApp.
+      expect(data[BUSINESS_HOURS_SCHEDULE_KEY]).toBeTruthy();
+      const parseSchedule = (): void => {
+        JSON.parse(data[BUSINESS_HOURS_SCHEDULE_KEY]) as unknown;
+      };
+      expect(parseSchedule).not.toThrow();
+      expect(data[BUSINESS_MANUAL_CLOSED_KEY]).toBe('false');
+      expect(data[BUSINESS_MANUAL_CLOSED_REASON_KEY]).toBeDefined();
     });
 
     it('NO expone keys fuera de la whitelist', async () => {
@@ -281,6 +305,107 @@ describe('Settings (e2e)', () => {
       const order = (res.body as Envelope).data as OrderData;
       // El .env tiene 51999999999.
       expect(order.whatsappUrl).toContain('wa.me/51999999999');
+    });
+  });
+
+  describe('GET /settings/business-hours', () => {
+    afterEach(async () => {
+      // Dejar el override manual apagado para no afectar otros tests/suites.
+      await request(app.getHttpServer())
+        .patch('/settings')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ key: BUSINESS_MANUAL_CLOSED_KEY, value: 'false' })
+        .expect(200);
+      // NOTA (hallazgo de QA): UpdateSettingDto.value tiene @IsNotEmpty, por lo
+      // que PATCH /settings NO puede usarse para volver el motivo a "" (string
+      // vacío real) — el admin real tampoco podría hacerlo vía API. Se limpia
+      // directo por repositorio para no dejar estado sucio entre tests.
+      await settingsRepo.update(
+        { key: BUSINESS_MANUAL_CLOSED_REASON_KEY },
+        { value: '' },
+      );
+    });
+
+    it('sin auth, devuelve { open, message, schedule, manualClosed } reflejando el estado real', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/settings/business-hours')
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        open: boolean;
+        message: string | null;
+        schedule: Record<string, unknown>;
+        manualClosed: boolean;
+      };
+      expect(typeof data.open).toBe('boolean');
+      expect(data.manualClosed).toBe(false);
+      expect(data.schedule).toBeTruthy();
+      expect(data.schedule['5']).toBeTruthy();
+    });
+
+    it('activar el cierre manual (con motivo) vía PATCH /settings hace que el endpoint refleje open:false con el mensaje exacto', async () => {
+      await request(app.getHttpServer())
+        .patch('/settings')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ key: BUSINESS_MANUAL_CLOSED_KEY, value: 'true' })
+        .expect(200);
+      await request(app.getHttpServer())
+        .patch('/settings')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          key: BUSINESS_MANUAL_CLOSED_REASON_KEY,
+          value: 'Cerrado por QA e2e',
+        })
+        .expect(200);
+
+      const res = await request(app.getHttpServer())
+        .get('/settings/business-hours')
+        .expect(200);
+      const data = (res.body as Envelope).data as {
+        open: boolean;
+        message: string | null;
+        manualClosed: boolean;
+      };
+      expect(data.open).toBe(false);
+      expect(data.manualClosed).toBe(true);
+      expect(data.message).toBe(
+        'El local está cerrado temporalmente: Cerrado por QA e2e',
+      );
+    });
+
+    it('POST /orders devuelve 409 con el mismo mensaje mientras el cierre manual está activo, y no crea el pedido', async () => {
+      await request(app.getHttpServer())
+        .patch('/settings')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ key: BUSINESS_MANUAL_CLOSED_KEY, value: 'true' })
+        .expect(200);
+
+      const before = await ordersRepo.count({ where: { userId: clientId } });
+
+      const res = await request(app.getHttpServer())
+        .post('/orders')
+        .set('Authorization', `Bearer ${clientToken}`)
+        .send({ addressId, items: [{ menuItemId: itemId, quantity: 1 }] })
+        .expect(409);
+      expect((res.body as { message: string }).message).toContain(
+        'cerrado temporalmente',
+      );
+
+      const after = await ordersRepo.count({ where: { userId: clientId } });
+      expect(after).toBe(before);
+    });
+
+    it('POST /orders vuelve a funcionar normalmente (201) apenas se reabre el local manualmente', async () => {
+      await request(app.getHttpServer())
+        .patch('/settings')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ key: BUSINESS_MANUAL_CLOSED_KEY, value: 'false' })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post('/orders')
+        .set('Authorization', `Bearer ${clientToken}`)
+        .send({ addressId, items: [{ menuItemId: itemId, quantity: 1 }] })
+        .expect(201);
     });
   });
 

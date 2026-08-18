@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
@@ -42,7 +43,7 @@ describe('OrdersService', () => {
     reactivateForCancelledOrder: jest.Mock;
   };
   let notificationsService: { sendPushNotification: jest.Mock };
-  let settingsService: { getWhatsappNumber: jest.Mock };
+  let settingsService: { getWhatsappNumber: jest.Mock; isOpenNow: jest.Mock };
 
   const userId = 'user-1';
   const otherUserId = 'user-2';
@@ -119,6 +120,9 @@ describe('OrdersService', () => {
     };
     settingsService = {
       getWhatsappNumber: jest.fn().mockResolvedValue('51999999999'),
+      // Local abierto por defecto: los tests existentes de create() no deben
+      // verse afectados por el guard de horario de atención.
+      isOpenNow: jest.fn().mockResolvedValue({ open: true, message: null }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -158,6 +162,36 @@ describe('OrdersService', () => {
             ),
           }),
       );
+    });
+
+    it('lanza 409 con el mensaje de isOpenNow si el local está cerrado, y no crea nada', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      settingsService.isOpenNow.mockResolvedValue({
+        open: false,
+        message: 'El local está cerrado temporalmente: Cerrado por feriado',
+      });
+
+      await expect(
+        service.create(userId, { ...dto, addressId }),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        service.create(userId, { ...dto, addressId }),
+      ).rejects.toThrow(
+        'El local está cerrado temporalmente: Cerrado por feriado',
+      );
+
+      // El guard corta antes de tocar la base: nada de esto debió llamarse.
+      expect(addressesRepo.findOne).not.toHaveBeenCalled();
+      expect(menuItemsRepo.find).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(ordersRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('un pedido con el local abierto funciona igual que antes (no-regresión)', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      const result = await service.create(userId, { ...dto, addressId });
+      expect(result.status).toBe(OrderStatus.PENDIENTE);
+      expect(settingsService.isOpenNow).toHaveBeenCalled();
     });
 
     it('copia la dirección desde addressId al snapshot (no guarda referencia viva)', async () => {

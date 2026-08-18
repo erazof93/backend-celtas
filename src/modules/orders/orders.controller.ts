@@ -55,6 +55,11 @@ export class OrdersController {
     status: 404,
     description: 'Producto o dirección no encontrados',
   })
+  @ApiResponse({
+    status: 409,
+    description:
+      'El local está cerrado (horario programado o cierre manual temporal) o el cupón ya fue usado',
+  })
   create(@Req() req: AuthenticatedRequest, @Body() dto: CreateOrderDto) {
     return this.ordersService.create(req.user.userId, dto);
   }

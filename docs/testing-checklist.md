@@ -266,3 +266,75 @@ Veredicto: LISTO PARA MARCAR COMPLETO / PENDIENTE
 - [ ] Un pedido nuevo usa el número de la tabla (no el de `.env`) si ambos existen
 - [ ] `WHATSAPP_BUSINESS_NUMBER` es opcional en `validation.schema.ts` y la app arranca sin ella (fallback a tabla)
 - [ ] `PATCH /users/:id/role` (admin): `401` sin token, `403` cliente, `400` si el admin se quita su propio rol, `400` si el rol no es `cliente`/`admin`, `404` si el usuario no existe
+
+## Horario de atención (business hours)
+
+> Backend como única fuente de verdad de si el local está "abierto". El bloqueo real ocurre SOLO
+> en `POST /orders`; el cliente navega el menú libremente a cualquier hora. Reutiliza la tabla
+> `settings` (sin migración nueva): `business_hours_schedule` (JSON por día, 0=domingo...6=sábado,
+> mismas claves que `Banner.daysOfWeek`), `business_manual_closed` ("true"/"false"),
+> `business_manual_closed_reason` (texto libre opcional). Lógica de zona horaria compartida con
+> Banners en `src/common/utils/lima-time.util.ts` (`todayDayOfWeekInLima`, `currentMinutesInLima`).
+
+- [x] `onModuleInit` siembra las 3 keys nuevas si no existen (horario default 11:00-23:00 entre
+      semana, 11:00-01:00 viernes/sábado; `business_manual_closed` en `"false"`) — cubierto en
+      `settings.service.spec.ts` y confirmado real vía e2e (`GET /settings` admin lista la key tras
+      `onModuleInit` del `TestingModule`)
+- [x] Las 3 keys nuevas aparecen en `GET /settings/public` (no son sensibles, mismo criterio que
+      el número de WhatsApp) — test e2e nuevo agregado por `@tester`
+      (`test/settings.e2e-spec.ts`, describe `GET /settings/public`)
+- [x] `SettingsService.isOpenNow()`: dentro de horario normal (mismo día, sin cruce) → abierto
+- [x] `isOpenNow()`: antes de abrir / después de cerrar (mismo día) → cerrado, mensaje con el
+      horario de hoy
+- [x] `isOpenNow()`: día marcado `closed: true` → cerrado con "Hoy no atendemos", sin importar la hora
+- [x] `isOpenNow()` con horario que cruza medianoche (ej. viernes 11:00–01:00), las DOS mitades:
+      antes de medianoche (viernes 23:30 → abierto), arrastre de madrugada (sábado 00:30 → abierto),
+      y el caso límite "ya cerró la madrugada pero todavía no abre hoy" (sábado 02:00 → cerrado) —
+      **verificado con mutación real por `@tester`**: (1) se comentó la rama de arrastre de
+      madrugada → solo el test de "arrastre" falló; (2) se forzó `return false` en el tramo nocturno
+      antes de medianoche → solo el test de "antes de medianoche" falló; (3) se forzó
+      `isCarriedOverFromYesterday` a `return true` siempre → solo el test del caso límite
+      "sábado 02:00" falló. En los tres casos, ningún otro test de la suite se vio afectado;
+      mutaciones revertidas, suite vuelve a verde
+- [x] `business_manual_closed: "true"` gana SIEMPRE sobre el horario programado, incluso en horario
+      normal; el mensaje incluye el motivo (`: <motivo>`) solo si `business_manual_closed_reason`
+      no está vacío — **verificado con mutación real por `@tester`**: se forzó
+      `if (false && manual.closed)` en `isOpenNow()` (override deshabilitado); los 2 tests de
+      override manual (con y sin motivo) fallaron como se esperaba, y también la contraparte e2e
+      (`GET /settings/business-hours` y `POST /orders` dejaron de reflejar el cierre); mutación
+      revertida, ambas suites vuelven a verde
+- [x] `GET /settings/business-hours` (público, sin auth) devuelve `{ open, message, schedule,
+      manualClosed }` reflejando el estado real — antes solo probado manualmente con `curl` por la
+      sesión principal; `@tester` agregó cobertura e2e real y repetible en
+      `test/settings.e2e-spec.ts` (describe `GET /settings/business-hours`): estado normal, activar
+      cierre manual con motivo vía `PATCH /settings` y confirmar `open:false` + mensaje exacto
+- [x] `POST /orders` con el local cerrado (manual o por horario) → `409` con el mensaje real de
+      `isOpenNow()`, y el guard corta ANTES de tocar la base (no crea filas en `orders`/`order_items`,
+      no valida items/dirección/cupón) — confirmado leyendo `OrdersService.create()`: `isOpenNow()`
+      es la primera línea, antes de `resolveAddressSnapshot`/`buildItems` (los que tocan
+      `addressesRepository`/`menuItemsRepository`); test unitario existente lo verifica con mocks
+      (`addressesRepo.findOne` NO llamado) y `@tester` agregó el equivalente e2e con Postgres real
+      (cuenta de filas en `orders` antes/después, sigue igual). **Verificado con mutación real**:
+      se forzó `if (false && !businessHours.open)` (guard deshabilitado) → el test unitario y el
+      test e2e nuevo fallaron ambos como se esperaba (201 en vez de 409); mutación revertida
+- [x] `POST /orders` con el local abierto funciona exactamente igual que antes (no-regresión) —
+      274/274 unitarios y 245/245 e2e en verde, incluye el resto de la suite de `orders` intacta
+- [x] `banners.service.spec.ts` sigue pasando igual tras migrar `todayDayOfWeekInLima` al util
+      compartido (mismo comportamiento, solo cambia de dónde viene la función) — confirmado:
+      `banners.service.ts` importa `todayDayOfWeekInLima` desde
+      `src/common/utils/lima-time.util.ts`, sin copia local; suite de banners (unit + e2e) en verde
+- [ ] **Pendiente, fuera de este backend**: `celtas-admin` necesita el formulario de horario +
+      interruptor manual en el panel; `celtas-app` necesita mostrar el 409 (y su mensaje) de forma
+      clara en el checkout cuando el local está cerrado
+- [ ] **Hallazgo de `@tester` (no bloqueante, pendiente)**: `POST /orders` en
+      `orders.controller.ts` no documenta la respuesta `409` en Swagger (`@ApiResponse({ status: 409,
+      ... })` ausente) — confirmado contra `GET /docs-json` real: solo aparecen 201/400/401/404.
+      Ahora que el endpoint puede devolver 409 por local cerrado (y ya podía por conflictos de
+      cupón), Swagger queda desactualizado. Corrección de una línea, no requiere lógica nueva.
+- [ ] **Hallazgo de `@tester` (riesgo bajo, anotado, no bloqueante)**: `UpdateSettingDto.value`
+      tiene `@IsNotEmpty()`, por lo que un admin NO puede usar `PATCH /settings` para volver
+      `business_manual_closed_reason` a `""` real una vez que le puso un motivo — solo puede
+      "vaciarlo" enviando un string de solo espacios (que `getManualClosedState()` normaliza a
+      `null` vía `.trim()`). Funciona en la práctica pero puede sorprender a quien construya el
+      formulario en `celtas-admin`; vale la pena documentarlo explícitamente para ese equipo o
+      considerar relajar la validación para esta key específica.

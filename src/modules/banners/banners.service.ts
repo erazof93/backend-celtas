@@ -5,13 +5,11 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { todayDayOfWeekInLima } from '../../common/utils/lima-time.util';
 import { CreateBannerDto } from './dto/create-banner.dto';
 import { ReorderBannersDto } from './dto/reorder-banners.dto';
 import { UpdateBannerDto } from './dto/update-banner.dto';
 import { Banner, BannerActionType } from './entities/banner.entity';
-
-/** Zona horaria de Lima (UTC-5, sin horario de verano) — mismo criterio que el resto del proyecto. */
-const LIMA_TIMEZONE = 'America/Lima';
 
 /**
  * Módulo Banners.
@@ -50,7 +48,7 @@ export class BannersService {
       .andWhere('(banner.endDate IS NULL OR banner.endDate >= :now)', { now })
       .andWhere(
         '(banner.daysOfWeek IS NULL OR array_length(banner.daysOfWeek, 1) IS NULL OR :dayOfWeek = ANY(banner.daysOfWeek))',
-        { dayOfWeek: this.todayDayOfWeekInLima() },
+        { dayOfWeek: todayDayOfWeekInLima() },
       )
       .orderBy('banner.order', 'ASC')
       .getMany();
@@ -127,19 +125,6 @@ export class BannersService {
   }
 
   // ── Validaciones de negocio ─────────────────────────────────────────────────
-
-  /**
-   * Día de la semana actual (0=domingo ... 6=sábado) en la zona horaria de Lima.
-   * Reconstruye el reloj de pared de Lima como Date para que getDay() devuelva el
-   * día correcto sin importar la zona horaria del servidor (Lima es UTC-5).
-   */
-  private todayDayOfWeekInLima(): number {
-    const now = new Date();
-    const limaWallClock = new Date(
-      now.toLocaleString('en-US', { timeZone: LIMA_TIMEZONE }),
-    );
-    return limaWallClock.getDay();
-  }
 
   /** Si vienen ambas fechas, startDate debe ser anterior a endDate. */
   private assertValidDates(

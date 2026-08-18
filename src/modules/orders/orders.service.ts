@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -71,6 +72,16 @@ export class OrdersService {
   ) {}
 
   async create(userId: string, dto: CreateOrderDto): Promise<Order> {
+    // El local cerrado es lo primero que debe frenar el pedido, antes de
+    // validar items/dirección/cupón. isOpenNow() es la fuente única de
+    // verdad (override manual "cerrado temporalmente" gana sobre el horario).
+    const businessHours = await this.settingsService.isOpenNow();
+    if (!businessHours.open) {
+      throw new ConflictException(
+        businessHours.message ?? 'El local está cerrado en este momento',
+      );
+    }
+
     const addressSnapshot = await this.resolveAddressSnapshot(userId, dto);
     const items = await this.buildItems(dto.items);
     const subtotal = this.round2(

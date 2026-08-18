@@ -31,6 +31,25 @@ export class SettingsController {
     return this.settingsService.findPublic();
   }
 
+  @Get('business-hours')
+  @ApiOperation({
+    summary: 'Horario de atención y si el local está abierto ahora (sin auth)',
+    description:
+      'Fuente única de verdad de si el local está abierto: evalúa el interruptor manual "cerrado temporalmente" (con prioridad sobre el horario) y, si no aplica, el horario programado por día de la semana en hora de Lima. No bloquea nada por sí mismo (el bloqueo real ocurre en POST /orders) — centraliza la lógica para que el panel o la app puedan mostrarla.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: '{ open, message, schedule, manualClosed }',
+  })
+  async businessHours() {
+    const [{ open, message }, schedule, manualClosed] = await Promise.all([
+      this.settingsService.isOpenNow(),
+      this.settingsService.getBusinessHoursSchedule(),
+      this.settingsService.isManuallyClosed(),
+    ]);
+    return { open, message, schedule, manualClosed };
+  }
+
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)

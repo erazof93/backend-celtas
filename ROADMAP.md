@@ -252,6 +252,46 @@ celtas-backend/
       pedido, distinto de no mostrar nada) **y `celtas-app`** (mandar `sauceIds: []` explícito
       desde el carrito cuando el cliente elige deliberadamente ninguna salsa) — ambos ya en curso
       con el mismo criterio.
+- [x] **Horario de atención del negocio, backend como única fuente de
+      verdad.** Antes se aceptaban pedidos a cualquier hora. Reutiliza la tabla `settings` (sin
+      migración nueva): `business_hours_schedule` (JSON por día de la semana, mismas claves
+      0=domingo...6=sábado que `Banner.daysOfWeek`, `open`/`close` en `HH:mm` hora de Lima,
+      soporta cruce de medianoche cuando `close <= open`), `business_manual_closed` (interruptor
+      manual "cerrado temporalmente" desde el panel, con prioridad sobre el horario programado) y
+      `business_manual_closed_reason` (motivo opcional mostrado al cliente). Lógica de zona
+      horaria extraída de `banners.service.ts` (`todayDayOfWeekInLima`) a un util compartido
+      `src/common/utils/lima-time.util.ts` (`todayDayOfWeekInLima` + `currentMinutesInLima`,
+      ambas con un parámetro `reference: Date` opcional para poder fijar la hora en los tests sin
+      mockear `Date` globalmente) — `banners.service.ts` migrado para usar el mismo util, sin
+      duplicar la lógica. `SettingsService.isOpenNow()` es la fuente única de verdad: evalúa el
+      override manual primero (gana siempre) y luego el horario, revisando la entrada de HOY y la
+      de AYER cuando el horario cruza medianoche (viernes 11:00–01:00: viernes 23:30 abierto por
+      "hoy", sábado 00:30 abierto por arrastre de "ayer", sábado 02:00 cerrado). Nuevo endpoint
+      público `GET /settings/business-hours` centraliza `{ open, message, schedule, manualClosed }`
+      para uso futuro del panel/app (no bloquea nada por sí mismo). El bloqueo real está en
+      `OrdersService.create()`: si `isOpenNow().open` es `false`, `ConflictException` (409) con el
+      mismo mensaje de `isOpenNow()`, ANTES de validar items/dirección/cupón — el cliente sigue
+      pudiendo navegar el menú libremente a cualquier hora, el bloqueo es solo al confirmar el
+      pedido. Verificado con `curl` real contra el servidor y Postgres local reales: activar
+      `business_manual_closed` vía `PATCH /settings` → `POST /orders` devuelve 409 con el mensaje
+      esperado y `GET /settings/business-hours` refleja `open: false`; desactivarlo → un pedido
+      normal vuelve a funcionar igual que antes (201). Auditado por `@tester`: **LISTO PARA
+      MARCAR COMPLETO** — build/lint limpios, 274 unit (19 suites) + 245 e2e (12 suites, agregó 4
+      tests e2e nuevos que no existían para este endpoint/feature). Verificado con mutación real
+      en los 3 puntos más frágiles: el guard de `OrdersService.create()`, el override manual (con
+      y sin motivo), y las tres variantes del cruce de medianoche (tramo de hoy, arrastre de
+      ayer, y el caso límite "madrugada ya cerrada, hoy todavía no abre") — cada mutación rompió
+      exactamente el/los test(s) esperado(s) y ningún otro. Confirmado además que
+      `OrdersService.create()` llama `isOpenNow()` antes de tocar `addressesRepository`/
+      `menuItemsRepository` (no solo que el test lo afirme). Dos hallazgos menores no bloqueantes,
+      documentados en `docs/testing-checklist.md`: (1) `POST /orders` no documentaba el 409 en
+      Swagger — corregido; (2) `UpdateSettingDto.value` tiene `@IsNotEmpty()`, por lo que un admin
+      no puede vaciar `business_manual_closed_reason` a `""` real vía `PATCH /settings` una vez
+      puesto un motivo (solo enviar espacios en blanco, que el servicio normaliza a `null`) — sin
+      corregir, queda anotado para cuando `celtas-admin` construya el formulario. **Pendiente,
+      fuera de este backend**: `celtas-admin` (formulario de horario + interruptor manual en el
+      panel) y `celtas-app` (mostrar el 409 y su mensaje de forma clara en el checkout) quedan
+      pendientes con el mismo criterio que las mejoras anteriores.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)
