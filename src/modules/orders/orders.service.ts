@@ -340,6 +340,7 @@ export class OrdersService {
         );
       }
       const selectedSauces = this.resolveSelectedSauces(menuItem, item);
+      const comment = this.resolveComment(item);
       const subtotal = this.round2(menuItem.price * item.quantity);
       result.push(
         this.orderItemsRepository.create({
@@ -349,6 +350,7 @@ export class OrdersService {
           quantity: item.quantity,
           subtotal,
           selectedSauces,
+          comment,
         }),
       );
     }
@@ -389,6 +391,15 @@ export class OrdersService {
     return names;
   }
 
+  /**
+   * Comentario libre del ítem (texto simple, sin la lógica tri-state de
+   * `resolveSelectedSauces`): trimea y devuelve `null` si queda vacío.
+   */
+  private resolveComment(item: CreateOrderItemDto): string | null {
+    const trimmed = item.comment?.trim();
+    return trimmed ? trimmed : null;
+  }
+
   /** Link de WhatsApp: https://wa.me/<número>?text=<mensaje codificado>. */
   private async buildWhatsappUrl(
     orderId: string,
@@ -396,6 +407,7 @@ export class OrdersService {
       name: string;
       quantity: number;
       selectedSauces: string[] | null;
+      comment: string | null;
     }[],
     total: number,
     addressSnapshot: string,
@@ -411,7 +423,8 @@ export class OrdersService {
           item.selectedSauces === null
             ? ''
             : ` (Salsas: ${item.selectedSauces.length > 0 ? item.selectedSauces.join(', ') : 'Sin salsas'})`;
-        return `  • ${item.quantity}x ${item.name}${sauces}`;
+        const comment = item.comment === null ? '' : ` — Nota: ${item.comment}`;
+        return `  • ${item.quantity}x ${item.name}${sauces}${comment}`;
       })
       .join('\n');
     const message = `📌 *NUEVO PEDIDO #${orderId.slice(0, 8).toUpperCase()}*

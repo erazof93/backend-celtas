@@ -64,6 +64,15 @@ export class OrderItem {
   @Column({ type: 'text', array: true, nullable: true })
   selectedSauces: string[] | null;
 
+  /**
+   * Comentario libre del cliente para este ítem (ej. "sin cebolla", "bien
+   * cocida"), copiado al crear el pedido (snapshot, mismo criterio que
+   * `name`/`unitPrice`/`selectedSauces`). Se aplica a las `quantity` unidades
+   * del ítem, no una nota por unidad individual. `null` = sin comentario.
+   */
+  @Column({ type: 'varchar', length: 140, nullable: true })
+  comment: string | null;
+
   /** unitPrice * quantity, calculado en el backend. */
   @Column({
     type: 'decimal',

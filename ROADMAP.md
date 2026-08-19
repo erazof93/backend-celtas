@@ -361,6 +361,29 @@ celtas-backend/
       hallazgo pendiente de `UpdateSettingDto.value`/`@IsNotEmpty()` para el motivo sigue igual que
       antes, sin relación a este cambio.
 
+- [x] **Comentario libre opcional por ítem del pedido (`OrderItem.comment`).** Mismo criterio de
+      negocio que las salsas (opcional por ítem, snapshot inmutable), pero sin la lógica tri-state
+      de `sauceIds`/`selectedSauces` — es texto libre simple, `undefined`/`''`/`'   '` colapsan
+      igual a `null`. Columna nueva `comment` (`varchar(140)`, nullable) en `OrderItem`, ubicada
+      después de `selectedSauces`. `CreateOrderItemDto.comment?: string` (`@IsOptional()
+      @IsString() @MaxLength(140)`). `OrdersService.resolveComment()` trimea y colapsa a `null` si
+      queda vacío; `buildItems()` lo pasa al snapshot igual que `name`/`unitPrice`/
+      `selectedSauces`. `buildWhatsappUrl()` agrega ` — Nota: <texto>` al final de la línea del
+      ítem solo cuando `comment !== null`, reutilizando el mismo formato ya usado para `(Salsas:
+      ...)` (sin reinventar el estilo del mensaje). Migración `AddCommentToOrderItems` generada,
+      revisada y corrida contra Postgres local real (`ALTER TABLE "order_items" ADD "comment"
+      character varying(140)`, verificada con `\d order_items`). Auditado por `@tester`:
+      **LISTO PARA MARCAR COMPLETO** — 303 unit (19 suites) + 261 e2e (12 suites), build/lint
+      limpios. Verificado con mutación real sobre `resolveComment` (quitar el `.trim()` y el
+      colapso de vacío/espacios): rompió exactamente los 3 tests esperados (vacío → null, solo
+      espacios → null, trim antes de guardar) y ningún otro. `@tester` agregó además 2 casos e2e
+      que faltaban (140 caracteres exacto → acepta; tipo incorrecto → 400) y confirmó leyendo el
+      código que `comment` viaja en los tres endpoints de listado/detalle (`findMyOrders`/
+      `findAll`/`findOne`), no solo en la respuesta de creación. Riesgos anotados, no bloqueantes,
+      en `docs/testing-checklist.md`: falta un caso con varios ítems del mismo pedido cada uno con
+      su propio `comment` independiente, y un caso con caracteres especiales/unicode (emojis,
+      comillas) dentro del link de WhatsApp.
+
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)
 - [x] Cron job (`@nestjs/schedule`) que revisa usuarios que superaron el umbral (ej. S/50) desde el último cupón

@@ -9,6 +9,7 @@ import {
   IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -37,6 +38,18 @@ export class CreateOrderItemDto {
   @IsArray({ message: 'sauceIds debe ser una lista' })
   @IsUUID('4', { each: true, message: 'Cada sauceId debe ser un UUID válido' })
   sauceIds?: string[];
+
+  @ApiPropertyOptional({
+    example: 'Sin cebolla, bien cocida',
+    description:
+      'Comentario libre opcional para este ítem (se aplica a las `quantity` unidades del ítem, no una nota por unidad individual). Vacío o solo espacios se trata como ausente.',
+  })
+  @IsOptional()
+  @IsString({ message: 'comment debe ser texto' })
+  @MaxLength(140, {
+    message: 'El comentario no puede superar los 140 caracteres',
+  })
+  comment?: string;
 }
 
 /**

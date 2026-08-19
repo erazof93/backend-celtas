@@ -414,6 +414,61 @@ describe('OrdersService', () => {
       expect(message).not.toContain('Salsas:');
     });
 
+    it('guarda el comment y lo muestra como "Nota:" en el mensaje de WhatsApp', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [
+          { menuItemId, quantity: 2, comment: 'Sin cebolla, bien cocida' },
+        ],
+      });
+
+      expect(result.items[0].comment).toBe('Sin cebolla, bien cocida');
+      const message = decodeURIComponent(
+        result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
+      );
+      expect(message).toContain(
+        '2x Celtas Clásica — Nota: Sin cebolla, bien cocida',
+      );
+    });
+
+    it.each([
+      ['ausente', undefined],
+      ['vacío', ''],
+      ['solo espacios', '   '],
+    ])(
+      'comment %s → se guarda como null y no aparece "Nota:" en el mensaje',
+      async (_label, comment) => {
+        addressesRepo.findOne.mockResolvedValue(seedAddress());
+        menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+
+        const result = await service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 2, comment }],
+        });
+
+        expect(result.items[0].comment).toBeNull();
+        const message = decodeURIComponent(
+          result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
+        );
+        expect(message).not.toContain('Nota:');
+      },
+    );
+
+    it('el comment se trimea antes de guardarse', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 2, comment: '  Bien cocida  ' }],
+      });
+
+      expect(result.items[0].comment).toBe('Bien cocida');
+    });
+
     it('aplica el cupón y guarda el total descontado', async () => {
       addressesRepo.findOne.mockResolvedValue(seedAddress());
       menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);

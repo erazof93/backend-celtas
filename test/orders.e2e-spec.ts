@@ -57,6 +57,7 @@ interface OrderData {
     unitPrice: number;
     quantity: number;
     subtotal: number;
+    comment: string | null;
   }[];
 }
 
@@ -319,6 +320,71 @@ describe('Orders (e2e)', () => {
         items: [],
       }).expect(400);
       expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('comment presente se persiste y aparece como "Nota:" en el mensaje de WhatsApp', async () => {
+      const res = await createOrder(clientAToken, {
+        addressId,
+        items: [
+          {
+            menuItemId: itemAId,
+            quantity: 1,
+            comment: 'Sin cebolla, bien cocida',
+          },
+        ],
+      }).expect(201);
+      const data = (res.body as Envelope).data as OrderData;
+
+      expect(data.items[0].comment).toBe('Sin cebolla, bien cocida');
+      const decoded = decodeURIComponent(data.whatsappUrl);
+      expect(decoded).toContain('1x Clásica — Nota: Sin cebolla, bien cocida');
+    });
+
+    it.each([
+      ['ausente', undefined],
+      ['vacío', ''],
+      ['solo espacios', '   '],
+    ])(
+      'comment %s → null en la respuesta, sin "Nota:" en el mensaje de WhatsApp',
+      async (_label, comment) => {
+        const res = await createOrder(clientAToken, {
+          addressId,
+          items: [{ menuItemId: itemAId, quantity: 1, comment }],
+        }).expect(201);
+        const data = (res.body as Envelope).data as OrderData;
+
+        expect(data.items[0].comment).toBeNull();
+        const decoded = decodeURIComponent(data.whatsappUrl);
+        expect(decoded).not.toContain('Nota:');
+      },
+    );
+
+    it('400 si el comment supera los 140 caracteres', async () => {
+      const res = await createOrder(clientAToken, {
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1, comment: 'a'.repeat(141) }],
+      }).expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('400 si comment no es un string (tipo incorrecto)', async () => {
+      const res = await createOrder(clientAToken, {
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1, comment: 12345 }],
+      }).expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('acepta un comment de exactamente 140 caracteres (límite inclusive)', async () => {
+      const comment = 'a'.repeat(140);
+      const res = await createOrder(clientAToken, {
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1, comment }],
+      }).expect(201);
+      const data = (res.body as Envelope).data as OrderData;
+
+      expect(data.items[0].comment).toBe(comment);
+      expect(data.items[0].comment).toHaveLength(140);
     });
   });
 

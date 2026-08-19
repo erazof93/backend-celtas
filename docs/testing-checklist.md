@@ -64,6 +64,72 @@ cuando pasa lo aplicable de este checklist.
 - [ ] Un cliente solo puede ver sus propios pedidos; admin puede ver todos
 - [x] `GET /orders?userId=X` (admin) filtra solo los pedidos de ese usuario; userId inexistente → lista vacía (200); userId malformado → 400; combinado con `status`; sin el param el comportamiento previo (paginación + status) queda intacto
 
+## Comentario libre por ítem (`OrderItem.comment`)
+
+> Feature nueva: el cliente puede escribir una nota libre opcional por ítem del pedido (ej. "sin
+> cebolla", "bien cocida"), se guarda como snapshot en `OrderItem.comment` (`varchar(140)`,
+> nullable) y aparece en el mensaje de WhatsApp como `— Nota: <texto>`. A diferencia de
+> `sauceIds`/`selectedSauces` (tri-state real `undefined`/`[]`/con valores), este campo es texto
+> libre simple: `undefined`, `''` y `'   '` colapsan igual a `null` (sin distinguir "no aplica" de
+> "elegido vacío a propósito" — no aplica ese matiz a texto libre).
+>
+> **Auditado por `@tester` (pase independiente, con mutación real) — veredicto "LISTO".**
+
+- [x] `pnpm run build` compila sin errores
+- [x] `pnpm run lint` sin errores (`eslint --fix`, sin warnings nuevos)
+- [x] `pnpm run test`: 303/303 tests unitarios en verde (19 suites), incluye `comment` presente
+      (persistido y visible como `— Nota: ...` en el whatsappUrl), ausente/vacío/solo-espacios
+      (parametrizado con `it.each`, colapsa a `null`, sin "Nota:" en el mensaje) y el trim antes de
+      guardar (`orders.service.spec.ts`)
+- [x] `pnpm run test:e2e`: 261/261 en verde (12 suites) contra Postgres local real, incluye los
+      mismos 3 casos vía `POST /orders` real + 3 casos nuevos agregados en esta auditoría (antes no
+      existían): comment de exactamente 140 caracteres (límite inclusive, debe aceptar), comment de
+      141 caracteres (400, ya existía), comment con tipo incorrecto (número en vez de string, 400)
+      — `test/orders.e2e-spec.ts`
+- [x] Migración `AddCommentToOrderItems1787182448563`: `ALTER TABLE "order_items" ADD "comment"
+      character varying(140)`, sin `NOT NULL`. Verificada independientemente contra Postgres local
+      real (`\d order_items` vía `docker exec`): columna `character varying(140)`, nullable.
+      Registrada en la tabla `migrations` (confirmado con `SELECT name FROM migrations ORDER BY id
+      DESC`).
+- [x] `resolveComment` (el punto más frágil): trimea y colapsa a `null` si el resultado queda
+      vacío. **Verificado con mutación real por `@tester`**: se reemplazó
+      `const trimmed = item.comment?.trim(); return trimmed ? trimmed : null;` por
+      `return item.comment ?? null;` (quita el trim y la normalización de vacío/espacios). Rompió
+      exactamente los 3 tests esperados (`comment vacío → null`, `comment solo espacios → null`,
+      `el comment se trimea antes de guardarse`) y ningún otro de los 48 tests de
+      `orders.service.spec.ts` (45/48 en verde con la mutación). El caso `comment` ausente
+      (`undefined`) no se rompió con esta mutación puntual (`undefined ?? null` sigue dando
+      `null`), lo cual es coherente: esa mutación específica solo ataca el trim/colapso de string
+      vacío, no el caso `undefined`. Mutación revertida, `git diff --stat` confirma el archivo
+      idéntico al estado previo a la mutación, suite vuelve a 303/303 (unit) y 261/261 (e2e).
+- [x] `buildWhatsappUrl`: agrega ` — Nota: <texto>` al final de la línea del ítem SOLO cuando
+      `comment !== null`; sin sufijo cuando es `null` — cubierto en unit y e2e (mensaje decodificado
+      real, no solo el string crudo con `%20`/`%C2%A0` sin decodificar)
+- [x] `CreateOrderItemDto.comment`: `@IsOptional() @IsString() @MaxLength(140)` — 141 caracteres
+      rechaza con 400 (ya existía); **agregado por `@tester`**: exactamente 140 caracteres acepta
+      (límite inclusive, antes sin cobertura — riesgo real de un off-by-one no detectado si alguien
+      cambia `MaxLength(140)` a `MaxLength(139)` por error) y un tipo incorrecto (número en vez de
+      string) rechaza con 400, confirmando que `@IsString` no es redundante con `@MaxLength`
+- [x] `POST /orders` expone `comment` en cada item de la respuesta (confirmado leyendo
+      `findMyOrders`/`findAll`/`findOne`: los tres usan `relations: { items: true }` sin ningún
+      `select` parcial que excluya columnas, así que `comment` viaja igual en los tres endpoints de
+      listado/detalle, no solo en la respuesta de creación)
+- [x] `@ApiPropertyOptional` en el DTO documenta el campo (`Comentario libre opcional para este
+      ítem... Vacío o solo espacios se trata como ausente`) — visible en Swagger
+- [x] Seguridad: `comment` no es un campo sensible, no aplica chequeo de exposición de `password`
+      aquí (el módulo Orders no expone usuarios completos en la respuesta, solo `userId`)
+- ⚠️ Riesgo/caso borde no cubierto (bajo riesgo, no bloqueante): no hay test que verifique el
+      comportamiento cuando el mismo `POST /orders` trae varios ítems, cada uno con su propio
+      `comment` independiente (uno con nota, otro sin, otro con solo espacios) — la lógica es
+      per-ítem (`buildItems` llama `resolveComment(item)` dentro del loop, sin estado compartido
+      entre ítems), así que no debería fallar, pero no está ejercitado explícitamente con más de un
+      ítem con `comment` en la misma llamada.
+- ⚠️ Riesgo/caso borde no cubierto (bajo riesgo, no bloqueante): no hay test de caracteres
+      especiales/unicode en `comment` (emojis, saltos de línea, comillas) — relevante porque el
+      valor viaja dentro de `encodeURIComponent` en el link de WhatsApp; en teoría
+      `encodeURIComponent` maneja cualquier string de forma segura, pero no está verificado con un
+      caso real (ej. `comment: 'Sin cebolla 🧅, "bien cocida"'`).
+
 ## Salsas/cremas (catálogo `Sauce` + selección por producto)
 
 > Feature nueva (no estaba en el `ROADMAP.md` original): el cliente elige salsas al agregar un
