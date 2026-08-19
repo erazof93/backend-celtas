@@ -326,7 +326,7 @@ describe('Settings (e2e)', () => {
       );
     });
 
-    it('sin auth, devuelve { open, message, schedule, manualClosed } reflejando el estado real', async () => {
+    it('sin auth, devuelve { open, message, schedule, manualClosed, nextChangeAt } reflejando el estado real', async () => {
       const res = await request(app.getHttpServer())
         .get('/settings/business-hours')
         .expect(200);
@@ -335,11 +335,18 @@ describe('Settings (e2e)', () => {
         message: string | null;
         schedule: Record<string, unknown>;
         manualClosed: boolean;
+        nextChangeAt: string | null;
       };
       expect(typeof data.open).toBe('boolean');
       expect(data.manualClosed).toBe(false);
       expect(data.schedule).toBeTruthy();
       expect(data.schedule['5']).toBeTruthy();
+      // Sin cierre manual, con el horario default (nunca los 7 días cerrados),
+      // siempre hay un próximo cambio predecible: ISO 8601 UTC válido y futuro.
+      expect(data.nextChangeAt).not.toBeNull();
+      const nextChangeAt = new Date(data.nextChangeAt as string);
+      expect(nextChangeAt.toISOString()).toBe(data.nextChangeAt);
+      expect(nextChangeAt.getTime()).toBeGreaterThan(Date.now());
     });
 
     it('activar el cierre manual (con motivo) vía PATCH /settings hace que el endpoint refleje open:false con el mensaje exacto', async () => {
@@ -364,12 +371,15 @@ describe('Settings (e2e)', () => {
         open: boolean;
         message: string | null;
         manualClosed: boolean;
+        nextChangeAt: string | null;
       };
       expect(data.open).toBe(false);
       expect(data.manualClosed).toBe(true);
       expect(data.message).toBe(
         'El local está cerrado temporalmente: Cerrado por QA e2e',
       );
+      // Un cierre manual puede levantarse en cualquier momento: no es predecible.
+      expect(data.nextChangeAt).toBeNull();
     });
 
     it('POST /orders devuelve 409 con el mismo mensaje mientras el cierre manual está activo, y no crea el pedido', async () => {

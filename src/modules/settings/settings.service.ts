@@ -9,8 +9,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import {
   currentMinutesInLima,
+  limaWallClockDate,
+  limaWallClockToUtc,
   todayDayOfWeekInLima,
 } from '../../common/utils/lima-time.util';
+import { NotificationsService } from '../notifications/notifications.service';
 import { Setting } from './entities/setting.entity';
 
 /** Clave del número de WhatsApp del negocio (usada por OrdersService). */
@@ -78,6 +81,7 @@ export class SettingsService implements OnModuleInit {
     @InjectRepository(Setting)
     private readonly settingsRepository: Repository<Setting>,
     private readonly configService: ConfigService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   /** Seed: inserta las filas iniciales si no existen todavía (no es una migración). */
@@ -140,27 +144,68 @@ export class SettingsService implements OnModuleInit {
     return result;
   }
 
-  /** Upsert de una setting (admin). */
+  /**
+   * Upsert de una setting (admin). Si la key es `business_manual_closed` y el
+   * valor de verdad cambió (no si el form reenvió el mismo valor que ya
+   * estaba), dispara un push masivo avisando el cambio a todos los clientes.
+   */
   async upsert(
     key: string,
     value: string,
     description?: string,
   ): Promise<Setting> {
     const existing = await this.settingsRepository.findOne({ where: { key } });
-    if (existing) {
-      existing.value = value;
-      if (description !== undefined) {
-        existing.description = description;
-      }
-      return this.settingsRepository.save(existing);
+    const previousValue = existing?.value;
+
+    const saved = existing
+      ? await this.saveExisting(existing, value, description)
+      : await this.settingsRepository.save(
+          this.settingsRepository.create({
+            key,
+            value,
+            description: description ?? null,
+          }),
+        );
+
+    if (key === BUSINESS_MANUAL_CLOSED_KEY && previousValue !== value) {
+      // broadcastPushNotification nunca lanza (mismo contrato que
+      // sendPushNotification): no hace falta try/catch aquí.
+      await this.notifyBusinessHoursChange(value);
     }
-    return this.settingsRepository.save(
-      this.settingsRepository.create({
-        key,
-        value,
-        description: description ?? null,
-      }),
-    );
+
+    return saved;
+  }
+
+  private async saveExisting(
+    existing: Setting,
+    value: string,
+    description?: string,
+  ): Promise<Setting> {
+    existing.value = value;
+    if (description !== undefined) {
+      existing.description = description;
+    }
+    return this.settingsRepository.save(existing);
+  }
+
+  /** Avisa a todos los clientes con push cuando el cierre manual cambia de verdad. */
+  private async notifyBusinessHoursChange(newValue: string): Promise<void> {
+    if (newValue === 'true') {
+      // Motivo leído fresco de la base: puede haberse guardado en un PATCH
+      // separado del mismo formulario del admin, no confiar en este request.
+      const { reason } = await this.getManualClosedState();
+      await this.notificationsService.broadcastPushNotification({
+        title: 'Celtas está cerrado temporalmente',
+        body: reason ?? 'El local no está atendiendo pedidos en este momento.',
+        data: { businessHoursChanged: 'true' },
+      });
+      return;
+    }
+    await this.notificationsService.broadcastPushNotification({
+      title: '¡Ya volvimos a abrir!',
+      body: 'Ya podés hacer tu pedido normalmente',
+      data: { businessHoursChanged: 'true' },
+    });
   }
 
   /**
@@ -219,6 +264,56 @@ export class SettingsService implements OnModuleInit {
 
     const schedule = await this.getBusinessHoursSchedule();
     return this.evaluateSchedule(schedule, reference);
+  }
+
+  /**
+   * Próximo instante (UTC) en que cambia el estado abierto/cerrado — para que
+   * la app se autoprograme en vez de reconsultar por polling. `null` si el
+   * cierre manual está activo (puede levantarse en cualquier momento, no es
+   * predecible) o si el horario nunca abre (los 7 días marcados `closed`).
+   * Reutiliza la misma lógica de `evaluateSchedule` (`isOpenToday`,
+   * `isCarriedOverFromYesterday`), no la reescribe.
+   */
+  async getNextChangeAt(reference: Date = new Date()): Promise<Date | null> {
+    const manual = await this.getManualClosedState();
+    if (manual.closed) return null;
+
+    const schedule = await this.getBusinessHoursSchedule();
+    const todayDate = limaWallClockDate(reference);
+    const todayDow = todayDayOfWeekInLima(reference);
+    const yesterdayDow = (todayDow + 6) % 7;
+    const nowMinutes = currentMinutesInLima(reference);
+
+    const today = schedule[String(todayDow)];
+    const yesterday = schedule[String(yesterdayDow)];
+
+    if (this.isOpenToday(today, nowMinutes)) {
+      // Cierra hoy, salvo que el rango cruce medianoche (entonces cierra mañana).
+      const crossesMidnight = toMinutes(today.open) >= toMinutes(today.close);
+      const closeDate = crossesMidnight
+        ? this.shiftLimaDate(todayDate, 1)
+        : todayDate;
+      return this.buildLimaInstant(closeDate, today.close);
+    }
+
+    if (this.isCarriedOverFromYesterday(yesterday, nowMinutes)) {
+      // El tramo de ayer que se arrastró cierra hoy en la madrugada.
+      return this.buildLimaInstant(todayDate, yesterday.close);
+    }
+
+    // Cerrado ahora: buscar la próxima apertura, empezando por hoy mismo.
+    if (today && !today.closed && nowMinutes < toMinutes(today.open)) {
+      return this.buildLimaInstant(todayDate, today.open);
+    }
+    for (let offset = 1; offset <= 7; offset++) {
+      const dow = (todayDow + offset) % 7;
+      const entry = schedule[String(dow)];
+      if (entry && !entry.closed) {
+        const date = this.shiftLimaDate(todayDate, offset);
+        return this.buildLimaInstant(date, entry.open);
+      }
+    }
+    return null; // el local nunca abre con la configuración actual
   }
 
   // ── Helpers privados: horario de atención ───────────────────────────────────
@@ -316,5 +411,29 @@ export class SettingsService implements OnModuleInit {
     const close = toMinutes(entry.close);
     if (open < close) return false; // no cruza medianoche: no hay arrastre
     return nowMinutes < close;
+  }
+
+  /** Instante UTC absoluto de una hora "HH:mm" de Lima en una fecha calendario dada. */
+  private buildLimaInstant(
+    date: { year: number; month: number; day: number },
+    hhmm: string,
+  ): Date {
+    const [hour, minute] = hhmm.split(':').map(Number);
+    return limaWallClockToUtc(date.year, date.month, date.day, hour, minute);
+  }
+
+  /** Desplaza una fecha calendario (año/mes/día) N días, sin tocar ninguna zona horaria. */
+  private shiftLimaDate(
+    date: { year: number; month: number; day: number },
+    days: number,
+  ): { year: number; month: number; day: number } {
+    const shifted = new Date(
+      Date.UTC(date.year, date.month - 1, date.day + days),
+    );
+    return {
+      year: shifted.getUTCFullYear(),
+      month: shifted.getUTCMonth() + 1,
+      day: shifted.getUTCDate(),
+    };
   }
 }

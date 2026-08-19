@@ -213,6 +213,17 @@ cuando pasa lo aplicable de este checklist.
 
 - [ ] Falla de FCM (token inválido/expirado) no rompe el flujo principal (pedido, cupón, etc.) — se loguea y continúa
 - [ ] El token FCM se actualiza correctamente si el usuario cambia de dispositivo
+- [x] `broadcastPushNotification` envía solo a usuarios con `fcmToken` (no `NULL`); sin ninguno →
+      `{ sent: 0, total: 0 }` sin llamar a FCM — `notifications.service.spec.ts`
+- [x] `broadcastPushNotification` cuenta `sent`/`total` correctamente cuando algún token individual
+      falla (token inválido/expirado) — el fallo de uno no frena el envío a los demás —
+      `notifications.service.spec.ts`
+- [x] `broadcastPushNotification` divide en lotes de máximo 500 tokens por llamada a
+      `sendEachForMulticast` (límite de FCM); si un lote completo falla (ej. error de red), no
+      rompe hacia el caller y los lotes siguientes se intentan igual (mismo contrato "nunca lanza"
+      que `sendPushNotification`) — `notifications.service.spec.ts`, verificado también en e2e
+      real (`FirebaseAppError: Failed to parse private key` logueado, `PATCH /settings` sigue
+      devolviendo 200)
 
 ## Admin / Dashboard
 
@@ -326,11 +337,9 @@ Veredicto: LISTO PARA MARCAR COMPLETO / PENDIENTE
 - [ ] **Pendiente, fuera de este backend**: `celtas-admin` necesita el formulario de horario +
       interruptor manual en el panel; `celtas-app` necesita mostrar el 409 (y su mensaje) de forma
       clara en el checkout cuando el local está cerrado
-- [ ] **Hallazgo de `@tester` (no bloqueante, pendiente)**: `POST /orders` en
-      `orders.controller.ts` no documenta la respuesta `409` en Swagger (`@ApiResponse({ status: 409,
-      ... })` ausente) — confirmado contra `GET /docs-json` real: solo aparecen 201/400/401/404.
-      Ahora que el endpoint puede devolver 409 por local cerrado (y ya podía por conflictos de
-      cupón), Swagger queda desactualizado. Corrección de una línea, no requiere lógica nueva.
+- [x] **Hallazgo de `@tester` corregido**: `POST /orders` en `orders.controller.ts` ahora documenta
+      la respuesta `409` en Swagger (`@ApiResponse({ status: 409, ... })`), cubriendo tanto el
+      cierre del local como el conflicto de cupón.
 - [ ] **Hallazgo de `@tester` (riesgo bajo, anotado, no bloqueante)**: `UpdateSettingDto.value`
       tiene `@IsNotEmpty()`, por lo que un admin NO puede usar `PATCH /settings` para volver
       `business_manual_closed_reason` a `""` real una vez que le puso un motivo — solo puede
@@ -338,3 +347,121 @@ Veredicto: LISTO PARA MARCAR COMPLETO / PENDIENTE
       `null` vía `.trim()`). Funciona en la práctica pero puede sorprender a quien construya el
       formulario en `celtas-admin`; vale la pena documentarlo explícitamente para ese equipo o
       considerar relajar la validación para esta key específica.
+
+### Ampliación: `nextChangeAt` (próximo cambio de estado, para autoprogramación de `celtas-app`)
+
+> `celtas-app` va a autoprogramarse para el momento exacto del próximo cambio de horario en vez de
+> hacer polling a `GET /settings/business-hours` (carga innecesaria en Render free tier). Extiende
+> `isOpenNow()`/`evaluateSchedule()` (no los reescribe): reutiliza `isOpenToday`/
+> `isCarriedOverFromYesterday` desde un método nuevo, `SettingsService.getNextChangeAt()`. Nuevas
+> funciones aditivas en `lima-time.util.ts` (`limaWallClockDate`, `limaWallClockToUtc`) — las
+> funciones ya auditadas (`todayDayOfWeekInLima`, `currentMinutesInLima`) no se tocaron.
+
+- [x] `GET /settings/business-hours` agrega `nextChangeAt: string | null` (ISO 8601 UTC) a la
+      respuesta existente, sin romper los campos previos — confirmado leyendo
+      `settings.controller.ts` (`Promise.all` con `getNextChangeAt()`, campo agregado al objeto de
+      respuesta sin tocar `open`/`message`/`schedule`/`manualClosed`) y con el test e2e existente
+      que valida los 5 campos en la misma respuesta
+- [x] `nextChangeAt` con el local abierto (sin cruce de medianoche) → la hora de cierre de HOY —
+      `settings.service.spec.ts`, `getNextChangeAt`, caso "abierto ahora (sin cruce)"
+- [x] `nextChangeAt` con el local abierto en un horario que cruza medianoche → la hora de cierre
+      corresponde a MAÑANA (fecha calendario avanzada, no la de hoy) — mismo instante absoluto
+      calculado tanto desde el tramo de "hoy" (antes de medianoche) como desde el arrastre de
+      "ayer" (después de medianoche) — **verificado con mutación real por `@tester`**: (1) se forzó
+      `closeDate = todayDate` (nunca `shiftLimaDate`, aunque cruce medianoche) → rompió
+      exactamente el test "cruza medianoche → MAÑANA" y ningún otro (28/29 en verde); (2) se
+      invirtió la condición `crossesMidnight` (`<` en vez de `>=`) → rompió exactamente los 2
+      tests que dependen de esa rama ("sin cruce → hoy" y "cruza medianoche → mañana", 27/29 en
+      verde) y ningún otro. Ambas mutaciones revertidas, suite vuelve a 29/29 (`getNextChangeAt`) y
+      287/287 (completa)
+- [x] `nextChangeAt` con el local cerrado, todavía no abrió hoy → la hora de apertura de HOY —
+      caso "cerrado ahora, todavía no abrió hoy"
+- [x] `nextChangeAt` con el local cerrado, ya cerró por hoy → la hora de apertura de MAÑANA — caso
+      "cerrado ahora, ya cerró por hoy"
+- [x] `nextChangeAt` cuando mañana también está `closed: true` → salta al primer día siguiente que
+      sí abre (no asume que "mañana" siempre es la respuesta) — caso "mañana también closed:true"
+- [x] `nextChangeAt` con los 7 días marcados `closed: true` → `null`, sin lanzar excepción (el local
+      nunca abre con la configuración actual, caso válido) — caso "los 7 días closed:true"
+- [x] `nextChangeAt` con el cierre manual activo → `null` siempre, sin importar el horario
+      programado (un cierre manual puede levantarse en cualquier momento, no es predecible;
+      decisión de producto: la app NO programa timer en este caso, se entera al reabrir/reanudar) —
+      cubierto en unit (`getNextChangeAt`, caso "cierre manual activo") y en e2e
+      (`test/settings.e2e-spec.ts`, `GET /settings/business-hours`, test de cierre manual con
+      motivo: `expect(data.nextChangeAt).toBeNull()`)
+- [x] Verificado con `curl` real contra el servidor y Postgres local: `nextChangeAt` coincide con
+      el cálculo a mano a partir del horario configurado y la hora real; `null` mientras el cierre
+      manual está activo, valor real de nuevo al desactivarlo — **hecho por la sesión principal**,
+      no reproducido de forma independiente por `@tester` en este pase (confiado según lo indicado
+      explícitamente); la cobertura equivalente automatizada y repetible (unit + e2e) sí fue
+      verificada de forma independiente por `@tester`, incluyendo el test e2e que confirma
+      `nextChangeAt` es un ISO 8601 UTC futuro real contra Postgres de test
+- [x] Adicional (no listado originalmente, verificado a pedido explícito): `limaWallClockToUtc` usa
+      `month` 1-12 de forma consistente en el único lugar donde se llama (`buildLimaInstant` en
+      `settings.service.ts`, alimentado por `limaWallClockDate`, también 1-12) — confirmado leyendo
+      el código real, sin mezcla con la convención 0-indexada de `Date` nativo; único call site en
+      todo `src/` (grep confirmado)
+- [ ] **Pendiente, fuera de este backend**: `celtas-app` es quien consume `nextChangeAt` para el
+      cartel del Home (autoprogramar el próximo refresco) — el checkout (`POST /orders` → 409) no
+      cambia con este agregado
+
+### Ampliación: push notification automático al activar/desactivar el cierre manual
+
+> Cuando el admin cambia `business_manual_closed` desde el panel, el backend avisa automáticamente
+> a todos los clientes con `fcmToken` — infraestructura reutilizada, no construida de cero:
+> `NotificationsService.broadcastPushNotification()` (nuevo) sigue el mismo contrato ya auditado de
+> `sendPushNotification` (nunca lanza), y `SettingsService.upsert()` detecta el cambio comparando el
+> valor anterior (leído antes de guardar) contra el nuevo, disparando la notificación DESPUÉS de
+> guardar solo si de verdad cambió — el caso más importante y el más fácil de romper por accidente
+> es que reenviar el MISMO valor (el form del admin guarda las 3 keys juntas siempre) no dispare
+> nada: spam real a usuarios reales si se rompe.
+
+- [x] `NotificationsService.broadcastPushNotification()` existe y sigue el contrato de
+      `sendPushNotification` (nunca lanza) — cubierto arriba en la sección "Notifications"
+- [x] `SettingsService.upsert(BUSINESS_MANUAL_CLOSED_KEY, 'true')` cuando el valor anterior era
+      `'false'` dispara `broadcastPushNotification` con título "Celtas está cerrado temporalmente" y
+      el `body` = el motivo, leído FRESCO de `business_manual_closed_reason` en la base en ese
+      momento (no de ningún valor del mismo request) — puede haberse guardado en un PATCH separado
+      del mismo formulario del admin. **Verificado con mutación real por `@tester`**: se cambió
+      `notifyBusinessHoursChange` para leer el motivo de un parámetro en vez de volver a consultar
+      la base (`getManualClosedState`); rompió exactamente el test "false→true...motivo leído
+      fresco" (el `body` cayó al mensaje genérico en vez de "Cerrado por feriado") y ningún otro de
+      los 33 tests de `settings.service.spec.ts` (32/33). Mutación revertida, suite vuelve a verde.
+- [x] Con el motivo vacío/no seteado, el `body` cae a un mensaje genérico (no queda vacío ni
+      `undefined`) — confirmado leyendo el código (`reason ?? 'El local no está atendiendo pedidos
+      en este momento.'`)
+- [x] `SettingsService.upsert(BUSINESS_MANUAL_CLOSED_KEY, 'false')` cuando el valor anterior era
+      `'true'` dispara `broadcastPushNotification` con título "¡Ya volvimos a abrir!" y body "Ya
+      podés hacer tu pedido normalmente"
+- [x] Ambos casos incluyen `data: { businessHoursChanged: 'true' }` en el payload (sin más
+      contenido — la app la usa solo como aviso de "algo cambió, volvé a consultar
+      `/settings/business-hours`", no confía en el contenido de la notificación como dato real)
+- [x] **El caso más importante**: volver a guardar el MISMO valor de `business_manual_closed` (ej.
+      el form completo reenviando lo mismo que ya estaba, sin que el admin haya tocado el toggle)
+      NO dispara ninguna notificación — **verificado con mutación real por `@tester`**: (1) se
+      quitó la comparación `previousValue !== value` (dispara siempre) → rompió exactamente el
+      test "guardar el MISMO valor...NO dispara ninguna notificación" y ningún otro (32/33); (2) se
+      forzó el `if` completo a `false` (nunca dispara) → rompió exactamente los 2 tests
+      "false→true" y "true→false" y ningún otro (31/33). Ambas mutaciones revertidas, suite vuelve
+      a 295/295 completa.
+- [x] Cambiar cualquier OTRA key de settings (ej. `whatsapp_business_number`, el horario mismo)
+      nunca dispara esta notificación, sin importar si el valor cambió — test explícito en
+      `settings.service.spec.ts` ("cambiar otra key...nunca dispara esta notificación") y
+      confirmado leyendo el `if` (`key === BUSINESS_MANUAL_CLOSED_KEY`, sin excepciones)
+- [x] `pnpm run build`/`pnpm test` limpios con `NotificationsModule` importado en `SettingsModule`
+      (sin ciclo de dependencias — confirmado leyendo `notifications.module.ts`: solo importa
+      `TypeOrmModule.forFeature([User])`, no depende de `SettingsModule` ni de nada que dependa de
+      él) — `pnpm run build` limpio, `pnpm test` 295/295 (19 suites), `pnpm run test:e2e` 245/245
+      (12 suites)
+
+**Auditado por `@tester` (pase independiente, con mutación real sobre el caso de mayor impacto) —
+veredicto "LISTO" para esta ampliación.**
+
+⚠️ Riesgo/caso borde no cubierto (bajo riesgo, no bloqueante): no hay un test e2e dedicado que
+verifique end-to-end (Postgres + `PATCH /settings` real) que reenviar el MISMO valor no dispare
+`broadcastPushNotification` — la cobertura de ese caso crítico es solo unitaria (con
+`NotificationsService` mockeado). Los e2e existentes de `test/settings.e2e-spec.ts` sí ejercitan
+`PATCH /settings` con `business_manual_closed: 'true'`/`'false'` de verdad contra Postgres de test
+(confirmando que el side-effect de Firebase fallando no rompe la respuesta 200), pero ninguno hace
+dos `PATCH` seguidos con el mismo valor para observar el "no-disparo" a ese nivel. Vale la pena
+agregarlo si en el futuro se quiere mockear `NotificationsService` también en el contexto e2e para
+poder aserir `toHaveBeenCalledTimes(0)`.

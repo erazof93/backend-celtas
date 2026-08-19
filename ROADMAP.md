@@ -292,6 +292,74 @@ celtas-backend/
       fuera de este backend**: `celtas-admin` (formulario de horario + interruptor manual en el
       panel) y `celtas-app` (mostrar el 409 y su mensaje de forma clara en el checkout) quedan
       pendientes con el mismo criterio que las mejoras anteriores.
+- [x] **Ampliación: `nextChangeAt` en `GET /settings/business-hours` para que
+      `celtas-app` se autoprograme en vez de hacer polling.** Antes la app tendría que reconsultar
+      el endpoint cada pocos minutos (carga innecesaria en Render free tier); ahora el backend le
+      dice exactamente CUÁNDO va a cambiar el estado abierto/cerrado. Extiende la lógica ya
+      auditada de `isOpenNow()`/`evaluateSchedule()` sin reescribirla: `SettingsService
+      .getNextChangeAt(reference?: Date): Promise<Date | null>` reutiliza los mismos helpers
+      privados `isOpenToday`/`isCarriedOverFromYesterday`. Dos funciones nuevas y aditivas en
+      `lima-time.util.ts` (`limaWallClockDate`, `limaWallClockToUtc`) — las funciones ya
+      auditadas (`todayDayOfWeekInLima`, `currentMinutesInLima`) quedaron intactas, sin tocar.
+      Reglas: cierre manual activo → `null` siempre (impredecible, la app no programa timer en
+      ese caso); abierto ahora → la hora de cierre de la ventana activa (hoy, o mañana si el
+      horario cruza medianoche); cerrado ahora → la próxima apertura, buscando hasta 7 días hacia
+      adelante el primer día que no esté `closed: true`; si los 7 días están cerrados → `null`
+      (caso válido, no lanza excepción). Verificado con `curl` real contra el servidor y Postgres
+      local reales: `nextChangeAt` coincide con el cálculo a mano a partir del horario configurado
+      y la hora real (abierto ahora → cierre de hoy), y da `null` mientras el cierre manual está
+      activo, volviendo al valor real al desactivarlo. Auditado por `@tester`: **LISTO PARA
+      MARCAR COMPLETO** — build/lint limpios, 287 unit (19 suites) + 245 e2e (12 suites).
+      Verificado con mutación real sobre el punto más frágil (cruce de medianoche): forzar
+      `closeDate = todayDate` siempre (nunca `shiftLimaDate`) rompió exactamente el test
+      "cruza medianoche → mañana" y ningún otro; invertir la condición `crossesMidnight` rompió
+      exactamente los 2 tests que dependen de esa rama. Ambas mutaciones revertidas, confirmado
+      con `git diff` que el archivo volvió al estado previo, build+unit+e2e completos otra vez en
+      verde tras el revert. Confirmado además que `limaWallClockToUtc` usa `month` 1-12 de forma
+      consistente en su único call site (`buildLimaInstant`, alimentado por `limaWallClockDate`),
+      sin off-by-one. Riesgos anotados, no bloqueantes: no hay caso de prueba para un horario
+      inválido con `open === close` (config que el admin no debería poder crear; queda para una
+      validación de DTO a futuro si hace falta) ni para el límite exacto `nowMinutes === close`
+      (la lógica reutiliza `isOpenToday`/`isCarriedOverFromYesterday`, ya auditados con mutación
+      en la feature base). **Pendiente, fuera de este backend**: `celtas-app` es quien consume
+      `nextChangeAt` para el cartel del Home — el checkout (`POST /orders` → 409) no cambia con
+      este agregado.
+- [x] **Ampliación: push notification automático al activar/desactivar el cierre
+      manual.** Antes el cambio de horario manual era invisible para el cliente hasta que abría la
+      app y consultaba `/settings/business-hours`. Reutiliza infraestructura existente, no la
+      construye de cero: `NotificationsService.broadcastPushNotification(payload):
+      Promise<{ sent, total }>` (nuevo) manda a TODOS los usuarios con `fcmToken`, usando
+      `sendEachForMulticast` (disponible en `firebase-admin@14.2.0` ya instalado) en lotes de 500
+      (límite de FCM); mismo contrato que `sendPushNotification`: nunca lanza, un token individual
+      roto se loguea sin frenar el resto. `SettingsService.upsert()` lee el valor ANTERIOR de la
+      key antes de guardar (ya lo hacía para decidir create/update) y, solo si
+      `key === BUSINESS_MANUAL_CLOSED_KEY` Y el valor de verdad cambió (no si el form reenvía lo
+      mismo que ya estaba — pasa seguido, el form guarda las 3 keys juntas), dispara la
+      notificación DESPUÉS de guardar: `"true"` → "Celtas está cerrado temporalmente" con el motivo
+      leído FRESCO de `business_manual_closed_reason` en la base en ese momento (no de este mismo
+      request — puede haberse guardado en un PATCH separado del mismo formulario); `"false"` →
+      "¡Ya volvimos a abrir!". Ambos casos incluyen `data: { businessHoursChanged: 'true' }` — la
+      app la usa solo como aviso de "algo cambió, volvé a consultar business-hours", no como dato
+      real. `SettingsModule` ahora importa `NotificationsModule` (sin ciclo: `NotificationsModule`
+      no depende de `SettingsModule`). **Coordinación pendiente con `celtas-admin`**: el motivo debe
+      guardarse ANTES del toggle de cierre manual en el formulario (no después) para que ya esté en
+      la base cuando se dispara la notificación — ajuste aparte del lado de ese repo, no asumido
+      resuelto acá. Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — build/lint limpios,
+      295 unit (19 suites) + 245 e2e (12 suites). Verificado con mutación real sobre el caso de
+      mayor impacto: quitar la comparación `previousValue !== value` rompió exactamente el test
+      "guardar el MISMO valor... NO dispara ninguna notificación" (32/33 en verde); el mutante
+      contrario (deshabilitar el `if` completo) rompió exactamente los 2 tests que sí esperan
+      disparo ("false"→"true" y "true"→"false", 31/33 en verde) y ningún otro. Confirmado además
+      con una tercera mutación que el motivo SÍ se relee fresco de la base (no del `description`
+      del request): forzar `notifyBusinessHoursChange` a usar un valor pasado por parámetro rompió
+      el test correspondiente. Las 3 mutaciones revertidas, `git diff --stat` confirmado idéntico
+      al estado previo. Confirmado leyendo el código (no asumido) que `NotificationsModule` no
+      depende de `SettingsModule` — sin ciclo. Confirmado que `Coupons`/`Orders` siguen usando solo
+      `sendPushNotification` (no se tocaron). Riesgo anotado, no bloqueante: no hay un e2e propio
+      contra Postgres real que haga dos `PATCH /settings` seguidos con el mismo valor para observar
+      el "no-disparo" a ese nivel (la cobertura crítica es unitaria, con mutación confirmada). El
+      hallazgo pendiente de `UpdateSettingDto.value`/`@IsNotEmpty()` para el motivo sigue igual que
+      antes, sin relación a este cambio.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)

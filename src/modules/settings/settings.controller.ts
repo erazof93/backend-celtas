@@ -35,19 +35,27 @@ export class SettingsController {
   @ApiOperation({
     summary: 'Horario de atención y si el local está abierto ahora (sin auth)',
     description:
-      'Fuente única de verdad de si el local está abierto: evalúa el interruptor manual "cerrado temporalmente" (con prioridad sobre el horario) y, si no aplica, el horario programado por día de la semana en hora de Lima. No bloquea nada por sí mismo (el bloqueo real ocurre en POST /orders) — centraliza la lógica para que el panel o la app puedan mostrarla.',
+      'Fuente única de verdad de si el local está abierto: evalúa el interruptor manual "cerrado temporalmente" (con prioridad sobre el horario) y, si no aplica, el horario programado por día de la semana en hora de Lima. No bloquea nada por sí mismo (el bloqueo real ocurre en POST /orders) — centraliza la lógica para que el panel o la app puedan mostrarla. `nextChangeAt` (ISO 8601 UTC) es el próximo instante en que cambia el estado abierto/cerrado, para que la app se autoprograme en vez de hacer polling; es `null` si el cierre manual está activo (impredecible) o si el horario nunca abre.',
   })
   @ApiResponse({
     status: 200,
-    description: '{ open, message, schedule, manualClosed }',
+    description: '{ open, message, schedule, manualClosed, nextChangeAt }',
   })
   async businessHours() {
-    const [{ open, message }, schedule, manualClosed] = await Promise.all([
-      this.settingsService.isOpenNow(),
-      this.settingsService.getBusinessHoursSchedule(),
-      this.settingsService.isManuallyClosed(),
-    ]);
-    return { open, message, schedule, manualClosed };
+    const [{ open, message }, schedule, manualClosed, nextChangeAt] =
+      await Promise.all([
+        this.settingsService.isOpenNow(),
+        this.settingsService.getBusinessHoursSchedule(),
+        this.settingsService.isManuallyClosed(),
+        this.settingsService.getNextChangeAt(),
+      ]);
+    return {
+      open,
+      message,
+      schedule,
+      manualClosed,
+      nextChangeAt: nextChangeAt ? nextChangeAt.toISOString() : null,
+    };
   }
 
   @Get()
