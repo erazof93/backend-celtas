@@ -5,6 +5,7 @@ import { Banner } from './modules/banners/entities/banner.entity';
 import { Coupon } from './modules/coupons/entities/coupon.entity';
 import { Category } from './modules/menu/entities/category.entity';
 import { MenuItem } from './modules/menu/entities/menu-item.entity';
+import { MarketingNotification } from './modules/notifications/entities/marketing-notification.entity';
 import { OrderItem } from './modules/orders/entities/order-item.entity';
 import { Order } from './modules/orders/entities/order.entity';
 import { Sauce } from './modules/sauces/entities/sauce.entity';
@@ -56,6 +57,7 @@ export const AppDataSource = new DataSource({
     Coupon,
     Banner,
     Setting,
+    MarketingNotification,
   ],
   migrations: [__dirname + '/migrations/*{.ts,.js}'],
   synchronize: false,

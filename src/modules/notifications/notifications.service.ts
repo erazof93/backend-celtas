@@ -5,6 +5,7 @@ import { App, cert, initializeApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
 import { IsNull, Not, Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
+import { MarketingNotification } from './entities/marketing-notification.entity';
 
 /** Límite de tokens por llamada a `sendEachForMulticast` (restricción de FCM). */
 const MULTICAST_BATCH_SIZE = 500;
@@ -36,6 +37,8 @@ export class NotificationsService {
   constructor(
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
+    @InjectRepository(MarketingNotification)
+    private readonly marketingNotificationsRepository: Repository<MarketingNotification>,
     private readonly configService: ConfigService,
   ) {}
 
@@ -146,5 +149,36 @@ export class NotificationsService {
     }
 
     return { sent, total: tokens.length };
+  }
+
+  /**
+   * Notificación de marketing/fidelización: envía a TODOS los usuarios con
+   * token (vía `broadcastPushNotification`) y deja registro en el historial
+   * (`MarketingNotification`) con quién la mandó y el resultado (sent/total).
+   */
+  async sendMarketingBroadcast(
+    adminId: string,
+    payload: PushNotificationPayload,
+  ): Promise<{ sent: number; total: number }> {
+    const { sent, total } = await this.broadcastPushNotification(payload);
+
+    await this.marketingNotificationsRepository.save(
+      this.marketingNotificationsRepository.create({
+        title: payload.title,
+        body: payload.body,
+        adminId,
+        sentCount: sent,
+        totalCount: total,
+      }),
+    );
+
+    return { sent, total };
+  }
+
+  /** Historial de campañas de marketing, más recientes primero. */
+  async getBroadcastHistory(): Promise<MarketingNotification[]> {
+    return this.marketingNotificationsRepository.find({
+      order: { createdAt: 'DESC' },
+    });
   }
 }

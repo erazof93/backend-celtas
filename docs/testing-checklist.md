@@ -225,6 +225,46 @@ cuando pasa lo aplicable de este checklist.
       real (`FirebaseAppError: Failed to parse private key` logueado, `PATCH /settings` sigue
       devolviendo 200)
 
+### Notificaciones de marketing/fidelización (`POST /notifications/broadcast`, `GET /notifications/broadcast-history`)
+
+- [x] `sendMarketingBroadcast(adminId, payload)` reutiliza `broadcastPushNotification` (no
+      reimplementa el batching) y guarda el historial con `title`, `body`, `adminId`, `sentCount`,
+      `totalCount` — `notifications.service.spec.ts`
+- [x] `sendMarketingBroadcast` guarda el historial también cuando `sent:0, total:0` (nadie con
+      token) — `notifications.service.spec.ts`
+- [x] `getBroadcastHistory()` pide `order: { createdAt: 'DESC' }` (más reciente primero) —
+      `notifications.service.spec.ts`. Verificado también con SQL directo contra Postgres local
+      (`ORDER BY "createdAt" DESC` sobre dos filas insertadas manualmente) que el orden es real
+      a nivel de motor, no solo del mock.
+- [x] `POST /notifications/broadcast` exige rol `admin` (mismo guard que `/notifications/test`):
+      403 con rol `cliente`, 401 sin token — `test/notifications.e2e-spec.ts`. Confirmado con test
+      de regresión manual (se quitó `@Roles(UserRole.ADMIN)` del controller y el test de 403
+      pasó a fallar; luego se restauró) que la protección es real.
+- [x] `BroadcastNotificationDto` rechaza `title`/`body` ausentes (400) — `test/notifications.e2e-spec.ts`
+- [x] `BroadcastNotificationDto` rechaza `title`/`body` presentes pero vacíos (`''`), no solo
+      ausentes — agregado por `@tester` (`test/notifications.e2e-spec.ts`, casos "rechaza title
+      vacío…" / "rechaza body vacío…"). Confirmado con test de regresión manual (se quitó
+      `@IsNotEmpty` del DTO dejando solo `@IsString` y el test pasó a fallar con 201 en vez de
+      400) que `@IsNotEmpty` no es redundante con `@IsString`.
+- [x] `GET /notifications/broadcast-history` exige rol `admin` (403 cliente, 401 sin token) —
+      `test/notifications.e2e-spec.ts`
+- [x] Migración `AddMarketingNotifications` coincide 1:1 con la entidad `MarketingNotification`
+      (columnas, tipos, nullable, FK `adminId → users.id ON DELETE SET NULL`) — comparado a mano
+      contra `\d marketing_notifications` en Postgres local
+- [x] FK `adminId → users.id ON DELETE SET NULL` verificado con SQL real (insert usuario + fila de
+      historial, delete del usuario, `adminId` queda `NULL`), transacción revertida sin dejar
+      residuo
+- [x] `GET /notifications/broadcast-history` no expone datos del admin (`admin` es una relación
+      `ManyToOne` no eager y `getBroadcastHistory()` no la carga con `relations`, así que nunca
+      viaja un `User`/password en la respuesta)
+- ⚠️ Cobertura: a diferencia de Coupons/Banners (que en e2e usan el `NotificationsService` real
+      contra Postgres, mockeando solo el servicio externo), en `notifications.e2e-spec.ts` todo
+      `NotificationsService` está mockeado (convención ya existente del módulo, por Firebase).
+      Esto significa que el guardado real en `marketing_notifications` y el `ORDER BY` real nunca
+      se ejercitan a través del endpoint HTTP end-to-end, solo a nivel de unit test (repo
+      mockeado) + verificación manual por SQL directo (hecha en esta auditoría). No bloqueante,
+      pero si se agrega un e2e con DB real en el futuro, seguir el patrón de `coupons.e2e-spec.ts`.
+
 ## Admin / Dashboard
 
 - [ ] `GET /admin/dashboard/summary` y `GET /admin/dashboard/top-products` devuelven `401` sin token y `403` con rol `cliente`

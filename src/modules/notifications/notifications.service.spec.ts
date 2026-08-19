@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { User } from '../users/entities/user.entity';
+import { MarketingNotification } from './entities/marketing-notification.entity';
 import { NotificationsService } from './notifications.service';
 
 // Mock de firebase-admin (API modular). Se mockea antes de importar el servicio.
@@ -22,6 +23,11 @@ import { getMessaging } from 'firebase-admin/messaging';
 describe('NotificationsService', () => {
   let service: NotificationsService;
   let usersRepo: { findOne: jest.Mock; find: jest.Mock };
+  let marketingNotificationsRepo: {
+    create: jest.Mock;
+    save: jest.Mock;
+    find: jest.Mock;
+  };
   let configService: { get: jest.Mock };
   const sendMock = jest.fn();
   const multicastMock = jest.fn();
@@ -36,6 +42,11 @@ describe('NotificationsService', () => {
 
   beforeEach(async () => {
     usersRepo = { findOne: jest.fn(), find: jest.fn() };
+    marketingNotificationsRepo = {
+      create: jest.fn((data: unknown) => data),
+      save: jest.fn((data: unknown) => Promise.resolve(data)),
+      find: jest.fn(),
+    };
     configService = {
       get: jest.fn((key: string) => {
         if (key === 'firebase.projectId') return 'proyecto-test';
@@ -60,6 +71,10 @@ describe('NotificationsService', () => {
       providers: [
         NotificationsService,
         { provide: getRepositoryToken(User), useValue: usersRepo },
+        {
+          provide: getRepositoryToken(MarketingNotification),
+          useValue: marketingNotificationsRepo,
+        },
         { provide: ConfigService, useValue: configService },
       ],
     }).compile();
@@ -229,6 +244,66 @@ describe('NotificationsService', () => {
       });
 
       expect(result).toEqual({ sent: 0, total: 2 });
+    });
+  });
+
+  describe('sendMarketingBroadcast', () => {
+    it('envía el broadcast y guarda el historial con adminId, sent y total', async () => {
+      usersRepo.find.mockResolvedValue([
+        makeUser({ id: 'u1', fcmToken: 'token-a' }),
+        makeUser({ id: 'u2', fcmToken: 'token-b' }),
+      ]);
+      multicastMock.mockResolvedValue({
+        successCount: 2,
+        failureCount: 0,
+        responses: [{ success: true }, { success: true }],
+      });
+
+      const result = await service.sendMarketingBroadcast('admin-1', {
+        title: 'A pocos días del día del padre y Celtas lo sabe',
+        body: 'Promos especiales',
+      });
+
+      expect(result).toEqual({ sent: 2, total: 2 });
+      expect(marketingNotificationsRepo.create).toHaveBeenCalledWith({
+        title: 'A pocos días del día del padre y Celtas lo sabe',
+        body: 'Promos especiales',
+        adminId: 'admin-1',
+        sentCount: 2,
+        totalCount: 2,
+      });
+      expect(marketingNotificationsRepo.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('guarda el historial también cuando no hay usuarios con token (0/0)', async () => {
+      usersRepo.find.mockResolvedValue([]);
+
+      const result = await service.sendMarketingBroadcast('admin-1', {
+        title: 'Hola',
+        body: 'Mundo',
+      });
+
+      expect(result).toEqual({ sent: 0, total: 0 });
+      expect(marketingNotificationsRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ sentCount: 0, totalCount: 0 }),
+      );
+    });
+  });
+
+  describe('getBroadcastHistory', () => {
+    it('devuelve el historial ordenado por fecha descendente', async () => {
+      const history = [
+        { id: 'm2', title: 'Segundo' },
+        { id: 'm1', title: 'Primero' },
+      ];
+      marketingNotificationsRepo.find.mockResolvedValue(history);
+
+      const result = await service.getBroadcastHistory();
+
+      expect(result).toBe(history);
+      expect(marketingNotificationsRepo.find).toHaveBeenCalledWith({
+        order: { createdAt: 'DESC' },
+      });
     });
   });
 });

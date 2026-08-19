@@ -424,6 +424,50 @@ celtas-backend/
 - [x] Servicio reutilizable `sendPushNotification(userId, payload)`
 - [x] Disparo automático: cupón generado, cambio de estado de pedido
 - [ ] Disparo automático: banner nuevo (broadcast) — PENDIENTE como decisión futura (probablemente FCM topics, no token a token). El método `sendPushNotification` ya está listo.
+- [x] **Notificaciones de marketing/fidelización (v1 manual, sin scheduler)**: reutiliza
+  `broadcastPushNotification` (ya construido en el módulo del horario, commit `d6a9ec6`) — no se
+  reinventó el envío ni el batching de 500 tokens. Entidad `MarketingNotification` (historial:
+  `title`, `body`, `adminId`, `sentCount`, `totalCount`, `createdAt`), migración
+  `AddMarketingNotifications` generada y corrida localmente. Nuevo método de servicio
+  `sendMarketingBroadcast(adminId, payload)` = `broadcastPushNotification` + guardado del
+  historial; `getBroadcastHistory()` lista más reciente primero. Endpoints admin-only (mismo guard
+  que `/notifications/test`): `POST /notifications/broadcast` ({ title, body } → { sent, total })
+  y `GET /notifications/broadcast-history`. Tests unitarios (service, mock de FCM) y e2e (mismo
+  patrón: `NotificationsService` mockeado completo, sin pegarle a Firebase real) agregados y
+  corridos contra Postgres local.
+- ⚠️ **Auditado por `@tester`: CASI LISTO, un bloqueante cosmético pendiente de la sesión
+  principal** — 298 unit (19 suites) + 254 e2e (12 suites, incluye 2 tests de regresión nuevos
+  agregados por `@tester`), build limpio. Verificado independientemente (no solo confiado en el
+  reporte previo): guard admin-only, DTO rechaza `title`/`body` ausentes Y vacíos (`''`), FK
+  `adminId → users.id ON DELETE SET NULL` y el `ORDER BY "createdAt" DESC` del historial
+  confirmados con SQL real contra Postgres local (no solo con el repo mockeado), migración
+  comparada columna a columna contra `\d marketing_notifications`. Dos regresiones reales
+  probadas a mano: quitar `@Roles(ADMIN)` del controller rompe el test de 403; quitar
+  `@IsNotEmpty` del DTO (dejando solo `@IsString`) rompe el nuevo test de `title`/`body` vacío
+  (antes solo se probaba el campo *ausente*, no un string vacío — gap cerrado en esta auditoría).
+  **Bloqueante real encontrado**: `pnpm exec eslint "src/migrations/**/*.ts"` falla con 10 errores
+  `prettier/prettier` en `src/migrations/1787157787761-AddMarketingNotifications.ts` (el archivo
+  generado por el CLI de TypeORM nunca se corrió por Prettier/ESLint, a diferencia de todas las
+  migraciones anteriores del repo, que sí están formateadas). Es puramente cosmético — el SQL ya
+  fue verificado real y correcto contra la BD — pero rompe la convención "build/lint limpios" que
+  se exige en el resto de este archivo, así que no se marca el checklist como completo hasta que
+  se corra `pnpm run lint` (o se formatee ese archivo puntual) en la sesión principal y quede en
+  verde. No es necesario volver a pedir auditoría solo por ese fix; alcanza con confirmar que el
+  lint queda limpio.
+- Re-auditado por `@tester` tras el fix de la sesión principal (`pnpm exec eslint <archivo>
+  --fix`): **LISTO PARA MARCAR COMPLETO** — 298 unit (19 suites) + 254 e2e (12 suites, incluye
+  los 2 tests de regresión de `title`/`body` vacío agregados en la auditoría anterior), build y
+  `pnpm run lint` completos del repo sin errores. Verificado independientemente: `pnpm exec
+  eslint "src/migrations/1787157787761-AddMarketingNotifications.ts"` sale limpio (sin salida,
+  0 errores); se leyó el contenido final del archivo y el SQL generado dentro de los template
+  literals no cambió — mismo `CREATE TABLE "marketing_notifications"` con mismas columnas,
+  mismo `CONSTRAINT "PK_506243e53f6669bb7b7c66e450e"`, mismo `ALTER TABLE ... ADD CONSTRAINT
+  "FK_456e3e8cf59df8a0701737f2f82" FOREIGN KEY ("adminId") REFERENCES "users"("id") ON DELETE
+  SET NULL` (eslint `--fix` no reescribe el contenido de strings/template literals, solo
+  formato circundante). No se pudo hacer `git diff` línea por línea contra la versión previa
+  porque el archivo nunca se había commiteado (estaba `??` sin trackear en ambas sesiones), pero
+  la garantía estructural de eslint/prettier sobre template literals más la comparación visual
+  del SQL final son suficientes. Sin bloqueantes restantes.
 
 ### 8. Panel Admin (endpoints) — ✅ COMPLETO
 - [x] Guard de rol `admin` para todos los endpoints de gestión

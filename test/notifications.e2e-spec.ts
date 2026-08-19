@@ -37,6 +37,8 @@ describe('Notifications (e2e)', () => {
   let adminToken: string;
   let clientId: string;
   let sendPushMock: jest.Mock;
+  let broadcastMock: jest.Mock;
+  let broadcastHistoryMock: jest.Mock;
 
   const suffix = Date.now();
   const clientEmail = `qa-notif-client-${suffix}@test.com`;
@@ -53,6 +55,8 @@ describe('Notifications (e2e)', () => {
 
   beforeAll(async () => {
     sendPushMock = jest.fn().mockResolvedValue(true);
+    broadcastMock = jest.fn().mockResolvedValue({ sent: 2, total: 2 });
+    broadcastHistoryMock = jest.fn().mockResolvedValue([]);
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -60,7 +64,11 @@ describe('Notifications (e2e)', () => {
       .overrideGuard(ThrottlerGuard)
       .useValue({ canActivate: () => true })
       .overrideProvider(NotificationsService)
-      .useValue({ sendPushNotification: sendPushMock })
+      .useValue({
+        sendPushNotification: sendPushMock,
+        sendMarketingBroadcast: broadcastMock,
+        getBroadcastHistory: broadcastHistoryMock,
+      })
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -171,6 +179,109 @@ describe('Notifications (e2e)', () => {
       await request(app.getHttpServer())
         .post('/notifications/test')
         .send({ userId: clientId, title: 'Prueba', body: 'Hola' })
+        .expect(401);
+    });
+  });
+
+  describe('POST /notifications/broadcast (admin)', () => {
+    it('envía la campaña y devuelve sent/total', async () => {
+      broadcastMock.mockResolvedValue({ sent: 2, total: 2 });
+      const res = await request(app.getHttpServer())
+        .post('/notifications/broadcast')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          title: 'A pocos días del día del padre y Celtas lo sabe',
+          body: 'Promos especiales',
+        })
+        .expect(201);
+      expect((res.body as Envelope).data).toEqual({ sent: 2, total: 2 });
+      expect(broadcastMock).toHaveBeenCalledWith(expect.any(String), {
+        title: 'A pocos días del día del padre y Celtas lo sabe',
+        body: 'Promos especiales',
+      });
+    });
+
+    it('rechaza con rol cliente (403)', async () => {
+      await request(app.getHttpServer())
+        .post('/notifications/broadcast')
+        .set('Authorization', `Bearer ${clientToken}`)
+        .send({ title: 'Título', body: 'Cuerpo' })
+        .expect(403);
+    });
+
+    it('rechaza sin token (401)', async () => {
+      await request(app.getHttpServer())
+        .post('/notifications/broadcast')
+        .send({ title: 'Título', body: 'Cuerpo' })
+        .expect(401);
+    });
+
+    it('rechaza payload sin title/body (400)', async () => {
+      await request(app.getHttpServer())
+        .post('/notifications/broadcast')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({})
+        .expect(400);
+    });
+
+    it('rechaza title vacío (string vacío, no solo ausente) con body válido (400)', async () => {
+      // Regresión: `@IsString` por sí solo NO detecta un string vacío, solo un
+      // tipo incorrecto/ausente. Verificado quitando `@IsNotEmpty` del DTO:
+      // este test pasa a fallar (201 en vez de 400) si se revierte ese decorator.
+      await request(app.getHttpServer())
+        .post('/notifications/broadcast')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ title: '', body: 'Cuerpo válido' })
+        .expect(400);
+    });
+
+    it('rechaza body vacío (string vacío, no solo ausente) con title válido (400)', async () => {
+      // Mismo caso que arriba mirroreado para `body` (también protegido con
+      // `@IsNotEmpty`, ver `broadcast-notification.dto.ts`).
+      await request(app.getHttpServer())
+        .post('/notifications/broadcast')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ title: 'Título válido', body: '' })
+        .expect(400);
+    });
+  });
+
+  describe('GET /notifications/broadcast-history (admin)', () => {
+    it('devuelve el historial', async () => {
+      broadcastHistoryMock.mockResolvedValue([
+        {
+          id: 'm1',
+          title: 'Campaña previa',
+          body: 'Cuerpo',
+          sentCount: 5,
+          totalCount: 6,
+        },
+      ]);
+      const res = await request(app.getHttpServer())
+        .get('/notifications/broadcast-history')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      expect((res.body as Envelope).data).toEqual([
+        {
+          id: 'm1',
+          title: 'Campaña previa',
+          body: 'Cuerpo',
+          sentCount: 5,
+          totalCount: 6,
+        },
+      ]);
+    });
+
+    it('rechaza con rol cliente (403)', async () => {
+      await request(app.getHttpServer())
+        .get('/notifications/broadcast-history')
+        .set('Authorization', `Bearer ${clientToken}`)
+        .expect(403);
+    });
+
+    it('rechaza sin token (401)', async () => {
+      await request(app.getHttpServer())
+        .get('/notifications/broadcast-history')
         .expect(401);
     });
   });
