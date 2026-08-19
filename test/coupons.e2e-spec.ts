@@ -17,6 +17,7 @@ import { TransformInterceptor } from './../src/common/interceptors/transform.int
 import { Category } from './../src/modules/menu/entities/category.entity';
 import { MenuItem } from './../src/modules/menu/entities/menu-item.entity';
 import { Order } from './../src/modules/orders/entities/order.entity';
+import { Setting } from './../src/modules/settings/entities/setting.entity';
 import { Address } from './../src/modules/users/entities/address.entity';
 import {
   User,
@@ -28,6 +29,11 @@ import {
   CouponDiscountType,
   CouponStatus,
 } from './../src/modules/coupons/entities/coupon.entity';
+import {
+  BusinessHoursSnapshot,
+  forceBusinessAlwaysOpen,
+  restoreBusinessHours,
+} from './helpers/business-hours.helper';
 
 interface AuthTokensResponse {
   success: boolean;
@@ -72,6 +78,8 @@ describe('Coupons (e2e)', () => {
   let categoriesRepo: Repository<Category>;
   let itemsRepo: Repository<MenuItem>;
   let addressesRepo: Repository<Address>;
+  let settingsRepo: Repository<Setting>;
+  let businessHoursSnapshot: BusinessHoursSnapshot;
 
   let clientAToken: string;
   let clientBToken: string;
@@ -129,6 +137,12 @@ describe('Coupons (e2e)', () => {
     );
     itemsRepo = app.get<Repository<MenuItem>>(getRepositoryToken(MenuItem));
     addressesRepo = app.get<Repository<Address>>(getRepositoryToken(Address));
+    settingsRepo = app.get<Repository<Setting>>(getRepositoryToken(Setting));
+
+    // Esta suite crea pedidos reales vía POST /orders: forzar el local
+    // "abierto siempre" para que no dependa de la hora real de Lima en la
+    // que corre (ver OrdersService.create, bloquea con 409 si está cerrado).
+    businessHoursSnapshot = await forceBusinessAlwaysOpen(settingsRepo);
 
     const adminHash = await bcrypt.hash(password, 10);
     await usersRepo.save(
@@ -212,6 +226,7 @@ describe('Coupons (e2e)', () => {
     await usersRepo.delete({ email: `qa-coupons-c2-${suffix}@test.com` });
     await usersRepo.delete({ email: `qa-coupons-c3-${suffix}@test.com` });
     await usersRepo.delete({ email: `qa-coupons-c4-${suffix}@test.com` });
+    await restoreBusinessHours(settingsRepo, businessHoursSnapshot);
     await app.close();
   });
 

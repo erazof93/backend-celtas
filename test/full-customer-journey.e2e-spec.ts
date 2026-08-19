@@ -18,12 +18,18 @@ import { Coupon } from './../src/modules/coupons/entities/coupon.entity';
 import { Category } from './../src/modules/menu/entities/category.entity';
 import { MenuItem } from './../src/modules/menu/entities/menu-item.entity';
 import { Order } from './../src/modules/orders/entities/order.entity';
+import { Setting } from './../src/modules/settings/entities/setting.entity';
 import { Address } from './../src/modules/users/entities/address.entity';
 import {
   User,
   UserProvider,
   UserRole,
 } from './../src/modules/users/entities/user.entity';
+import {
+  BusinessHoursSnapshot,
+  forceBusinessAlwaysOpen,
+  restoreBusinessHours,
+} from './helpers/business-hours.helper';
 
 interface AuthTokensResponse {
   success: boolean;
@@ -69,6 +75,8 @@ describe('Full Customer Journey (e2e)', () => {
   let itemsRepo: Repository<MenuItem>;
   let ordersRepo: Repository<Order>;
   let couponsRepo: Repository<Coupon>;
+  let settingsRepo: Repository<Setting>;
+  let businessHoursSnapshot: BusinessHoursSnapshot;
 
   let clientToken: string;
   let adminToken: string;
@@ -135,6 +143,12 @@ describe('Full Customer Journey (e2e)', () => {
     itemsRepo = app.get<Repository<MenuItem>>(getRepositoryToken(MenuItem));
     ordersRepo = app.get<Repository<Order>>(getRepositoryToken(Order));
     couponsRepo = app.get<Repository<Coupon>>(getRepositoryToken(Coupon));
+    settingsRepo = app.get<Repository<Setting>>(getRepositoryToken(Setting));
+
+    // El journey crea pedidos reales vía POST /orders: forzar el local
+    // "abierto siempre" para que la suite no dependa de la hora real de Lima
+    // en la que corre (ver OrdersService.create, bloquea con 409 si está cerrado).
+    businessHoursSnapshot = await forceBusinessAlwaysOpen(settingsRepo);
 
     // Admin real (con password hasheado) para las transiciones de estado.
     const adminHash = await bcrypt.hash(password, 10);
@@ -203,6 +217,7 @@ describe('Full Customer Journey (e2e)', () => {
     await categoriesRepo.delete({ id: categoryId });
     await usersRepo.delete({ email: clientEmail });
     await usersRepo.delete({ email: adminEmail });
+    await restoreBusinessHours(settingsRepo, businessHoursSnapshot);
     await app.close();
   });
 

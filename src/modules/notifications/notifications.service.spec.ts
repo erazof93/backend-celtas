@@ -10,7 +10,10 @@ jest.mock('firebase-admin/app', () => ({
   cert: jest.fn((cred: unknown) => cred),
 }));
 jest.mock('firebase-admin/messaging', () => ({
-  getMessaging: jest.fn(() => ({ send: jest.fn(), sendEachForMulticast: jest.fn() })),
+  getMessaging: jest.fn(() => ({
+    send: jest.fn(),
+    sendEachForMulticast: jest.fn(),
+  })),
 }));
 
 import { initializeApp } from 'firebase-admin/app';
@@ -190,13 +193,12 @@ describe('NotificationsService', () => {
         makeUser({ id: `u${i}`, fcmToken: `token-${i}` }),
       );
       usersRepo.find.mockResolvedValue(users);
-      multicastMock.mockImplementation(
-        (message: { tokens: string[] }) =>
-          Promise.resolve({
-            successCount: message.tokens.length,
-            failureCount: 0,
-            responses: message.tokens.map(() => ({ success: true })),
-          }),
+      multicastMock.mockImplementation((message: { tokens: string[] }) =>
+        Promise.resolve({
+          successCount: message.tokens.length,
+          failureCount: 0,
+          responses: message.tokens.map(() => ({ success: true })),
+        }),
       );
 
       const result = await service.broadcastPushNotification({

@@ -30,6 +30,11 @@ import {
   UserProvider,
   UserRole,
 } from './../src/modules/users/entities/user.entity';
+import {
+  BusinessHoursSnapshot,
+  forceBusinessAlwaysOpen,
+  restoreBusinessHours,
+} from './helpers/business-hours.helper';
 
 interface AuthTokensResponse {
   success: boolean;
@@ -53,6 +58,7 @@ describe('Settings (e2e)', () => {
   let itemsRepo: Repository<MenuItem>;
   let addressesRepo: Repository<Address>;
   let ordersRepo: Repository<Order>;
+  let businessHoursSnapshot: BusinessHoursSnapshot;
 
   let adminToken: string;
   let clientToken: string;
@@ -107,6 +113,15 @@ describe('Settings (e2e)', () => {
     itemsRepo = app.get<Repository<MenuItem>>(getRepositoryToken(MenuItem));
     addressesRepo = app.get<Repository<Address>>(getRepositoryToken(Address));
     ordersRepo = app.get<Repository<Order>>(getRepositoryToken(Order));
+
+    // Esta suite crea pedidos reales vía POST /orders (además de probar el
+    // horario en su propio describe block): forzar el local "abierto
+    // siempre" primero para que la llamada inicial no dependa de la hora
+    // real de Lima en la que corre (ver OrdersService.create, bloquea con
+    // 409 si está cerrado). Los tests de `GET /settings/business-hours`
+    // siguen pudiendo activar el cierre MANUAL por su cuenta: el override
+    // manual siempre gana sobre el horario programado.
+    businessHoursSnapshot = await forceBusinessAlwaysOpen(settingsRepo);
 
     const adminHash = await bcrypt.hash(password, 10);
     const admin = await usersRepo.save(
@@ -182,16 +197,10 @@ describe('Settings (e2e)', () => {
           'Número de WhatsApp del negocio (formato internacional sin +)',
       }),
     );
-    // Restaurar el horario de atención (este suite lo muta para probar el
-    // cierre manual) por si algún test falló antes de revertirlo por su cuenta.
-    await settingsRepo.update(
-      { key: BUSINESS_MANUAL_CLOSED_KEY },
-      { value: 'false' },
-    );
-    await settingsRepo.update(
-      { key: BUSINESS_MANUAL_CLOSED_REASON_KEY },
-      { value: '' },
-    );
+    // Restaurar el horario de atención (este suite lo fuerza "abierto
+    // siempre" arriba, y lo muta para probar el cierre manual) por si algún
+    // test falló antes de revertirlo por su cuenta.
+    await restoreBusinessHours(settingsRepo, businessHoursSnapshot);
     await app.close();
   });
 

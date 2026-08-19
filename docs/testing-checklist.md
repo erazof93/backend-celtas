@@ -465,3 +465,86 @@ verifique end-to-end (Postgres + `PATCH /settings` real) que reenviar el MISMO v
 dos `PATCH` seguidos con el mismo valor para observar el "no-disparo" a ese nivel. Vale la pena
 agregarlo si en el futuro se quiere mockear `NotificationsService` también en el contexto e2e para
 poder aserir `toHaveBeenCalledTimes(0)`.
+
+### Regresión: suites e2e que crean pedidos dependían de la hora real de Lima
+
+> El horario de atención (`business_hours_schedule`/`business_manual_closed`, bloqueando
+> `POST /orders` con 409 fuera de horario) hizo que 5 suites e2e que crean pedidos reales en su
+> `beforeAll`/tests (`test/full-customer-journey.e2e-spec.ts`, `test/orders.e2e-spec.ts`,
+> `test/coupons.e2e-spec.ts`, `test/admin-dashboard.e2e-spec.ts`, `test/settings.e2e-spec.ts`)
+> quedaran acopladas a la hora real de ejecución. Fix: `test/helpers/business-hours.helper.ts`
+> (`forceBusinessAlwaysOpen`/`restoreBusinessHours`) fuerza el horario a `open === close === '00:00'`
+> (rama "cruza medianoche" de `evaluateSchedule`, `nowMinutes >= 0` siempre verdadero) y
+> `business_manual_closed: 'false'` en el `beforeAll` de cada suite (después de `app.init()`),
+> restaurando el valor previo en `afterAll`.
+
+- [x] Lógica de `forceBusinessAlwaysOpen` verificada leyendo `SettingsService.evaluateSchedule`/
+      `isOpenToday`/`isCarriedOverFromYesterday` directamente (no asumida): con `open==='00:00'` y
+      `close==='00:00'`, `open < close` es falso → rama "cruza medianoche" → `isOpenToday` solo
+      exige `nowMinutes >= open` (`0 >= 0`, siempre verdadero) para las 7 entradas del schedule
+      (una por día de la semana) — abierto sin importar hora ni día.
+- [x] En las 5 suites, `forceBusinessAlwaysOpen(settingsRepo)` se llama DESPUÉS de `app.init()` y
+      ANTES del primer `POST /orders`/seed de datos, y `restoreBusinessHours` se llama en
+      `afterAll` antes de `app.close()` — confirmado leyendo cada diff (`orders.e2e-spec.ts`,
+      `full-customer-journey.e2e-spec.ts`, `coupons.e2e-spec.ts`, `admin-dashboard.e2e-spec.ts`,
+      `settings.e2e-spec.ts`).
+- [x] `pnpm run build` limpio, `pnpm test` 295/295 (19 suites), `pnpm run test:e2e` 245/245
+      (12 suites) — corridos a las **08:22 hora Lima** (miércoles, antes de la apertura 11:00),
+      es decir dentro de la ventana exacta que reproducía el bug original: evidencia real de que
+      el fix es robusto, no solo teórica.
+- [x] **Reproducción del bug original confirmada de forma independiente**: con `git stash -u`
+      sobre el fix (working tree idéntico a `origin/master`, `git diff origin/master -- test/` sin
+      salida), `pnpm run test:e2e` a la misma hora (08:2x Lima) falla con exactamente
+      `Test Suites: 5 failed, 7 passed, 12 total` / `Tests: 46 failed, 199 passed, 245 total`, y
+      las 5 suites que fallan (`FAIL test/settings.e2e-spec.ts`, `coupons.e2e-spec.ts`,
+      `orders.e2e-spec.ts`, `full-customer-journey.e2e-spec.ts`, `admin-dashboard.e2e-spec.ts`) son
+      exactamente las 5 que el fix toca — reproducido 2 veces de forma consistente.
+- [x] `test/settings.e2e-spec.ts` describe `GET /settings/business-hours` (activa/desactiva el
+      cierre manual explícitamente) sigue funcionando igual: el override manual siempre gana sobre
+      el schedule (`isOpenNow` chequea `manual.closed` antes de `evaluateSchedule`), así que forzar
+      el schedule a "siempre abierto" no interfiere con esos 4 tests — confirmado leyendo el código
+      y viendo que pasan dentro de los 245/245 (incluye el test que reabre manualmente y espera
+      `POST /orders` → 201, que ahora es robusto a cualquier hora real gracias al mismo fix).
+      `settingsRepo` se asigna antes de llamar `forceBusinessAlwaysOpen` (orden correcto).
+- [ ] **Hallazgo de `@tester` (riesgo bajo, no bloqueante, no manifestado en la práctica)**:
+      `restoreBusinessHours` solo restaura una key si `snapshot.<key> !== undefined` — si
+      `forceBusinessAlwaysOpen` corriera en una BD donde esas 3 keys NUNCA existieron, dejaría el
+      override "siempre abierto" pegado (no se borra, solo se salta la restauración). En la
+      práctica esto no ocurre porque `SettingsService.onModuleInit()` (`seedIfMissing`) siembra las
+      3 keys con valores default en CADA `app.init()`, que corre antes de `forceBusinessAlwaysOpen`
+      en las 5 suites — confirmado leyendo el orden real en `orders.e2e-spec.ts` (`app.init()` en la
+      línea 125, `forceBusinessAlwaysOpen` en la línea 139) y confirmando por psql que las 3 keys
+      existen en la BD local con valores de horario reales (no el override) tras correr toda la
+      suite. Vale la pena que el helper borre la key (`repo.delete`) en vez de solo saltarse el
+      `upsert` cuando el snapshot es `undefined`, para no depender de esa garantía implícita del
+      seed si el helper se reutiliza en otro contexto a futuro.
+
+**Auditado por `@tester`: LISTO** — build/unit/e2e en verde, reproducción del bug original
+confirmada de forma independiente, lógica del helper verificada línea por línea contra
+`SettingsService`, y el describe de horario manual en `settings.e2e-spec.ts` sigue intacto. El
+único punto pendiente es el hallazgo de riesgo bajo anotado arriba (no bloqueante).
+
+### Investigación: reporte externo de 7 tests fallando en `test/menu.e2e-spec.ts`
+
+> Un reporte externo afirmó "7 tests fallando en `menu.e2e-spec.ts`, pre-existentes, reproducibles
+> incluso sobre `origin/master` limpio". No se pudo reproducir.
+
+- [x] `git diff origin/master -- test/menu.e2e-spec.ts` sin salida (archivo idéntico a
+      `origin/master`, no hay cambios locales que pudieran explicarlo).
+- [x] Migraciones: las 5 están aplicadas (`npx typeorm-ts-node-commonjs migration:show`), incluida
+      `AddSaucesCatalog1786846925971` — descarta la hipótesis de migración faltante en este entorno.
+- [x] `menu.e2e-spec.ts` en aislamiento sobre `origin/master` limpio (con `git stash -u`, working
+      tree confirmado idéntico a origin): **26/26 verde, 2 corridas seguidas** (no flaky).
+- [x] Suite completa sobre `origin/master` limpio (mismo stash), **2 corridas seguidas**:
+      `Test Suites: 5 failed, 7 passed, 12 total` — `menu.e2e-spec.ts` está SIEMPRE entre las 7 que
+      pasan, nunca entre las 5 que fallan (las 5 que fallan son exactamente las del bug de horario
+      de la sección anterior, no `menu.e2e-spec.ts`). Sin dependencia de orden detectada.
+- [x] Con el fix del punto anterior aplicado (`git stash pop`), suite completa 2 corridas más:
+      245/245, incluye `menu.e2e-spec.ts`.
+
+**Veredicto: NO reproducible en este entorno**, ni en aislamiento ni como parte de la suite
+completa, ni sobre el commit limpio de `origin/master`, ni con el fix aplicado, en 6 corridas
+distintas en total. No se encontró ninguna causa de código que lo explique. Puede ser un problema
+del entorno donde se hizo la verificación externa (dependencias no instaladas/desactualizadas, BD
+de test con estado distinto, variables de entorno faltantes) — no se inventa una causa de código
+que no se pudo confirmar.

@@ -17,12 +17,18 @@ import { TransformInterceptor } from './../src/common/interceptors/transform.int
 import { Category } from './../src/modules/menu/entities/category.entity';
 import { MenuItem } from './../src/modules/menu/entities/menu-item.entity';
 import { Order } from './../src/modules/orders/entities/order.entity';
+import { Setting } from './../src/modules/settings/entities/setting.entity';
 import { Address } from './../src/modules/users/entities/address.entity';
 import {
   User,
   UserProvider,
   UserRole,
 } from './../src/modules/users/entities/user.entity';
+import {
+  BusinessHoursSnapshot,
+  forceBusinessAlwaysOpen,
+  restoreBusinessHours,
+} from './helpers/business-hours.helper';
 
 interface AuthTokensResponse {
   success: boolean;
@@ -61,6 +67,8 @@ describe('Orders (e2e)', () => {
   let categoriesRepo: Repository<Category>;
   let itemsRepo: Repository<MenuItem>;
   let ordersRepo: Repository<Order>;
+  let settingsRepo: Repository<Setting>;
+  let businessHoursSnapshot: BusinessHoursSnapshot;
 
   let clientAToken: string;
   let clientBToken: string;
@@ -123,6 +131,12 @@ describe('Orders (e2e)', () => {
     );
     itemsRepo = app.get<Repository<MenuItem>>(getRepositoryToken(MenuItem));
     ordersRepo = app.get<Repository<Order>>(getRepositoryToken(Order));
+    settingsRepo = app.get<Repository<Setting>>(getRepositoryToken(Setting));
+
+    // Esta suite crea pedidos reales vía POST /orders: forzar el local
+    // "abierto siempre" para que no dependa de la hora real de Lima en la
+    // que corre (ver OrdersService.create, bloquea con 409 si está cerrado).
+    businessHoursSnapshot = await forceBusinessAlwaysOpen(settingsRepo);
 
     const adminHash = await bcrypt.hash(password, 10);
     const admin = await usersRepo.save(
@@ -204,6 +218,7 @@ describe('Orders (e2e)', () => {
     await usersRepo.delete({ email: clientAEmail });
     await usersRepo.delete({ email: clientBEmail });
     await usersRepo.delete({ email: adminEmail });
+    await restoreBusinessHours(settingsRepo, businessHoursSnapshot);
     await app.close();
   });
 
