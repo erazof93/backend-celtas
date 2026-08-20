@@ -258,6 +258,39 @@ describe('Orders (e2e)', () => {
       expect(data.items[1].subtotal).toBe(31.5);
     });
 
+    it('incluye los links de Google Maps y Waze cuando la dirección tiene coordenadas', async () => {
+      const addrWithCoords = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Trabajo',
+          fullAddress: 'Av. Los Álamos 456',
+          district: 'San Juan de Miraflores',
+          latitude: -12.169,
+          longitude: -77.0089,
+        })
+        .expect(201);
+      const addressWithCoordsId = (
+        (addrWithCoords.body as Envelope).data as { id: string }
+      ).id;
+
+      const res = await createOrder(clientAToken, {
+        addressId: addressWithCoordsId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const data = (res.body as Envelope).data as OrderData;
+
+      expect(data.addressSnapshot).toContain('"latitude":-12.169');
+      expect(data.addressSnapshot).toContain('"longitude":-77.0089');
+      const decoded = decodeURIComponent(data.whatsappUrl);
+      expect(decoded).toContain(
+        'Google Maps: https://www.google.com/maps/search/?api=1&query=-12.169,-77.0089',
+      );
+      expect(decoded).toContain(
+        'Waze: https://waze.com/ul?ll=-12.169,-77.0089&navigate=yes',
+      );
+    });
+
     it('acepta addressSnapshot directo (sin direcciones guardadas)', async () => {
       const res = await createOrder(clientBToken, {
         addressSnapshot:

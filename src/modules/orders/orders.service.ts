@@ -307,6 +307,8 @@ export class OrdersService {
         fullAddress: address.fullAddress,
         reference: address.reference,
         district: address.district,
+        latitude: address.latitude,
+        longitude: address.longitude,
       });
     }
     if (dto.addressSnapshot) {
@@ -433,7 +435,7 @@ export class OrdersService {
 ${itemsText}
 
 📍 *Dirección de entrega:*
-  ${this.readableAddress(addressSnapshot)}
+  ${this.readableAddress(addressSnapshot)}${this.mapsLinksBlock(addressSnapshot)}
 
 💰 *Total a pagar:* S/ ${total.toFixed(2)}`;
     return `https://wa.me/${number}?text=${encodeURIComponent(message)}`;
@@ -452,6 +454,29 @@ ${itemsText}
       return `${parts.join(', ')}${ref}`;
     } catch {
       return snapshot;
+    }
+  }
+
+  /**
+   * Links de Google Maps + Waze a partir de las coordenadas del snapshot, como bloque
+   * ya formateado (con los saltos de línea previos incluidos) para insertar tal cual
+   * después de la dirección legible. Si el snapshot no trae latitude/longitude
+   * (direcciones viejas o creadas sin pasar por el mapa), devuelve '' — el mensaje
+   * queda exactamente igual que antes, sin línea vacía ni "N/A".
+   */
+  private mapsLinksBlock(snapshot: string): string {
+    try {
+      const parsed = JSON.parse(snapshot) as {
+        latitude?: number | null;
+        longitude?: number | null;
+      };
+      if (parsed.latitude == null || parsed.longitude == null) {
+        return '';
+      }
+      const coords = `${parsed.latitude},${parsed.longitude}`;
+      return `\n\n🗺️ Google Maps: https://www.google.com/maps/search/?api=1&query=${coords}\n🚗 Waze: https://waze.com/ul?ll=${coords}&navigate=yes`;
+    } catch {
+      return '';
     }
   }
 

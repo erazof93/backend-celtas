@@ -211,6 +211,34 @@ describe('OrdersService', () => {
       );
     });
 
+    it('copia latitude/longitude al snapshot cuando la dirección las tiene', async () => {
+      addressesRepo.findOne.mockResolvedValue(
+        seedAddress({ latitude: -12.169, longitude: -77.0089 }),
+      );
+      const result = await service.create(userId, { ...dto, addressId });
+
+      const snapshot = JSON.parse(result.addressSnapshot) as {
+        latitude: number;
+        longitude: number;
+      };
+      expect(snapshot.latitude).toBe(-12.169);
+      expect(snapshot.longitude).toBe(-77.0089);
+    });
+
+    it('no fuerza latitude/longitude si la dirección no las tiene (direcciones viejas)', async () => {
+      addressesRepo.findOne.mockResolvedValue(
+        seedAddress({ latitude: null, longitude: null }),
+      );
+      const result = await service.create(userId, { ...dto, addressId });
+
+      const snapshot = JSON.parse(result.addressSnapshot) as {
+        latitude: number | null;
+        longitude: number | null;
+      };
+      expect(snapshot.latitude).toBeNull();
+      expect(snapshot.longitude).toBeNull();
+    });
+
     it('usa addressSnapshot directo si no hay addressId', async () => {
       const snapshot = '{"fullAddress":"Jr. Los Olivos 456"}';
       const result = await service.create(userId, {
@@ -300,6 +328,60 @@ describe('OrdersService', () => {
         'Av. Los Álamos 123, San Juan de Miraflores (ref: Portón verde)',
       );
       expect(message).toContain('Total a pagar:* S/ 49.80');
+    });
+
+    it('agrega los links de Google Maps y Waze si la dirección tiene coordenadas', async () => {
+      addressesRepo.findOne.mockResolvedValue(
+        seedAddress({ latitude: -12.169, longitude: -77.0089 }),
+      );
+      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+
+      const result = await service.create(userId, { ...dto, addressId });
+
+      const message = decodeURIComponent(
+        result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
+      );
+      expect(message).toContain(
+        '🗺️ Google Maps: https://www.google.com/maps/search/?api=1&query=-12.169,-77.0089',
+      );
+      expect(message).toContain(
+        '🚗 Waze: https://waze.com/ul?ll=-12.169,-77.0089&navigate=yes',
+      );
+    });
+
+    it('trata latitude/longitude = 0 como coordenada válida, no como ausente (chequeo == null, no truthy)', async () => {
+      addressesRepo.findOne.mockResolvedValue(
+        seedAddress({ latitude: 0, longitude: 0 }),
+      );
+      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+
+      const result = await service.create(userId, { ...dto, addressId });
+
+      const message = decodeURIComponent(
+        result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
+      );
+      expect(message).toContain(
+        '🗺️ Google Maps: https://www.google.com/maps/search/?api=1&query=0,0',
+      );
+      expect(message).toContain(
+        '🚗 Waze: https://waze.com/ul?ll=0,0&navigate=yes',
+      );
+    });
+
+    it('no agrega ninguna línea de mapa si la dirección no tiene coordenadas (mensaje igual que antes)', async () => {
+      addressesRepo.findOne.mockResolvedValue(
+        seedAddress({ latitude: null, longitude: null }),
+      );
+      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+
+      const result = await service.create(userId, { ...dto, addressId });
+
+      const message = decodeURIComponent(
+        result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
+      );
+      expect(message).not.toContain('Google Maps');
+      expect(message).not.toContain('Waze');
+      expect(message).not.toContain('N/A');
     });
 
     it('valida y guarda el snapshot de salsas elegidas (sauceIds)', async () => {

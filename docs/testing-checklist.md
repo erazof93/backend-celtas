@@ -100,11 +100,13 @@ cuando pasa lo aplicable de este checklist.
       `POST`/`PATCH /users/me/addresses` exponen `latitude`/`longitude` correctamente (ninguno usa
       `select` parcial que las excluya; los tres primeros comparten el mismo
       `AddressesService.findByUser()`) — verificado leyendo el código y con e2e real
-- [x] Confirmado leyendo `OrdersService.resolveAddressSnapshot()`: el snapshot de dirección en
-      `POST /orders` sigue construyéndose con una whitelist explícita de 4 campos (`alias`,
-      `fullAddress`, `reference`, `district`) — `latitude`/`longitude` NO viajan al snapshot ni al
-      mensaje de WhatsApp, cero efecto colateral sobre Orders, tal como estaba planeado
-      (fuera de alcance a propósito para esta vuelta)
+- [x] ⚠️ **Nota histórica actualizada**: en su momento se confirmó que `OrdersService
+      .resolveAddressSnapshot()` armaba el snapshot con una whitelist de solo 4 campos (`alias`,
+      `fullAddress`, `reference`, `district`) y que `latitude`/`longitude` NO viajaban al snapshot ni
+      al mensaje de WhatsApp (fuera de alcance a propósito en esa vuelta). Eso **ya no es así**: un
+      pase posterior agregó `latitude`/`longitude` al snapshot (rama `dto.addressId`) y links de
+      Google Maps/Waze al mensaje de WhatsApp. Ver la sección dedicada más abajo, "## Links de Google
+      Maps/Waze en el mensaje de WhatsApp (`OrdersService`)", para el detalle de esa auditoría.
 - [x] Swagger: confirmado contra `/docs-json` real (servidor levantado) que `CreateAddressDto` y
       `UpdateAddressDto` documentan `latitude`/`longitude` como `type: "number"` con ejemplo y
       descripción
@@ -139,9 +141,10 @@ errores preexistentes de siempre (ninguno nuevo).
 - No hay test de `latitude`/`longitude` combinados con `isDefault` en la misma request (debería
   ser ortogonal, la lógica de `unsetDefault` no toca estos campos, pero no está ejercitado
   explícitamente).
-- Si en el futuro se agrega `latitude`/`longitude` al `addressSnapshot` de Orders (mencionado como
-  posible vuelta futura en el contexto de esta tarea), habrá que re-auditar ese flujo específico;
-  hoy está confirmado que NO viaja, por diseño.
+- ✅ Resuelto en un pase posterior: se agregó `latitude`/`longitude` al `addressSnapshot` de Orders
+  y links de Google Maps/Waze al mensaje de WhatsApp. Re-auditado por `@tester`, ver la sección
+  "## Links de Google Maps/Waze en el mensaje de WhatsApp (`OrdersService`)" más abajo (veredicto
+  "LISTO CON OBSERVACIONES").
 
 **Veredicto: LISTO.** Todo lo crítico del checklist pasa (compilación, unit, e2e, validación de
 contrato en ambos extremos con boundary inclusive correcto, seguridad, Swagger, cero efecto
@@ -166,6 +169,89 @@ verde. Sin bloqueantes restantes.
 - [ ] Al pasar a `entregado`, `totalSpent` del usuario se incrementa correctamente (verificar con un caso de prueba numérico)
 - [ ] Un cliente solo puede ver sus propios pedidos; admin puede ver todos
 - [x] `GET /orders?userId=X` (admin) filtra solo los pedidos de ese usuario; userId inexistente → lista vacía (200); userId malformado → 400; combinado con `status`; sin el param el comportamiento previo (paginación + status) queda intacto
+
+## Links de Google Maps/Waze en el mensaje de WhatsApp (`OrdersService`)
+
+> Pase puntual (no es un ítem formal de `ROADMAP.md`): cuando el snapshot de dirección del pedido
+> trae `latitude`/`longitude` (copiadas de `Address` en `resolveAddressSnapshot()`, rama
+> `dto.addressId`), el mensaje de WhatsApp agrega un bloque con links de Google Maps y Waze después
+> de la dirección legible. Cierra el gap anotado como "vuelta futura" en la sección `Users` de este
+> mismo checklist (línea ~142 histórica: "si en el futuro se agrega latitude/longitude al
+> addressSnapshot de Orders, habrá que re-auditar ese flujo específico").
+>
+> **Auditado por `@tester` (pase independiente, con mutación real) — veredicto "LISTO".**
+
+- [x] `pnpm run build` compila sin errores
+- [x] `pnpm run test`: 316/316 tests unitarios en verde (19 suites), incluye 4 casos nuevos en
+      `orders.service.spec.ts`: snapshot con coordenadas (copia `latitude`/`longitude` tal cual),
+      snapshot sin coordenadas (quedan `null`, direcciones viejas), mensaje de WhatsApp con los
+      links cuando hay coordenadas, y mensaje sin ninguna línea de mapa (ni "Google Maps", ni
+      "Waze", ni "N/A") cuando no las hay
+- [x] `pnpm run test:e2e`: 284/284 en verde (12 suites), incluye 1 caso nuevo en
+      `test/orders.e2e-spec.ts`: crea una `Address` real con `latitude`/`longitude` vía
+      `POST /users/me/addresses`, arma un pedido real y confirma que `addressSnapshot` y el
+      `whatsappUrl` decodificado contienen ambas coordenadas exactas
+- [x] `mapsLinksBlock()` usa `parsed.latitude == null || parsed.longitude == null` (chequeo de
+      nulidad real, no truthy) — confirmado leyendo el código; correcto en principio para no tratar
+      un futuro `0` legítimo como ausente, aunque **no hay ningún test (unitario ni e2e) que ejercite
+      `latitude`/`longitude = 0`** (ver mutación abajo)
+- [x] Orden de coordenadas `lat,lng` (no `lng,lat`) en ambas URLs (Google Maps y Waze) — confirmado
+      leyendo el código
+- [x] Sin coordenadas (o `addressSnapshot` directo del dto), el mensaje de WhatsApp queda carácter
+      por carácter igual que antes: sin `\n\n` colgante, sin "N/A", sin ningún artefacto — confirmado
+      con test dedicado que hace `.not.toContain('Google Maps')`, `.not.toContain('Waze')` y
+      `.not.toContain('N/A')`
+- [x] El diff **no tocó** el cálculo de `total`/`subtotal` — confirmado leyendo el diff completo de
+      `orders.service.ts`: los únicos cambios son (1) 2 líneas agregadas al `JSON.stringify` de
+      `resolveAddressSnapshot()` y (2) la interpolación de `mapsLinksBlock()` + el método nuevo en
+      sí. `round2()`, `buildItems()` (cálculo de `subtotal` por ítem) y el `subtotal`/`total` del
+      método `create()` quedan sin ninguna línea tocada
+- [x] `resolveAddressSnapshot()` solo cambió en la rama `dto.addressId` — confirmado leyendo el
+      código: la rama `dto.addressSnapshot` (snapshot directo del cliente, sin pasar por `Address`)
+      sigue siendo `return dto.addressSnapshot;` sin ningún cambio
+- [x] `whatsappUrl` sigue siendo una URL válida y bien encodeada incluso con el mensaje más largo:
+      el `?` de `.../search/?api=1&query=...` queda dentro del `message` completo, que pasa una sola
+      vez por `encodeURIComponent()` al construir `https://wa.me/...?text=...` — no hay doble
+      encoding ni caracteres sin escapar. Confirmado leyendo `buildWhatsappUrl()` y con los tests
+      (unitarios y e2e) que hacen `decodeURIComponent()` sobre el resultado real y encuentran las
+      URLs completas de Maps/Waze intactas
+- [x] Sin pérdida de precisión de las coordenadas en el camino `Address` → snapshot →
+      `mapsLinksBlock()`: no hay ningún `.toFixed()`, `Math.round()` ni redondeo en esa cadena;
+      `${parsed.latitude},${parsed.longitude}` es interpolación directa del `number` parseado del
+      JSON. Confirmado leyendo el código y con el test e2e, que usa `-12.169`/`-77.0089` (4 y 4
+      decimales) y verifica el string exacto en el `whatsappUrl` decodificado
+- [x] **Mutación real por `@tester`**: se revirtió temporalmente la interpolación de
+      `mapsLinksBlock()` en el template del mensaje → el test "agrega los links..." falla como se
+      espera (`expect(received).toContain(expected)` con el mensaje sin ningún link). Se restauró el
+      código inmediatamente después
+- [x] **Mutación real por `@tester`**: se intercambió el orden de las coordenadas
+      (`${parsed.longitude},${parsed.latitude}`) → el mismo test falla, detecta el swap
+      correctamente (`query=-77.0089,-12.169` en vez de `-12.169,-77.0089`). Se restauró el código
+      inmediatamente después
+- [ ] ⚠️ **Mutación real por `@tester` — hallazgo, no bloqueante**: se cambió
+      `parsed.latitude == null || parsed.longitude == null` por `!parsed.latitude ||
+      !parsed.longitude` (chequeo truthy) → **la suite completa de `orders.service.spec.ts` sigue en
+      verde (52/52)**. Ningún test unitario ni e2e usa `latitude`/`longitude = 0`, así que si algún
+      día alguien "simplifica" el chequeo a una condición truthy, nada lo va a detectar hoy (0 es un
+      valor de coordenada técnicamente inválido en Lima, así que el riesgo real es bajísimo, pero el
+      guardrail de regresión no existe). Se restauró el código inmediatamente después de la mutación.
+      **Pendiente**: agregar un caso con `latitude: 0` (o `longitude: 0`) a `orders.service.spec.ts`
+      que confirme que el bloque de links SÍ se genera con coordenada `0`, para que este mutante deje
+      de sobrevivir
+- [x] Seguridad: no aplica ningún chequeo nuevo (no se tocó ningún endpoint de admin ni ningún campo
+      sensible; `mapsLinksBlock()` es un helper privado que solo formatea texto ya presente en el
+      snapshot)
+- [x] Documentación: no aplica cambio de Swagger — no se agregó ni modificó ningún DTO, campo de
+      response ni endpoint; el cambio vive enteramente dentro del texto libre de `whatsappUrl`
+      (`string`, mismo tipo de siempre)
+
+**Veredicto: LISTO CON OBSERVACIONES.** Todo lo crítico pasa (build, 316/316 unit, 284/284 e2e,
+lógica de coordenadas correcta y verificada con mutación real, cero efecto colateral confirmado
+sobre el cálculo de `total`/`subtotal`, backward-compat confirmado byte a byte para direcciones sin
+coordenadas, URL bien encodeada, sin pérdida de precisión). La única observación (no bloqueante) es
+el gap de cobertura en `latitude`/`longitude = 0`: el chequeo de código (`== null`) es correcto hoy,
+pero no hay ningún test de regresión que lo proteja de una futura simplificación accidental a un
+chequeo truthy.
 
 ## Comentario libre por ítem (`OrderItem.comment`)
 
