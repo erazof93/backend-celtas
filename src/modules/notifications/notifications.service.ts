@@ -10,6 +10,16 @@ import { MarketingNotification } from './entities/marketing-notification.entity'
 /** Límite de tokens por llamada a `sendEachForMulticast` (restricción de FCM). */
 const MULTICAST_BATCH_SIZE = 500;
 
+/**
+ * Código que devuelve Firebase cuando un token ya no es válido para ningún envío futuro
+ * (app desinstalada, o el registro local del dispositivo quedó huérfano — ver caso real
+ * documentado en el proyecto: restauración de Android Auto Backup sobre datos viejos de
+ * Firebase Installations). No es un error transitorio (red, backend caído): reintentar
+ * contra el mismo token nunca va a funcionar, así que se limpia de la BD.
+ */
+const FCM_TOKEN_NOT_REGISTERED_CODE =
+  'messaging/registration-token-not-registered';
+
 /** Payload de una notificación push. `data` son pares clave/valor (valores string). */
 export interface PushNotificationPayload {
   title: string;
@@ -92,6 +102,12 @@ export class NotificationsService {
         `No se pudo enviar la notificación push al usuario ${userId}`,
         err as Error,
       );
+      // `UNREGISTERED` es definitivo (ver constante arriba): se limpia el token para no
+      // reintentar contra algo que Firebase ya descartó. Cualquier otro error (red,
+      // backend caído, etc.) se deja como está — puede ser transitorio.
+      if ((err as { code?: string })?.code === FCM_TOKEN_NOT_REGISTERED_CODE) {
+        await this.usersRepository.update(userId, { fcmToken: null });
+      }
       return false;
     }
   }
@@ -111,21 +127,25 @@ export class NotificationsService {
       where: { fcmToken: Not(IsNull()) },
       select: { id: true, fcmToken: true },
     });
-    const tokens = users
-      .map((user) => user.fcmToken)
-      .filter((token): token is string => !!token);
+    // Se mantiene el par (userId, token) unido desde el arranque: así, si un token falla
+    // con UNREGISTERED más abajo, sabemos exactamente a qué usuario limpiarle el campo
+    // sin depender de que los índices de dos arrays separados sigan alineados.
+    const entries = users
+      .filter((user): user is User & { fcmToken: string } => !!user.fcmToken)
+      .map((user) => ({ userId: user.id, token: user.fcmToken }));
 
-    if (tokens.length === 0) {
+    if (entries.length === 0) {
       return { sent: 0, total: 0 };
     }
 
     let sent = 0;
-    for (let i = 0; i < tokens.length; i += MULTICAST_BATCH_SIZE) {
-      const batch = tokens.slice(i, i + MULTICAST_BATCH_SIZE);
+    const staleUserIds: string[] = [];
+    for (let i = 0; i < entries.length; i += MULTICAST_BATCH_SIZE) {
+      const batch = entries.slice(i, i + MULTICAST_BATCH_SIZE);
       try {
         const response = await getMessaging(this.getApp()).sendEachForMulticast(
           {
-            tokens: batch,
+            tokens: batch.map((entry) => entry.token),
             notification: { title: payload.title, body: payload.body },
             data: payload.data,
           },
@@ -134,9 +154,14 @@ export class NotificationsService {
         response.responses.forEach((result, index) => {
           if (!result.success) {
             this.logger.error(
-              `No se pudo enviar la notificación push al token ${batch[index]}`,
+              `No se pudo enviar la notificación push al token ${batch[index].token}`,
               result.error as Error,
             );
+            // Mismo criterio que en `sendPushNotification`: UNREGISTERED es definitivo,
+            // se limpia; cualquier otro error se deja (puede ser transitorio).
+            if (result.error?.code === FCM_TOKEN_NOT_REGISTERED_CODE) {
+              staleUserIds.push(batch[index].userId);
+            }
           }
         });
       } catch (err) {
@@ -148,7 +173,11 @@ export class NotificationsService {
       }
     }
 
-    return { sent, total: tokens.length };
+    if (staleUserIds.length > 0) {
+      await this.usersRepository.update(staleUserIds, { fcmToken: null });
+    }
+
+    return { sent, total: entries.length };
   }
 
   /**

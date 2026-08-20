@@ -22,7 +22,7 @@ import { getMessaging } from 'firebase-admin/messaging';
 
 describe('NotificationsService', () => {
   let service: NotificationsService;
-  let usersRepo: { findOne: jest.Mock; find: jest.Mock };
+  let usersRepo: { findOne: jest.Mock; find: jest.Mock; update: jest.Mock };
   let marketingNotificationsRepo: {
     create: jest.Mock;
     save: jest.Mock;
@@ -41,7 +41,7 @@ describe('NotificationsService', () => {
     }) as User;
 
   beforeEach(async () => {
-    usersRepo = { findOne: jest.fn(), find: jest.fn() };
+    usersRepo = { findOne: jest.fn(), find: jest.fn(), update: jest.fn() };
     marketingNotificationsRepo = {
       create: jest.fn((data: unknown) => data),
       save: jest.fn((data: unknown) => Promise.resolve(data)),
@@ -136,6 +136,39 @@ describe('NotificationsService', () => {
       });
 
       expect(result).toBe(false);
+    });
+
+    it('un error transitorio (no UNREGISTERED) NO limpia el fcmToken', async () => {
+      usersRepo.findOne.mockResolvedValue(makeUser({ fcmToken: 'token-roto' }));
+      sendMock.mockRejectedValue(new Error('fallo de red'));
+
+      await service.sendPushNotification('user-1', {
+        title: 'Hola',
+        body: 'Mundo',
+      });
+
+      expect(usersRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('si Firebase devuelve UNREGISTERED, limpia el fcmToken del usuario (token muerto, no reintentable)', async () => {
+      usersRepo.findOne.mockResolvedValue(
+        makeUser({ id: 'user-1', fcmToken: 'token-fantasma' }),
+      );
+      sendMock.mockRejectedValue(
+        Object.assign(new Error('NotRegistered'), {
+          code: 'messaging/registration-token-not-registered',
+        }),
+      );
+
+      const result = await service.sendPushNotification('user-1', {
+        title: 'Hola',
+        body: 'Mundo',
+      });
+
+      expect(result).toBe(false);
+      expect(usersRepo.update).toHaveBeenCalledWith('user-1', {
+        fcmToken: null,
+      });
     });
 
     it('reemplaza los \\n literales de la clave privada por saltos de línea reales', async () => {
@@ -244,6 +277,62 @@ describe('NotificationsService', () => {
       });
 
       expect(result).toEqual({ sent: 0, total: 2 });
+    });
+
+    it('limpia el fcmToken solo de los usuarios cuyo token devolvió UNREGISTERED, no de otros fallos', async () => {
+      usersRepo.find.mockResolvedValue([
+        makeUser({ id: 'u1', fcmToken: 'token-a' }),
+        makeUser({ id: 'u2', fcmToken: 'token-fantasma' }),
+        makeUser({ id: 'u3', fcmToken: 'token-c' }),
+      ]);
+      multicastMock.mockResolvedValue({
+        successCount: 2,
+        failureCount: 1,
+        responses: [
+          { success: true },
+          {
+            success: false,
+            error: {
+              code: 'messaging/registration-token-not-registered',
+              message: 'NotRegistered',
+            },
+          },
+          { success: true },
+        ],
+      });
+
+      const result = await service.broadcastPushNotification({
+        title: 'Hola',
+        body: 'Mundo',
+      });
+
+      expect(result).toEqual({ sent: 2, total: 3 });
+      expect(usersRepo.update).toHaveBeenCalledTimes(1);
+      expect(usersRepo.update).toHaveBeenCalledWith(['u2'], {
+        fcmToken: null,
+      });
+    });
+
+    it('un fallo por error transitorio (no UNREGISTERED) en el broadcast NO limpia el fcmToken', async () => {
+      usersRepo.find.mockResolvedValue([
+        makeUser({ id: 'u1', fcmToken: 'token-a' }),
+        makeUser({ id: 'u2', fcmToken: 'token-b' }),
+      ]);
+      multicastMock.mockResolvedValue({
+        successCount: 1,
+        failureCount: 1,
+        responses: [
+          { success: true },
+          {
+            success: false,
+            error: { code: 'messaging/internal-error', message: 'boom' },
+          },
+        ],
+      });
+
+      await service.broadcastPushNotification({ title: 'Hola', body: 'Mundo' });
+
+      expect(usersRepo.update).not.toHaveBeenCalled();
     });
   });
 
