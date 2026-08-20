@@ -291,6 +291,115 @@ cuando pasa lo aplicable de este checklist.
       real (`FirebaseAppError: Failed to parse private key` logueado, `PATCH /settings` sigue
       devolviendo 200)
 
+### Fix: limpiar `fcmToken` cuando Firebase devuelve `messaging/registration-token-not-registered`
+
+> Commit `eb46fd0` (aplicado vía `git am` desde una sesión externa de Cowork). Cubre el caso de un
+> `fcmToken` restaurado por Android Auto Backup que Firebase ya descartó, evitando reintentos
+> inútiles. `sendPushNotification` y `broadcastPushNotification` limpian `fcmToken = null` SOLO
+> cuando el código de error es exactamente `messaging/registration-token-not-registered`;
+> cualquier otro error (red, backend caído) no toca el token. En `broadcastPushNotification` el
+> par `(userId, token)` ahora se arma junto desde el inicio en vez de dos arrays paralelos.
+>
+> **Auditado por `@tester` (pase independiente, con mutación real y prueba de contrato adicional
+> propia) — veredicto original "NO LISTO" por el hallazgo ❌ de abajo (contrato "nunca lanza" roto
+> en la limpieza de `fcmToken`). Corregido en el commit de seguimiento `995f8ba` ("fix(notifications):
+> envolver la limpieza de fcmToken en try/catch propio") y reverificado de forma independiente por
+> `@tester` — ver bloque "Reverificación `995f8ba`" al final de esta sección. Veredicto final: LISTO.**
+
+- [x] `pnpm run build` compila sin errores; `npx tsc --noEmit` sin errores nuevos en archivos de
+      este módulo (los 14 preexistentes en otros módulos no se tocan)
+- [x] `pnpm run lint` limpio (exit 0)
+- [x] `pnpm test`: 307/307 en verde (19 suites); `notifications.service.spec.ts` en aislamiento:
+      16/16 (12 preexistentes + 4 nuevos)
+- [x] `pnpm run test:e2e`: 261/261 en verde (12 suites); `notifications.e2e-spec.ts` en
+      aislamiento: 17/17
+- [x] Los 4 tests nuevos cubren: `sendPushNotification` limpia en `UNREGISTERED` / no limpia en
+      error transitorio; `broadcastPushNotification` limpia SOLO el token que falló con
+      `UNREGISTERED` (usuario del medio de 3, `u2`) sin tocar los otros dos / no limpia en error
+      transitorio
+- [x] **`batch[index]` sigue siendo un índice válido tras el cambio de estructura de datos**:
+      `entries` (con `{userId, token}`) reemplaza a los dos arrays paralelos previos, y
+      `tokens: batch.map((entry) => entry.token)` preserva el mismo orden que `batch`, así que
+      `response.responses[index]` (garantizado por el contrato de `sendEachForMulticast` de estar
+      en el mismo orden que el array de `tokens` de entrada) sigue correspondiendo al mismo
+      `batch[index]`. **Verificado con mutación real por `@tester`**: se cambió
+      `staleUserIds.push(batch[index].userId)` por `staleUserIds.push(batch[0].userId)` (simula
+      una desalineación de índice) sobre el caso de 3 usuarios (`u1` éxito, `u2` falla con
+      `UNREGISTERED`, `u3` éxito) — rompió exactamente el test que espera que se limpie `u2` (no
+      `u1`) y ningún otro (15/16 en verde). Mutación revertida, `git diff --stat` confirma el
+      archivo idéntico al estado previo, suite vuelve a 16/16.
+- [x] Mutación de regresión sobre `sendPushNotification`: se deshabilitó la limpieza
+      (`if (false && err.code === ...)`) — rompió exactamente el test "limpia en UNREGISTERED" y
+      ningún otro (15/16). Mutación revertida.
+- [x] **(RESUELTO en `995f8ba`) Contrato "NUNCA lanza excepción"**: originalmente roto porque
+      `await this.usersRepository.update(...)` (limpieza de token stale) no estaba envuelto en su
+      propio `try/catch` en ninguno de los dos métodos — ver detalle histórico del hallazgo y el
+      impacto concreto (`SettingsService.notifyBusinessHoursChange()` → `PATCH /settings` habría
+      devuelto `500`) en el bloque "Reverificación `995f8ba`" más abajo, donde quedó confirmado
+      resuelto de forma independiente.
+- [ ] No existe (ni antes ni después de este fix) un test que cubra explícitamente "usuario sin
+      `fcmToken`" en el mismo archivo para el flujo de limpieza (sí existe cobertura general de
+      "sin token, no llama a FCM" en la suite preexistente, pero no se re-verificó como parte de
+      esta auditoría puntual del fix)
+- ⚠️ No hay test de "batch con múltiples tokens `UNREGISTERED` a la vez" (solo se cubre 1 de 3) —
+      riesgo bajo: la lógica es un `forEach` que empuja independientemente por índice, sin estado
+      compartido entre iteraciones, así que no debería fallar, pero no está ejercitado
+      explícitamente con más de un token stale en el mismo lote.
+- ⚠️ No hay test de "error a nivel de lote completo" combinado con tokens `UNREGISTERED` en el
+      mismo `broadcastPushNotification` (dos lotes, uno falla completo por red y otro tiene un
+      `UNREGISTERED` individual) — cobertura indirecta por los tests existentes de cada caso por
+      separado, pero no combinados.
+
+**Veredicto original (auditoría de `eb46fd0`): NO LISTO.** Bloqueante: el hallazgo de contrato
+"nunca lanza" roto arriba (❌) debía corregirse (try/catch propio alrededor de la limpieza de
+`fcmToken`) y volver a auditarse antes de marcar este fix como completo en `ROADMAP.md`. Todo lo
+demás (build, lint, tsc, unit, e2e, cobertura de los 4 tests nuevos, alineación de índices en el
+batch) había pasado de forma independiente.
+
+#### Reverificación `995f8ba` — "fix(notifications): envolver la limpieza de fcmToken en try/catch propio"
+
+> Segundo pase, focalizado en el hallazgo puntual de arriba (no se reaudita el módulo completo).
+
+- [x] Leído `notifications.service.ts` actual: `sendPushNotification` (líneas ~114-121) y
+      `broadcastPushNotification` (líneas ~192-199) tienen cada uno su propio `try { await
+      this.usersRepository.update(...) } catch (cleanupErr) { this.logger.error(...) }` alrededor
+      exclusivamente de la limpieza de `fcmToken`; el `return` normal (`false` / `{ sent, total }`)
+      queda fuera de ese catch interno y se sigue ejecutando igual que si la limpieza hubiera
+      tenido éxito.
+- [x] 2 tests nuevos en `notifications.service.spec.ts` (líneas 174-192 y 358-385), uno por
+      método, mockeando `usersRepo.update.mockRejectedValue(new Error('timeout de BD'))` y
+      verificando que el resultado sigue siendo `false` / `{ sent, total }` sin que el `await`
+      del test rechace. Corridos en aislamiento: `notifications.service.spec.ts` → 18/18 en verde.
+- [x] **Mutation testing independiente**: se revirtieron temporalmente ambos try/catch internos
+      (dejando el `await this.usersRepository.update(...)` desnudo, como estaba en `eb46fd0`) y se
+      corrió la suite — resultado: **2 failed, 16 passed** (exactamente los 2 tests nuevos de este
+      fix fallan, ninguno de los 16 restantes se ve afectado), confirmando que ambos tests
+      detectan una reversión real del fix y no son falsos positivos. Cambio revertido con `cp`
+      desde un backup temporal (no commiteado); `notifications.service.ts` vuelve a quedar
+      idéntico al estado de `995f8ba` (confirmado con `git status --short` sin salida) y la suite
+      vuelve a 18/18.
+- [x] `npm test` (309/309 según la sesión principal — no se re-corrió la suite completa en este
+      pase puntual, solo el archivo del módulo, que es donde vive el cambio), `npm run lint`
+      (según la sesión principal, exit 0) y `npx tsc --noEmit` (mismos 14 errores preexistentes,
+      ninguno nuevo, ninguno en `notifications.*`) — reportados por la sesión principal y
+      consistentes con lo observado en este pase acotado al archivo del módulo.
+- ⚠️ Caso borde no cubierto (bajo riesgo, no bloqueante): no hay test que verifique que, tras el
+      fallo de limpieza en `broadcastPushNotification`, el `sent`/`total` devuelto siga contando
+      correctamente los envíos exitosos de *otros* usuarios del mismo lote (el test actual usa un
+      solo usuario `u1` con token fantasma, `sent: 0, total: 1`) — la lógica no debería verse
+      afectada porque `sent`/`entries.length` se calculan antes e independientemente del bloque de
+      limpieza, pero no está ejercitado explícitamente con un lote mixto (algunos éxitos + un
+      `UNREGISTERED` cuya limpieza falla).
+- ⚠️ Los ⚠️ ya anotados en la auditoría original de `eb46fd0` (batch con múltiples tokens
+      `UNREGISTERED` a la vez; combinación de fallo de lote completo + `UNREGISTERED` individual en
+      el mismo `broadcastPushNotification`) siguen sin cobertura — no forman parte del alcance de
+      este fix puntual, quedan como deuda de test conocida.
+
+**Veredicto reverificación: LISTO.** El hallazgo bloqueante queda confirmado resuelto de forma
+independiente (lectura de código + mutation testing). Los dos commits (`eb46fd0` + `995f8ba`)
+pueden pushearse juntos. Riesgos pendientes: solo los ⚠️ de cobertura de casos borde listados
+arriba, ninguno bloqueante.
+
 ### Notificaciones de marketing/fidelización (`POST /notifications/broadcast`, `GET /notifications/broadcast-history`)
 
 - [x] `sendMarketingBroadcast(adminId, payload)` reutiliza `broadcastPushNotification` (no
