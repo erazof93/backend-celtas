@@ -35,6 +35,13 @@ export class Address {
   @Column({ type: 'boolean', default: false })
   isDefault: boolean;
 
+  /** Coordenadas resueltas por la app (Geoapify, client-side). Nullable: direcciones existentes no las tienen. */
+  @Column({ type: 'double precision', nullable: true })
+  latitude: number | null;
+
+  @Column({ type: 'double precision', nullable: true })
+  longitude: number | null;
+
   @Index()
   @Column({ type: 'uuid' })
   userId: string;

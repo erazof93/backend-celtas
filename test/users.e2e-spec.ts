@@ -386,6 +386,204 @@ describe('Users (e2e)', () => {
     });
   });
 
+  describe('Direcciones: coordenadas (latitude/longitude)', () => {
+    it('crea una dirección con latitude/longitude válidos y las persiste', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Casa GPS',
+          fullAddress: 'Av. Los Álamos 123',
+          district: 'San Juan de Miraflores',
+          latitude: -12.164,
+          longitude: -76.9721,
+        })
+        .expect(201);
+      const data = (res.body as Envelope).data as Record<string, unknown>;
+      expect(data.latitude).toBe(-12.164);
+      expect(data.longitude).toBe(-76.9721);
+    });
+
+    it('crea una dirección SIN latitude/longitude: sigue siendo válida (null)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Casa sin GPS',
+          fullAddress: 'Av. Los Álamos 124',
+          district: 'San Juan de Miraflores',
+        })
+        .expect(201);
+      const data = (res.body as Envelope).data as Record<string, unknown>;
+      expect(data.latitude).toBeNull();
+      expect(data.longitude).toBeNull();
+    });
+
+    it.each([
+      ['latitude', 999],
+      ['latitude', -999],
+      ['latitude', 90.001],
+      ['latitude', -90.001],
+      ['longitude', 999],
+      ['longitude', -999],
+      ['longitude', 180.001],
+      ['longitude', -180.001],
+    ])('rechaza %s fuera de rango (%s) con 400', async (field, value) => {
+      const res = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Casa inválida',
+          fullAddress: 'Dirección X',
+          district: 'SJM',
+          [field]: value,
+        })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it.each([
+      ['latitude', -90],
+      ['latitude', 90],
+      ['latitude', 0],
+      ['longitude', -180],
+      ['longitude', 180],
+      ['longitude', 0],
+    ])('acepta el valor límite inclusive %s = %s', async (field, value) => {
+      const other = field === 'latitude' ? { longitude: 0 } : { latitude: 0 };
+      const res = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Casa límite',
+          fullAddress: 'Dirección límite',
+          district: 'SJM',
+          [field]: value,
+          ...other,
+        })
+        .expect(201);
+      const data = (res.body as Envelope).data as Record<string, unknown>;
+      expect(data[field]).toBe(value);
+    });
+
+    it('rechaza latitude tipo string no numérico ("abc") con 400', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Casa inválida',
+          fullAddress: 'Dirección X',
+          district: 'SJM',
+          latitude: 'abc',
+        })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('rechaza latitude/longitude como string numérico válido ("-12.164"): exige el tipo number, no coerciona', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Casa inválida',
+          fullAddress: 'Dirección X',
+          district: 'SJM',
+          latitude: '-12.164',
+          longitude: '-76.9721',
+        })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('latitude/longitude enviados como number llegan como number en la respuesta (no string)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Casa tipo',
+          fullAddress: 'Av. Tipo 1',
+          district: 'SJM',
+          latitude: -12.164,
+          longitude: -76.9721,
+        })
+        .expect(201);
+      const data = (res.body as Envelope).data as Record<string, unknown>;
+      expect(typeof data.latitude).toBe('number');
+      expect(typeof data.longitude).toBe('number');
+    });
+
+    it('PATCH que solo toca latitude/longitude no pisa el resto de campos', async () => {
+      const created = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Casa a editar',
+          fullAddress: 'Av. Original 1',
+          district: 'Distrito Original',
+        })
+        .expect(201);
+      const id = ((created.body as Envelope).data as { id: string }).id;
+
+      const res = await request(app.getHttpServer())
+        .patch(`/users/me/addresses/${id}`)
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({ latitude: -12.05, longitude: -77.03 })
+        .expect(200);
+      const data = (res.body as Envelope).data as Record<string, unknown>;
+      expect(data.latitude).toBe(-12.05);
+      expect(data.longitude).toBe(-77.03);
+      expect(data.alias).toBe('Casa a editar');
+      expect(data.fullAddress).toBe('Av. Original 1');
+      expect(data.district).toBe('Distrito Original');
+    });
+
+    it('PATCH con longitude inválida (-999) devuelve 400', async () => {
+      const created = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Casa a editar 2',
+          fullAddress: 'Av. Original 2',
+          district: 'Distrito Original',
+        })
+        .expect(201);
+      const id = ((created.body as Envelope).data as { id: string }).id;
+
+      const res = await request(app.getHttpServer())
+        .patch(`/users/me/addresses/${id}`)
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({ longitude: -999 })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('GET /users/:id/addresses (admin) expone latitude/longitude', async () => {
+      await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Casa admin-view',
+          fullAddress: 'Av. Vista Admin 1',
+          district: 'SJM',
+          latitude: -12.1,
+          longitude: -77.0,
+        })
+        .expect(201);
+
+      const res = await request(app.getHttpServer())
+        .get(`/users/${clientAId}/addresses`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as Array<
+        Record<string, unknown>
+      >;
+      const found = data.find((a) => a.alias === 'Casa admin-view');
+      expect(found).toBeDefined();
+      expect(found!.latitude).toBe(-12.1);
+      expect(found!.longitude).toBe(-77.0);
+    });
+  });
+
   describe('GET /users (admin)', () => {
     it('devuelve 401 sin token', async () => {
       await request(app.getHttpServer()).get('/users').expect(401);

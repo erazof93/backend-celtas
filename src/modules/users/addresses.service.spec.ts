@@ -116,6 +116,36 @@ describe('AddressesService', () => {
         { isDefault: false },
       );
     });
+
+    it('persiste latitude/longitude cuando vienen en el DTO', async () => {
+      repo.create.mockImplementation((data: CreateAddressDto) => data);
+      repo.save.mockImplementation((addr: Address) => addr);
+
+      const result = await service.create(userA, {
+        alias: 'Casa',
+        fullAddress: 'Av. Los Álamos 123',
+        district: 'SJM',
+        latitude: -12.164,
+        longitude: -76.9721,
+      });
+
+      expect(result.latitude).toBe(-12.164);
+      expect(result.longitude).toBe(-76.9721);
+    });
+
+    it('crea la dirección sin latitude/longitude si no vienen (direcciones sin coordenadas siguen siendo válidas)', async () => {
+      repo.create.mockImplementation((data: CreateAddressDto) => data);
+      repo.save.mockImplementation((addr: Address) => addr);
+
+      const result = await service.create(userA, {
+        alias: 'Casa',
+        fullAddress: 'Av. Los Álamos 123',
+        district: 'SJM',
+      });
+
+      expect(result.latitude).toBeUndefined();
+      expect(result.longitude).toBeUndefined();
+    });
   });
 
   describe('update', () => {
@@ -156,6 +186,21 @@ describe('AddressesService', () => {
         { userId: userA, isDefault: true },
         { isDefault: false },
       );
+    });
+
+    it('actualiza solo latitude/longitude sin pisar el resto de campos (merge, no Object.assign)', async () => {
+      repo.findOne.mockResolvedValue({ ...ownAddress });
+      repo.save.mockImplementation((addr: Address) => addr);
+
+      const result = await service.update(userA, 'addr-1', {
+        latitude: -12.05,
+        longitude: -77.03,
+      });
+
+      expect(result.latitude).toBe(-12.05);
+      expect(result.longitude).toBe(-77.03);
+      expect(result.district).toBe(ownAddress.district);
+      expect(result.alias).toBe(ownAddress.alias);
     });
   });
 

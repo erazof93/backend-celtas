@@ -168,6 +168,33 @@ celtas-backend/
   MARCAR COMPLETO** — 223 unit + 241 e2e, build/lint limpios; probado con intentos de inyección
   de columna en `sortBy` (rechazados con 400 por `ValidationPipe` + `forbidNonWhitelisted`, nunca
   llegan al ORM).
+- [x] **Coordenadas GPS en direcciones (`Address.latitude`/`longitude`), contraparte backend de
+  autocompletado + GPS + mapa (Geoapify) 100% client-side en `celtas-mobile`** — este backend
+  nunca llama a Geoapify, solo persiste `latitude`/`longitude` ya resueltas por la app. Columnas
+  nuevas `double precision` nullable en `Address` (sin backfill; direcciones existentes sin
+  coordenadas siguen siendo válidas). `CreateAddressDto`/`UpdateAddressDto` validan con
+  `@IsNumber()` + `@IsLatitude()`/`@IsLongitude()` (`class-validator` 0.15.1, confirmado
+  disponible en la versión instalada). `AddressesService` no se modificó — ya usaba
+  `create()`/`merge()` (no `Object.assign`), así que los campos nuevos fluyen solos sin riesgo del
+  bug de clase ya documentado en la skill `nestjs-celtas`. No se tocó el contrato de
+  `addressSnapshot` en Orders — queda pendiente para una vuelta futura, fuera de alcance a
+  propósito. Migración `AddCoordinatesToAddresses` generada contra Postgres local real, revisada,
+  corrida, revertida y reaplicada para confirmar el `down()`. Verificado end-to-end con `curl`
+  contra el servidor y Postgres local reales: creación con/sin coordenadas, rechazo de valores
+  fuera de rango en ambos extremos, PATCH parcial sin pisar el resto de campos. **Hallazgo real
+  de `@tester` corregido en la misma sesión**: `@IsLatitude()`/`@IsLongitude()` aceptan tanto
+  `number` como `string` por diseño de la librería, y sin `@IsNumber()` un string numérico válido
+  (`"-12.164"`) pasaba la validación y se devolvía como string en la respuesta, rompiendo en
+  silencio el contrato de tipo con Swagger/la entidad — corregido agregando `@IsNumber()` antes de
+  `@IsLatitude()`/`@IsLongitude()` (mismo criterio que `subtotal`/`discountValue`/`price` en el
+  resto del proyecto: los campos numéricos de body JSON no coercionan strings, solo validan).
+  Auditado por `@tester` con mutación real (quitar `@IsLatitude()` rompió exactamente los 5 tests
+  esperados, sin afectar ningún otro; reveló además que sin el guard un `latitude: "abc"` daba 500
+  en vez de 400 al fallar el cast en Postgres): **LISTO PARA MARCAR COMPLETO** — 312 unit (19
+  suites) + 283 e2e (12 suites, incluye 22 tests nuevos de coordenadas), build/lint limpios,
+  `npx tsc --noEmit` con los mismos 14 errores preexistentes de siempre (confirmados sin relación
+  a este cambio vía `git stash`/`git stash pop`, ninguno nuevo). Detalle completo en
+  `docs/testing-checklist.md`, sección "Direcciones: coordenadas GPS".
 
 ### 3. Módulo Menu — ✅ COMPLETO
 - [x] Entidad `Category` (Burgers, Chicken, Bebidas, etc.)

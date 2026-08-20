@@ -48,6 +48,109 @@ cuando pasa lo aplicable de este checklist.
 - [x] `sortBy=totalSpent` ordena correctamente asc y desc; sin `sortBy`/`order` el comportamiento previo (`createdAt DESC`, paginación) queda 100% intacto (test explícito de no-regresión)
 - [ ] Endpoints protegidos devuelven 401 sin token
 
+### Direcciones: coordenadas GPS (`Address.latitude`/`Address.longitude`)
+
+> Feature nueva: contraparte backend de autocompletado + GPS + mapa (Geoapify) 100% client-side
+> en la app Flutter — este backend nunca llama a Geoapify, solo persiste `latitude`/`longitude`
+> ya resueltas por la app. Columnas nuevas `double precision` nullable en `Address` (sin
+> backfill; direcciones existentes siguen siendo válidas sin coordenadas). Validación vía
+> `@IsLatitude()`/`@IsLongitude()` (`class-validator`) en `CreateAddressDto`/`UpdateAddressDto`.
+> No se tocó `AddressesService` (ya usaba `create()`/`merge()`, no `Object.assign`) ni el
+> contrato de `addressSnapshot` en Orders.
+>
+> **Auditado por `@tester` (pase independiente, con mutación real) — veredicto "LISTO" con UN
+> hallazgo de riesgo bajo no bloqueante, ver ❌ abajo.**
+
+- [x] `pnpm run build` compila sin errores (confirmado de forma independiente)
+- [x] `pnpm run lint` limpio, exit 0 (confirmado de forma independiente)
+- [x] `pnpm test`: 312/312 en verde (19 suites), incluye los 3 tests nuevos de
+      `addresses.service.spec.ts` (crea con lat/lng, crea sin lat/lng → `undefined`, PATCH que
+      solo toca lat/lng sin pisar `alias`/`district` — confirma `merge`, no `Object.assign`)
+- [x] `pnpm run test:e2e`: 281/281 en verde (12 suites), incluye 20 tests nuevos agregados por
+      `@tester` en `test/users.e2e-spec.ts` (antes esta suite no tenía NINGÚN caso de
+      lat/lng): creación con/sin coordenadas, out-of-range en ambos extremos (`±90.001`/`±999`
+      para latitud, `±180.001`/`±999` para longitud), valores límite inclusive aceptados
+      (`-90`/`90`/`0` lat, `-180`/`180`/`0` lng — "Null Island" incluido), tipo incorrecto
+      (`latitude: "abc"` → 400), PATCH que solo toca lat/lng sin pisar el resto, PATCH con
+      longitud inválida (400), y `GET /users/:id/addresses` (admin) exponiendo lat/lng
+- [x] `npx tsc --noEmit`: 14 errores preexistentes, mismos de antes (confirmado, ninguno nuevo)
+- [x] Migración `AddCoordinatesToAddresses1787234827634`: verificada de forma independiente con
+      `docker exec celtas-db psql` contra Postgres local real — `\d addresses` muestra
+      `latitude`/`longitude` como `double precision`, sin `NOT NULL`; `SELECT name FROM
+      migrations ORDER BY id DESC` confirma que está registrada
+- [x] Valores límite inclusive (`-90`/`90` lat, `-180`/`180` lng, y `0,0`/"Null Island") se
+      ACEPTAN correctamente — verificado leyendo el regex real de `validator.isLatLong` (rama
+      `90(\.0+)?`/`180(\.0+)?` exacta para el límite, rama `[1-8]?\d(\.\d+)?`/`\d{1,2}(\.\d+)?`
+      para el resto) y confirmado con los 6 casos e2e nuevos (todos 201)
+- [x] Valores fuera de rango en ambos extremos (`90.001`, `-90.001`, `180.001`, `-180.001`, y
+      `999`/`-999` de sobra) se RECHAZAN con 400 — 8 casos e2e nuevos, todos 400
+- [x] **Verificado con mutación real por `@tester`**: se quitó `@IsLatitude()` de
+      `CreateAddressDto.latitude` (dejando solo `@IsOptional()`) — rompió exactamente los 4 casos
+      de latitud fuera de rango + el caso de tipo incorrecto (`"abc"`) = 5/58 tests fallando en
+      `users.e2e-spec.ts`, ningún otro test se vio afectado. Efecto secundario revelador: sin el
+      guard, `latitude: "abc"` ya no da 400, da **500** (Postgres rechaza el cast a `double
+      precision` sin capturar la excepción antes) — confirma que el decorador no es cosmético,
+      evita un 500 real. Mutación revertida (`git diff --stat` confirma el archivo idéntico al
+      estado previo a la mutación), suite vuelve a 58/58 (aislado) y 281/281 (completa)
+- [x] `AddressesService` no se modificó — `create()` usa `repository.create({...dto, userId})` y
+      `update()` usa `repository.merge()` (no `Object.assign`), así que lat/lng fluyen solos sin
+      riesgo del bug de clase ya conocido en el proyecto (PATCH parcial pisando campos con
+      `undefined`)
+- [x] `GET /users/me/addresses`, `GET /users/:id/addresses` (admin) y las respuestas de
+      `POST`/`PATCH /users/me/addresses` exponen `latitude`/`longitude` correctamente (ninguno usa
+      `select` parcial que las excluya; los tres primeros comparten el mismo
+      `AddressesService.findByUser()`) — verificado leyendo el código y con e2e real
+- [x] Confirmado leyendo `OrdersService.resolveAddressSnapshot()`: el snapshot de dirección en
+      `POST /orders` sigue construyéndose con una whitelist explícita de 4 campos (`alias`,
+      `fullAddress`, `reference`, `district`) — `latitude`/`longitude` NO viajan al snapshot ni al
+      mensaje de WhatsApp, cero efecto colateral sobre Orders, tal como estaba planeado
+      (fuera de alcance a propósito para esta vuelta)
+- [x] Swagger: confirmado contra `/docs-json` real (servidor levantado) que `CreateAddressDto` y
+      `UpdateAddressDto` documentan `latitude`/`longitude` como `type: "number"` con ejemplo y
+      descripción
+- [x] Seguridad: `Address` no tiene ningún campo sensible tipo `password`; no aplica ese chequeo
+      aquí. Los endpoints de admin (`GET /users/:id/addresses`) siguen devolviendo 401/403
+      correctamente (cubierto en la sección `Users` de arriba, sin cambios por este feature)
+
+❌➡️✅ **Hallazgo corregido en la sesión principal tras esta auditoría**: `@IsLatitude()`/
+`@IsLongitude()` de `class-validator` aceptan **tanto `number` como `string`** (por diseño de la
+librería: `isLatitude(value) { return (typeof value === 'number' || typeof value === 'string')
+&& isLatLong(...) }`). Con `ValidationPipe({ transform: true })` sin `enableImplicitConversion` y
+sin `@Type(() => Number)` en el DTO, un string numérico válido pasaba la validación TAL CUAL
+string, sin coerción a `number` — `POST /users/me/addresses` con `{"latitude": "-12.164"}`
+(comillas = string) devolvía `201` con `"latitude":"-12.164"` (string) en la respuesta, en vez de
+`-12.164` (number), rompiendo en silencio el contrato de tipo con Swagger/la entidad.
+
+**Fix aplicado** (mismo criterio que el resto de campos numéricos de body JSON en el proyecto —
+`subtotal`, `discountValue`, `price`, etc. — que tampoco coercionan strings, solo validan):
+agregado `@IsNumber({}, { message: '... debe ser un número' })` ANTES de `@IsLatitude()`/
+`@IsLongitude()` en `CreateAddressDto`/`UpdateAddressDto`, así el tipo se exige estrictamente (sin
+`@Type(() => Number)`, sin coerción silenciosa — un string ahora es 400, no se acepta). Verificado
+con `curl` real contra el servidor y Postgres local reales: `latitude: "-12.164"` (string) ahora
+devuelve 400 (`"latitude debe ser un número"`); `latitude: -12.164` (number) sigue devolviendo 201
+con el valor como `number` real en la respuesta (`typeof data.latitude === 'number'` confirmado).
+2 tests e2e nuevos agregados a `test/users.e2e-spec.ts` para cerrar el gap: uno rechaza un string
+numérico válido (`"-12.164"`, no solo `"abc"`) con 400, otro confirma `typeof` `number` en la
+respuesta cuando se envía como number real. Suite completa re-corrida tras el fix: 312/312 unit,
+283/283 e2e (281 previos + 2 nuevos), `pnpm run lint` limpio, `npx tsc --noEmit` con los mismos 14
+errores preexistentes de siempre (ninguno nuevo).
+
+⚠️ Riesgos / casos borde no cubiertos (bajo riesgo, no bloqueantes):
+- No hay test de `latitude`/`longitude` combinados con `isDefault` en la misma request (debería
+  ser ortogonal, la lógica de `unsetDefault` no toca estos campos, pero no está ejercitado
+  explícitamente).
+- Si en el futuro se agrega `latitude`/`longitude` al `addressSnapshot` de Orders (mencionado como
+  posible vuelta futura en el contexto de esta tarea), habrá que re-auditar ese flujo específico;
+  hoy está confirmado que NO viaja, por diseño.
+
+**Veredicto: LISTO.** Todo lo crítico del checklist pasa (compilación, unit, e2e, validación de
+contrato en ambos extremos con boundary inclusive correcto, seguridad, Swagger, cero efecto
+colateral en Orders, mutación real confirmando que la cobertura nueva es real). El único hallazgo
+❌ de la auditoría de `@tester` (aceptación silenciosa de coordenadas como string sin coerción a
+number) fue corregido en la sesión principal inmediatamente después (`@IsNumber()` agregado antes
+de `@IsLatitude()`/`@IsLongitude()`), con 2 tests e2e nuevos y la suite completa re-verificada en
+verde. Sin bloqueantes restantes.
+
 ## Menu
 
 - [ ] `GET /menu` público devuelve solo items `disponible: true` (o el flag correcto)

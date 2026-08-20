@@ -1,5 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import {
+  IsBoolean,
+  IsLatitude,
+  IsLongitude,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class CreateAddressDto {
   @ApiProperty({
@@ -42,4 +50,24 @@ export class CreateAddressDto {
   @IsOptional()
   @IsBoolean({ message: 'isDefault debe ser true o false' })
   isDefault?: boolean;
+
+  @ApiPropertyOptional({
+    example: -12.164,
+    description:
+      'Latitud resuelta por la app (Geoapify, client-side). Opcional.',
+  })
+  @IsOptional()
+  @IsNumber({}, { message: 'latitude debe ser un número' })
+  @IsLatitude({ message: 'latitude debe ser una latitud válida' })
+  latitude?: number;
+
+  @ApiPropertyOptional({
+    example: -76.9721,
+    description:
+      'Longitud resuelta por la app (Geoapify, client-side). Opcional.',
+  })
+  @IsOptional()
+  @IsNumber({}, { message: 'longitude debe ser un número' })
+  @IsLongitude({ message: 'longitude debe ser una longitud válida' })
+  longitude?: number;
 }
