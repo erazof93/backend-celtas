@@ -171,6 +171,26 @@ describe('NotificationsService', () => {
       });
     });
 
+    it('si limpiar el fcmToken en la BD falla (ej. timeout), NO propaga la excepción (contrato "nunca lanza")', async () => {
+      usersRepo.findOne.mockResolvedValue(
+        makeUser({ id: 'user-1', fcmToken: 'token-fantasma' }),
+      );
+      sendMock.mockRejectedValue(
+        Object.assign(new Error('NotRegistered'), {
+          code: 'messaging/registration-token-not-registered',
+        }),
+      );
+      usersRepo.update.mockRejectedValue(new Error('timeout de BD'));
+
+      // No debe lanzar hacia el caller a pesar de que la limpieza también falla.
+      const result = await service.sendPushNotification('user-1', {
+        title: 'Hola',
+        body: 'Mundo',
+      });
+
+      expect(result).toBe(false);
+    });
+
     it('reemplaza los \\n literales de la clave privada por saltos de línea reales', async () => {
       usersRepo.findOne.mockResolvedValue(makeUser({ fcmToken: 'token-ok' }));
       sendMock.mockResolvedValue('message-id');
@@ -333,6 +353,35 @@ describe('NotificationsService', () => {
       await service.broadcastPushNotification({ title: 'Hola', body: 'Mundo' });
 
       expect(usersRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('si limpiar los fcmToken en la BD falla (ej. timeout), NO propaga la excepción (contrato "nunca lanza")', async () => {
+      usersRepo.find.mockResolvedValue([
+        makeUser({ id: 'u1', fcmToken: 'token-fantasma' }),
+      ]);
+      multicastMock.mockResolvedValue({
+        successCount: 0,
+        failureCount: 1,
+        responses: [
+          {
+            success: false,
+            error: {
+              code: 'messaging/registration-token-not-registered',
+              message: 'NotRegistered',
+            },
+          },
+        ],
+      });
+      usersRepo.update.mockRejectedValue(new Error('timeout de BD'));
+
+      // No debe lanzar hacia el caller (ej. SettingsService.notifyBusinessHoursChange
+      // lo llama sin try/catch propio, confiando en este contrato).
+      const result = await service.broadcastPushNotification({
+        title: 'Hola',
+        body: 'Mundo',
+      });
+
+      expect(result).toEqual({ sent: 0, total: 1 });
     });
   });
 

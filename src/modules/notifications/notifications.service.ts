@@ -106,7 +106,19 @@ export class NotificationsService {
       // reintentar contra algo que Firebase ya descartó. Cualquier otro error (red,
       // backend caído, etc.) se deja como está — puede ser transitorio.
       if ((err as { code?: string })?.code === FCM_TOKEN_NOT_REGISTERED_CODE) {
-        await this.usersRepository.update(userId, { fcmToken: null });
+        // Try/catch propio: esta limpieza es "best effort". Si la escritura a la BD
+        // falla (timeout, pool agotado), NO puede propagarse — rompería el contrato
+        // "nunca lanza" de este método para callers que no esperan un try/catch propio
+        // (ej. SettingsService.notifyBusinessHoursChange). Un token que no se pudo
+        // limpiar ahora se vuelve a intentar limpiar en el próximo envío fallido.
+        try {
+          await this.usersRepository.update(userId, { fcmToken: null });
+        } catch (cleanupErr) {
+          this.logger.error(
+            `No se pudo limpiar el fcmToken del usuario ${userId} tras UNREGISTERED`,
+            cleanupErr as Error,
+          );
+        }
       }
       return false;
     }
@@ -174,7 +186,17 @@ export class NotificationsService {
     }
 
     if (staleUserIds.length > 0) {
-      await this.usersRepository.update(staleUserIds, { fcmToken: null });
+      // Mismo criterio que en `sendPushNotification`: best effort, nunca puede propagar
+      // (ej. `SettingsService.notifyBusinessHoursChange` llama a este método sin try/catch
+      // propio, confiando en que nunca lanza).
+      try {
+        await this.usersRepository.update(staleUserIds, { fcmToken: null });
+      } catch (cleanupErr) {
+        this.logger.error(
+          'No se pudieron limpiar los fcmToken de usuarios con token UNREGISTERED',
+          cleanupErr as Error,
+        );
+      }
     }
 
     return { sent, total: entries.length };
