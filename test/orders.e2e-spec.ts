@@ -51,6 +51,7 @@ interface OrderData {
   status: string;
   addressSnapshot: string;
   total: number;
+  deliveryFee: number;
   whatsappUrl: string;
   items: {
     name: string;
@@ -59,6 +60,7 @@ interface OrderData {
     subtotal: number;
     comment: string | null;
   }[];
+  user?: { phone: string | null; fullName: string };
 }
 
 describe('Orders (e2e)', () => {
@@ -160,6 +162,19 @@ describe('Orders (e2e)', () => {
       .send({ email: adminEmail, password })
       .expect(200);
     adminToken = (adminLogin.body as AuthTokensResponse).data.accessToken;
+
+    // store_location se siembra SIN CONFIGURAR (ver SettingsService): esta
+    // suite crea pedidos con direcciones con coordenadas, así que necesita
+    // una ubicación real de prueba para que OrdersService pueda calcular el
+    // delivery por distancia (si no, 404 — mismo criterio que WHATSAPP_NUMBER).
+    await request(app.getHttpServer())
+      .patch('/settings')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        key: 'store_location',
+        value: JSON.stringify({ latitude: -12.1631, longitude: -76.97 }),
+      })
+      .expect(200);
 
     // Menú de prueba
     const cat = await request(app.getHttpServer())
@@ -289,6 +304,106 @@ describe('Orders (e2e)', () => {
       expect(decoded).toContain(
         'Waze: https://waze.com/ul?ll=-12.169,-77.0089&navigate=yes',
       );
+    });
+
+    it('sin coordenadas en la dirección: deliveryFee = 0 (no bloquea el pedido)', async () => {
+      const res = await createOrder(clientAToken, {
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const data = (res.body as Envelope).data as OrderData;
+      expect(data.deliveryFee).toBe(0);
+      expect(data.total).toBe(24.9);
+    });
+
+    it('calcula deliveryFee por distancia real (Haversine) contra store_location y lo suma al total', async () => {
+      // store_location (seteado en beforeAll): -12.1631,-76.97. Esta dirección
+      // queda a ~7.77m → tramo delivery_fee_tiers default <=100m → S/2.
+      const addrNear = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Cerca del local',
+          fullAddress: 'Av. Los Álamos 789',
+          district: 'San Juan de Miraflores',
+          latitude: -12.16315,
+          longitude: -76.97005,
+        })
+        .expect(201);
+      const addrNearId = ((addrNear.body as Envelope).data as { id: string })
+        .id;
+
+      const res = await createOrder(clientAToken, {
+        addressId: addrNearId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const data = (res.body as Envelope).data as OrderData;
+
+      expect(data.deliveryFee).toBe(2);
+      expect(data.total).toBe(26.9); // 24.9 (subtotal) + 2 (deliveryFee)
+    });
+
+    it('un pedido lejano (fuera de todos los tramos con techo) usa la tarifa plana y NUNCA se rechaza', async () => {
+      // ~3.7km del store_location → supera el último tramo con techo (1000m):
+      // cae en el tramo final (maxMeters: null) → S/8, y el pedido se crea igual.
+      const addrFar = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Lejos del local',
+          fullAddress: 'Av. Los Álamos 999',
+          district: 'San Juan de Miraflores',
+          latitude: -12.19,
+          longitude: -76.95,
+        })
+        .expect(201);
+      const addrFarId = ((addrFar.body as Envelope).data as { id: string }).id;
+
+      const res = await createOrder(clientAToken, {
+        addressId: addrFarId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const data = (res.body as Envelope).data as OrderData;
+
+      expect(data.deliveryFee).toBe(8);
+      expect(data.status).toBe('pendiente');
+    });
+
+    it('store_location sin configurar + dirección CON coordenadas → 404, no crea el pedido', async () => {
+      const addr = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Otra',
+          fullAddress: 'Av. Los Álamos 111',
+          district: 'San Juan de Miraflores',
+          latitude: -12.169,
+          longitude: -77.0089,
+        })
+        .expect(201);
+      const addrId = ((addr.body as Envelope).data as { id: string }).id;
+
+      // Desconfigura store_location temporalmente (se restaura al final del test).
+      await request(app.getHttpServer())
+        .patch('/settings')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ key: 'store_location', value: ' ' })
+        .expect(200);
+
+      const res = await createOrder(clientAToken, {
+        addressId: addrId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(404);
+      expect((res.body as ErrorResponse).statusCode).toBe(404);
+
+      await request(app.getHttpServer())
+        .patch('/settings')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          key: 'store_location',
+          value: JSON.stringify({ latitude: -12.1631, longitude: -76.97 }),
+        })
+        .expect(200);
     });
 
     it('acepta addressSnapshot directo (sin direcciones guardadas)', async () => {
@@ -473,6 +588,20 @@ describe('Orders (e2e)', () => {
         .expect(404);
       expect((res.body as ErrorResponse).statusCode).toBe(404);
     });
+
+    it('GET /orders/:id: expone user (phone/fullName), sin password', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/orders/${orderId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as OrderData;
+      expect(data.user).toBeDefined();
+      expect(data.user?.fullName).toBe('Cliente A');
+      expect(data.user?.phone).toBeNull();
+      expect((data.user as unknown as Record<string, unknown>).password).toBe(
+        undefined,
+      );
+    });
   });
 
   describe('GET /orders (admin)', () => {
@@ -506,6 +635,9 @@ describe('Orders (e2e)', () => {
       expect(data.meta.page).toBe(1);
       expect(data.meta.limit).toBe(10);
       expect(data.meta.total).toBeGreaterThanOrEqual(1);
+      // La relación user (phone/fullName) también se carga en el listado admin.
+      const withUser = data.items.find((o) => o.user);
+      expect(withUser?.user?.fullName).toBeTruthy();
     });
 
     it('filtra por estado', async () => {

@@ -30,6 +30,21 @@ export const BUSINESS_MANUAL_CLOSED_REASON_KEY =
   'business_manual_closed_reason';
 
 /**
+ * Clave de la ubicación del local (JSON `{ latitude, longitude }`), usada por
+ * `OrdersService` para calcular la distancia de delivery. Se siembra SIN
+ * CONFIGURAR (value vacío) — no se inventan coordenadas reales; el admin la
+ * carga desde el panel (fase siguiente). Mientras tanto, en local se setea a
+ * mano vía `PATCH /settings`.
+ */
+export const STORE_LOCATION_KEY = 'store_location';
+
+/** Clave de los tramos de tarifa de delivery por distancia (JSON, ver `DeliveryFeeTier`). */
+export const DELIVERY_FEE_TIERS_KEY = 'delivery_fee_tiers';
+
+/** Clave del radio (metros) a partir del cual un pedido dispara el aviso interno de "lejano". */
+export const DELIVERY_ALERT_RADIUS_METERS_KEY = 'delivery_alert_radius_meters';
+
+/**
  * Whitelist de keys que el endpoint público GET /settings/public puede exponer.
  * NUNCA exponer todo el key-value sin filtrar: solo lo que la app cliente necesita.
  */
@@ -66,6 +81,34 @@ function toMinutes(hhmm: string): number {
   const [hours, minutes] = hhmm.split(':').map(Number);
   return hours * 60 + minutes;
 }
+
+/** Ubicación del local (JSON de `store_location`). */
+export interface StoreLocation {
+  latitude: number;
+  longitude: number;
+}
+
+/**
+ * Un tramo de la tabla de tarifas de delivery: aplica a pedidos con distancia
+ * `<= maxMeters`. `maxMeters: null` = tarifa plana sin techo (debe ser el
+ * último tramo del array) — un pedido nunca se rechaza por distancia, así
+ * que siempre debe existir un tramo que matchee cualquier distancia.
+ */
+export interface DeliveryFeeTier {
+  maxMeters: number | null;
+  fee: number;
+}
+
+/** Tabla de tarifas sembrada por defecto en `onModuleInit` si la key no existe. */
+const DEFAULT_DELIVERY_FEE_TIERS: DeliveryFeeTier[] = [
+  { maxMeters: 100, fee: 2 },
+  { maxMeters: 400, fee: 4 },
+  { maxMeters: 1000, fee: 6 },
+  { maxMeters: null, fee: 8 },
+];
+
+/** Radio de aviso interno (metros) sembrado por defecto si la key no existe. */
+const DEFAULT_DELIVERY_ALERT_RADIUS_METERS = 2500;
 
 /**
  * Módulo Settings: configuración clave-valor gestionada desde el panel admin.
@@ -109,6 +152,25 @@ export class SettingsService implements OnModuleInit {
       BUSINESS_MANUAL_CLOSED_REASON_KEY,
       '',
       'Motivo opcional mostrado al cliente cuando business_manual_closed es "true"',
+    );
+
+    // Sembrada SIN CONFIGURAR a propósito: no se inventan coordenadas reales.
+    // getStoreLocation() lanza NotFoundException hasta que el admin la cargue
+    // (por ahora, a mano vía PATCH /settings con una coordenada real de prueba).
+    await this.seedIfMissing(
+      STORE_LOCATION_KEY,
+      '',
+      'Ubicación del local (JSON {"latitude":number,"longitude":number}) — sin configurar por defecto, necesaria para calcular el delivery por distancia',
+    );
+    await this.seedIfMissing(
+      DELIVERY_FEE_TIERS_KEY,
+      JSON.stringify(DEFAULT_DELIVERY_FEE_TIERS),
+      'Tramos de tarifa de delivery por distancia (JSON, array ascendente por maxMeters; el último tramo con maxMeters=null es la tarifa plana sin techo, nunca se rechaza un pedido por distancia)',
+    );
+    await this.seedIfMissing(
+      DELIVERY_ALERT_RADIUS_METERS_KEY,
+      String(DEFAULT_DELIVERY_ALERT_RADIUS_METERS),
+      'Radio (metros) a partir del cual un pedido dispara el aviso interno de "fuera de la zona habitual" al admin — nunca bloquea el pedido',
     );
   }
 
@@ -237,6 +299,61 @@ export class SettingsService implements OnModuleInit {
       where: { key: BUSINESS_HOURS_SCHEDULE_KEY },
     });
     return this.parseSchedule(setting?.value);
+  }
+
+  /**
+   * Ubicación del local, usada por `OrdersService` para calcular la distancia
+   * de delivery. Sin fallback a .env (no hay un valor de config análogo):
+   * si todavía no está configurada, lanza `NotFoundException` en español,
+   * mismo criterio defensivo que `getWhatsappNumber()`.
+   */
+  async getStoreLocation(): Promise<StoreLocation> {
+    const setting = await this.settingsRepository.findOne({
+      where: { key: STORE_LOCATION_KEY },
+    });
+    if (setting?.value) {
+      try {
+        const parsed = JSON.parse(setting.value) as Partial<StoreLocation>;
+        if (
+          typeof parsed.latitude === 'number' &&
+          typeof parsed.longitude === 'number'
+        ) {
+          return { latitude: parsed.latitude, longitude: parsed.longitude };
+        }
+      } catch {
+        // cae al NotFoundException de abajo
+      }
+    }
+    throw new NotFoundException(
+      'La ubicación del local todavía no está configurada (setting "store_location")',
+    );
+  }
+
+  /** Tramos de tarifa de delivery configurados; si la key falta o el JSON es inválido, cae al default. */
+  async getDeliveryFeeTiers(): Promise<DeliveryFeeTier[]> {
+    const setting = await this.settingsRepository.findOne({
+      where: { key: DELIVERY_FEE_TIERS_KEY },
+    });
+    if (!setting?.value) return DEFAULT_DELIVERY_FEE_TIERS;
+    try {
+      return JSON.parse(setting.value) as DeliveryFeeTier[];
+    } catch {
+      this.logger.warn(
+        `No se pudo parsear ${DELIVERY_FEE_TIERS_KEY}, usando tarifas default`,
+      );
+      return DEFAULT_DELIVERY_FEE_TIERS;
+    }
+  }
+
+  /** Radio de aviso (metros); si la key falta o no es un número válido, cae al default. */
+  async getDeliveryAlertRadiusMeters(): Promise<number> {
+    const setting = await this.settingsRepository.findOne({
+      where: { key: DELIVERY_ALERT_RADIUS_METERS_KEY },
+    });
+    const parsed = Number(setting?.value);
+    return Number.isFinite(parsed) && parsed > 0
+      ? parsed
+      : DEFAULT_DELIVERY_ALERT_RADIUS_METERS;
   }
 
   /** `true` si el interruptor manual "cerrado temporalmente" está activo. */

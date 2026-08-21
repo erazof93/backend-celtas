@@ -253,6 +253,140 @@ el gap de cobertura en `latitude`/`longitude = 0`: el chequeo de código (`== nu
 pero no hay ningún test de regresión que lo proteja de una futura simplificación accidental a un
 chequeo truthy.
 
+## Costo de delivery por distancia + aviso de pedidos lejanos (`OrdersService`, backend)
+
+> Primera parte de la feature (solo backend; `celtas-admin` y `celtas-app` quedan para después).
+> `src/common/utils/geo.util.ts` (`haversineDistanceMeters`, fórmula pura, sin API externa).
+> `SettingsService` gana 3 keys nuevas (mismo patrón que `business_hours_schedule`): `store_location`
+> (sembrada SIN CONFIGURAR a propósito, `getStoreLocation()` lanza `NotFoundException` si falta o el
+> JSON es inválido), `delivery_fee_tiers` (tramos ascendentes `{maxMeters, fee}`, cae al default si
+> falta/inválido) y `delivery_alert_radius_meters` (cae a `2500` si falta/no numérico). Columna nueva
+> `Order.deliveryFee` (decimal 10,2, default 0). `OrdersService.create()`: si el snapshot de dirección
+> trae coordenadas, calcula distancia y tarifa contra `store_location`/`delivery_fee_tiers` y evalúa
+> `isFarOrder` contra `delivery_alert_radius_meters`; sin coordenadas, `deliveryFee = 0` sin bloquear
+> nunca el pedido. `total = subtotal (o con cupón aplicado) + deliveryFee`. Tras persistir el pedido,
+> push best-effort a los admins con `fcmToken` (título con `⚠️` si `isFarOrder`). `findOne`/`findAll`
+> ahora cargan también `relations.user` (expone `phone`/`fullName`, `password` sigue excluido vía
+> `@Exclude()` global); `findMyOrders` sin cambios.
+>
+> **Auditado por `@tester` (pase independiente, con mutación real y prueba end-to-end contra
+> servidor + Postgres local reales) — veredicto "LISTO".**
+
+- [x] `pnpm run build` compila sin errores (confirmado de forma independiente)
+- [x] `pnpm run lint` limpio, exit 0 (confirmado de forma independiente)
+- [x] `pnpm test`: 348/348 en verde (20 suites) — confirmado de forma independiente, no solo
+      confiado en el conteo reportado por la sesión principal
+- [x] `pnpm run test:e2e`: 289/289 en verde (12 suites) contra Postgres local real — confirmado de
+      forma independiente
+- [x] `geo.util.spec.ts`: mismo punto (0m), 1° de latitud en el ecuador (~111.19km, valor de
+      referencia conocido), distancia real entre dos coordenadas de San Juan de Miraflores,
+      simetría A→B == B→A
+- [x] **Nunca se rechaza un pedido por distancia**: confirmado leyendo el código completo de
+      `resolveDelivery`/`feeForDistance` — ningún radio máximo, ningún `throw` ligado a la
+      distancia; el tramo final (`maxMeters: null`) es tarifa plana sin techo, y `feeForDistance`
+      tiene además un fallback defensivo (`tiers[tiers.length - 1]?.fee ?? 0`) si la config no
+      trajera un tramo final `null`. Cubierto con el caso de tramo lejano (unit + e2e real: pedido
+      a ~3.7km del `store_location` se crea igual, `deliveryFee: 8`, `status: pendiente`)
+- [x] `deliveryFee` se suma DESPUÉS del descuento del cupón: confirmado leyendo `create()` línea por
+      línea (`total = applied.discountedTotal` primero, `total = round2(total + deliveryFee)`
+      después) y con el test unitario dedicado (`44.82 + 2 = 46.82`)
+- [x] Sin coordenadas en la dirección (dato viejo o `addressSnapshot` de texto libre): `deliveryFee
+      = 0`, el pedido se crea igual, y `getStoreLocation()` NUNCA se llama — confirmado leyendo
+      `resolveDelivery` (el `if (!coords) return ...` corta antes de la única línea que llama a
+      `settingsService.getStoreLocation()`) y con el test unitario que asegura
+      `expect(settingsService.getStoreLocation).not.toHaveBeenCalled()`
+- [x] `store_location` sin configurar + dirección CON coordenadas → `404` en español
+      (`"La ubicación del local todavía no está configurada (setting \"store_location\")"`), y la
+      transacción NUNCA se inicia — confirmado leyendo el código (`resolveDelivery()` se llama
+      ANTES de `dataSource.transaction(...)` en `create()`) y con el test unitario
+      (`expect(dataSource.transaction).not.toHaveBeenCalled()`). **Verificado además end-to-end
+      contra el servidor y Postgres local reales**: se desconfiguró `store_location` vía
+      `PATCH /settings` (`value: " "`), se contó `SELECT COUNT(*) FROM orders` antes y después de
+      un intento de `POST /orders` con dirección con coordenadas — el conteo no cambió (2→2), la
+      respuesta fue `404` con el mensaje exacto de arriba, y `store_location` se restauró al
+      finalizar
+- [x] Push a los admins es best-effort real: `sendPushNotification` nunca lanza (contrato ya
+      auditado en `NotificationsService`); test unitario con `sendPushNotification.mockResolvedValue
+      (false)` confirma que la creación del pedido no se ve afectada; test con `usersRepo.find`
+      devolviendo `[]` confirma que 0 admins con token no rompe nada y tampoco llama a
+      `sendPushNotification`; test con 2 admins confirma que se notifica a TODOS, no solo al primero
+- [x] El mensaje de alerta (`⚠️ Nuevo pedido fuera de la zona habitual...`) SOLO aparece cuando
+      `isFarOrder` es `true` (distancia > `delivery_alert_radius_meters`); el pedido cercano usa el
+      título normal (`🍔 Nuevo pedido...`) — cubierto con tests unitarios dedicados para ambos casos
+      (`.toContain`/`.not.toContain('⚠️')`)
+- [x] `findOne`/`findAll` exponen `user.phone`/`user.fullName` sin `password` — confirmado leyendo
+      el código (`relations: { items: true, user: true }` en ambos, sin ningún `select` parcial) y
+      con `curl` real contra el servidor y Postgres local: `GET /orders/:id` (admin) devolvió el
+      objeto `user` completo con `fullName`/`phone`/etc., **sin la clave `password`** (confirmado
+      que la clave ni siquiera existe en el JSON, no solo que es `null`) — el `@Exclude()` global de
+      la entidad `User` sigue aplicando. `findMyOrders` no se tocó (`relations: { items: true }`),
+      confirmado con el test unitario existente
+- [x] Sin ningún endpoint nuevo, no aplica chequeo nuevo de Swagger/401/403 — `POST /orders`
+      conserva las mismas respuestas documentadas; el campo `deliveryFee` viaja dentro del mismo
+      `Order` que ya se documentaba
+- [x] Migración `AddDeliveryFeeToOrders1787285827711`: verificada de forma independiente con
+      `docker exec celtas-db psql` contra Postgres local real — `\d orders` muestra `deliveryFee
+      numeric(10,2) NOT NULL DEFAULT '0'`, coincide exactamente con el transformer/decorador de la
+      entidad; `SELECT name FROM migrations ORDER BY id DESC` la confirma registrada;
+      `migration:generate` posterior reporta "No changes in database schema were found" (sin
+      drift)
+- [x] **Prueba real end-to-end contra el servidor (`pnpm run start:dev`) y Postgres local reales**
+      (no simulada): admin y cliente reales, categoría/producto real, dirección real con
+      coordenadas ~147.75m del `store_location` de prueba (`-12.1631,-76.97`) → `POST /orders` real
+      devolvió `deliveryFee: 4` (tramo 100-400m), `total: 29` (`25 + 4`); una segunda dirección a
+      ~3.7km devolvió `deliveryFee: 8` (tarifa plana) con `status: "pendiente"` (nunca rechazado).
+      Datos de prueba limpiados de la BD después (usuarios, direcciones, pedidos, categoría/producto
+      QA), settings restauradas a sus valores previos
+- [x] **Verificado con mutación real por `@tester`**: se invirtió la comparación en
+      `feeForDistance` (`distanceMeters <= tier.maxMeters` → `>=`) — rompió exactamente 4/67 tests
+      de `orders.service.spec.ts` (los que dependen del cálculo correcto del tramo), ningún otro se
+      vio afectado. Mutación revertida, confirmado con `git diff --stat` que el archivo volvió
+      exactamente al estado previo (mismo conteo de líneas que antes de la mutación), suite completa
+      vuelve a 348/348
+- [x] **Verificado con mutación real por `@tester`**: se deshabilitó el guard `if (!coords)` (forzado
+      a `if (false && !coords)`) en `resolveDelivery` — rompió 24/67 tests de
+      `orders.service.spec.ts`, incluido un `TypeError: Cannot read properties of null (reading
+      'latitude')` real (no un fallo silencioso: sin el guard, un pedido sin coordenadas revienta al
+      intentar leer `coords.latitude` de `null`), confirmando que el guard no es cosmético — evita un
+      500 real, no solo un `deliveryFee` incorrecto. Mutación revertida, `git diff --stat` confirma
+      el archivo idéntico al estado previo, suite completa vuelve a 348/348
+- [x] `pnpm test` y `pnpm run test:e2e` completos re-corridos tras cada revert de mutación, ambos en
+      verde (348/348 y 289/289 respectivamente)
+
+⚠️ Riesgos / casos borde no cubiertos (bajo riesgo, no bloqueantes):
+- No hay ningún test (unitario ni e2e) del caso límite exacto `distanceMeters === tier.maxMeters`
+  (ej. una dirección a exactamente 100.00m) — la lógica (`<=`) debería incluirlo en el tramo actual
+  (no en el siguiente), y `feeForDistance` fue mutado con éxito arriba invirtiendo el operador, pero
+  ningún test usa un valor exactamente en el borde de un tramo, solo valores claramente dentro de
+  cada uno.
+- No hay test de `distanceMeters > alertRadiusMeters` en el límite exacto (`distanceMeters ===
+  alertRadiusMeters`, que según el código con `>` estricto NO dispara `isFarOrder` justo en el
+  borde) — mismo patrón de gap que el punto anterior, aplicado al radio de aviso.
+- No hay test (unitario ni e2e) de `addressSnapshot` directo del cliente (sin `addressId`, rama
+  `dto.addressSnapshot`) que SÍ traiga `latitude`/`longitude` en el JSON — el código lo soportaría
+  igual (`parseAddressCoords` no distingue el origen del snapshot), pero no está ejercitado
+  explícitamente; toda la cobertura nueva usa la rama `addressId` con una `Address` real.
+- No hay test de qué pasa si `delivery_fee_tiers` está configurado con un array VACÍO (`[]`): el
+  bucle de `feeForDistance` no entra nunca y cae al fallback `tiers[tiers.length - 1]?.fee ?? 0`
+  → `0` (delivery gratis, no un error) — comportamiento razonable pero no verificado con un test
+  explícito, y no documentado como decisión intencional en ningún comentario.
+- `notifyAdminsNewOrder` corre DESPUÉS de la transacción (fuera de ella, best-effort) — confirmado
+  leyendo el código y con tests de que un fallo no rompe la creación, pero no hay ningún test que
+  verifique el orden temporal real (que el pedido ya esté commiteado en la BD antes de que se
+  dispare el push) más allá de la estructura del código (`await this.dataSource.transaction(...)`
+  seguido de `await this.notifyAdminsNewOrder(...)`, secuencial, no en paralelo).
+
+**Veredicto: LISTO.** Todo lo crítico del checklist pasa: build/lint limpios (confirmados de forma
+independiente), 348/348 unit y 289/289 e2e (confirmados de forma independiente, no solo el conteo
+reportado), migración verificada 1:1 contra Postgres local real sin drift, prueba end-to-end real
+contra el servidor corriendo con cálculo de distancia/tarifa concreto y verificable a mano, dos
+mutaciones reales en los puntos más frágiles (comparación de tramo, guard de "sin coordenadas") que
+confirman que la cobertura de tests es real y no cosmética, seguridad confirmada (`password` nunca
+viaja en la respuesta de `user`), y ningún hallazgo bloqueante. Los ⚠️ de arriba son gaps de
+cobertura de casos borde de bajo riesgo, no bloqueantes — vale la pena cerrarlos en una vuelta
+futura, en particular el límite exacto de tramo (`distanceMeters === maxMeters`) dado que ya se
+demostró que `feeForDistance` es mutable sin que ningún test de borde lo detecte hoy.
+
 ## Comentario libre por ítem (`OrderItem.comment`)
 
 > Feature nueva: el cliente puede escribir una nota libre opcional por ítem del pedido (ej. "sin

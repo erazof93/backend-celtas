@@ -33,7 +33,7 @@ describe('OrdersService', () => {
   let orderItemsRepo: { create: jest.Mock };
   let menuItemsRepo: { find: jest.Mock };
   let addressesRepo: { findOne: jest.Mock };
-  let usersRepo: { findOne: jest.Mock };
+  let usersRepo: { findOne: jest.Mock; find: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let configService: { get: jest.Mock };
   let couponsService: {
@@ -43,7 +43,13 @@ describe('OrdersService', () => {
     reactivateForCancelledOrder: jest.Mock;
   };
   let notificationsService: { sendPushNotification: jest.Mock };
-  let settingsService: { getWhatsappNumber: jest.Mock; isOpenNow: jest.Mock };
+  let settingsService: {
+    getWhatsappNumber: jest.Mock;
+    isOpenNow: jest.Mock;
+    getStoreLocation: jest.Mock;
+    getDeliveryFeeTiers: jest.Mock;
+    getDeliveryAlertRadiusMeters: jest.Mock;
+  };
 
   const userId = 'user-1';
   const otherUserId = 'user-2';
@@ -102,7 +108,7 @@ describe('OrdersService', () => {
     orderItemsRepo = { create: jest.fn() };
     menuItemsRepo = { find: jest.fn() };
     addressesRepo = { findOne: jest.fn() };
-    usersRepo = { findOne: jest.fn() };
+    usersRepo = { findOne: jest.fn(), find: jest.fn().mockResolvedValue([]) };
     dataSource = { transaction: jest.fn() };
     configService = {
       get: jest.fn((key: string) =>
@@ -123,6 +129,19 @@ describe('OrdersService', () => {
       // Local abierto por defecto: los tests existentes de create() no deben
       // verse afectados por el guard de horario de atención.
       isOpenNow: jest.fn().mockResolvedValue({ open: true, message: null }),
+      // Solo se consulta cuando la dirección tiene coordenadas (ver
+      // resolveDelivery). Default lejos de cualquier dirección de prueba
+      // para no afectar los tests que no verifican deliveryFee/distancia.
+      getStoreLocation: jest
+        .fn()
+        .mockResolvedValue({ latitude: -12.1631, longitude: -76.97 }),
+      getDeliveryFeeTiers: jest.fn().mockResolvedValue([
+        { maxMeters: 100, fee: 2 },
+        { maxMeters: 400, fee: 4 },
+        { maxMeters: 1000, fee: 6 },
+        { maxMeters: null, fee: 8 },
+      ]),
+      getDeliveryAlertRadiusMeters: jest.fn().mockResolvedValue(2500),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -599,6 +618,190 @@ describe('OrdersService', () => {
     });
   });
 
+  describe('create — delivery por distancia + aviso de pedidos lejanos', () => {
+    const dto = { items: [{ menuItemId, quantity: 2 }] };
+    // store_location de prueba usado en el mock default de settingsService:
+    // { latitude: -12.1631, longitude: -76.97 }.
+    const NEAR_COORDS = { latitude: -12.16315, longitude: -76.97005 }; // ~7.77m → tramo 1 (<=100m, S/2)
+    const MID_COORDS = { latitude: -12.169, longitude: -76.965 }; // ~851.93m → tramo 3 (<=1000m, S/6)
+    const FAR_COORDS = { latitude: -12.19, longitude: -76.95 }; // ~3697.65m → tramo 4 (sin techo, S/8) y supera el radio de aviso (2500m)
+
+    beforeEach(() => {
+      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+      orderItemsRepo.create.mockImplementation(passthrough);
+      ordersRepo.create.mockImplementation(passthrough);
+      ordersRepo.save.mockImplementation(passthrough);
+      dataSource.transaction.mockImplementation(
+        (cb: (m: { create: jest.Mock; save: jest.Mock }) => Promise<unknown>) =>
+          cb({
+            create: jest.fn((_entity: unknown, value: unknown) => value),
+            save: jest.fn((_entity: unknown, value: unknown) =>
+              Promise.resolve(value),
+            ),
+          }),
+      );
+    });
+
+    it('sin coordenadas en la dirección: deliveryFee = 0, no consulta store_location (no bloquea el pedido)', async () => {
+      addressesRepo.findOne.mockResolvedValue(
+        seedAddress({ latitude: null, longitude: null }),
+      );
+      const result = await service.create(userId, { ...dto, addressId });
+
+      expect(result.deliveryFee).toBe(0);
+      expect(settingsService.getStoreLocation).not.toHaveBeenCalled();
+    });
+
+    it('dirección cercana (tramo 1, <=100m) → deliveryFee = 2, sumado al total', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress(NEAR_COORDS));
+      const result = await service.create(userId, { ...dto, addressId });
+
+      expect(result.deliveryFee).toBe(2);
+      expect(result.total).toBe(51.8); // subtotal 49.8 + deliveryFee 2
+    });
+
+    it('dirección en tramo intermedio (851.93m, tramo 3 <=1000m) → deliveryFee = 6', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress(MID_COORDS));
+      const result = await service.create(userId, { ...dto, addressId });
+
+      expect(result.deliveryFee).toBe(6);
+      expect(result.total).toBe(55.8); // 49.8 + 6
+    });
+
+    it('dirección lejana (>1000m, tramo sin techo) → deliveryFee = 8 y el pedido se crea igual (nunca se rechaza por distancia)', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress(FAR_COORDS));
+      const result = await service.create(userId, { ...dto, addressId });
+
+      expect(result.deliveryFee).toBe(8);
+      expect(result.status).toBe(OrderStatus.PENDIENTE);
+    });
+
+    it('deliveryFee se suma DESPUÉS del descuento del cupón', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress(NEAR_COORDS));
+      couponsService.applyToOrder.mockResolvedValue({
+        discountedTotal: 44.82, // 49.8 - 10%
+        coupon: { id: 'coupon-1' },
+      });
+
+      const result = await service.create(userId, {
+        ...dto,
+        addressId,
+        couponCode: 'A1B2C3D4',
+      });
+
+      expect(result.total).toBe(46.82); // 44.82 + deliveryFee 2
+    });
+
+    it('store_location sin configurar + dirección CON coordenadas → NotFoundException, no crea el pedido', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress(NEAR_COORDS));
+      settingsService.getStoreLocation.mockRejectedValue(
+        new NotFoundException(
+          'La ubicación del local todavía no está configurada (setting "store_location")',
+        ),
+      );
+
+      await expect(
+        service.create(userId, { ...dto, addressId }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('dispara push a los admins con token tras crear el pedido (aviso normal si no supera el radio)', async () => {
+      usersRepo.find.mockResolvedValue([
+        { id: 'admin-1', role: UserRole.ADMIN, fcmToken: 'token-admin-1' },
+      ]);
+      addressesRepo.findOne.mockResolvedValue(seedAddress(NEAR_COORDS));
+
+      const result = await service.create(userId, { ...dto, addressId });
+
+      const findCall = (usersRepo.find.mock.calls[0] as unknown[])[0] as {
+        where: { role: string };
+      };
+      expect(findCall.where.role).toBe(UserRole.ADMIN);
+
+      const [calledUserId, payload] = notificationsService.sendPushNotification
+        .mock.calls[0] as [
+        string,
+        { title: string; data: Record<string, string> },
+      ];
+      expect(calledUserId).toBe('admin-1');
+      expect(payload.title).toContain('🍔 Nuevo pedido');
+      expect(payload.title).toContain(`S/ ${result.total.toFixed(2)}`);
+      expect(payload.data).toEqual({
+        orderId: result.id,
+        status: OrderStatus.PENDIENTE,
+      });
+    });
+
+    it('el pedido lejano (supera el radio de aviso) marca el push con el mensaje de advertencia', async () => {
+      usersRepo.find.mockResolvedValue([
+        { id: 'admin-1', role: UserRole.ADMIN, fcmToken: 'token-admin-1' },
+      ]);
+      addressesRepo.findOne.mockResolvedValue(seedAddress(FAR_COORDS));
+
+      await service.create(userId, { ...dto, addressId });
+
+      const [, payload] = notificationsService.sendPushNotification.mock
+        .calls[0] as [string, { title: string }];
+      expect(payload.title).toContain(
+        '⚠️ Nuevo pedido fuera de la zona habitual',
+      );
+    });
+
+    it('el pedido cercano NO dispara el mensaje de advertencia', async () => {
+      usersRepo.find.mockResolvedValue([
+        { id: 'admin-1', role: UserRole.ADMIN, fcmToken: 'token-admin-1' },
+      ]);
+      addressesRepo.findOne.mockResolvedValue(seedAddress(NEAR_COORDS));
+
+      await service.create(userId, { ...dto, addressId });
+
+      const [, payload] = notificationsService.sendPushNotification.mock
+        .calls[0] as [string, { title: string }];
+      expect(payload.title).not.toContain('⚠️');
+    });
+
+    it('sin admins con token, no llama a sendPushNotification (y el pedido igual se crea)', async () => {
+      usersRepo.find.mockResolvedValue([]);
+      addressesRepo.findOne.mockResolvedValue(seedAddress(NEAR_COORDS));
+
+      const result = await service.create(userId, { ...dto, addressId });
+
+      expect(notificationsService.sendPushNotification).not.toHaveBeenCalled();
+      expect(result.status).toBe(OrderStatus.PENDIENTE);
+    });
+
+    it('notifica a TODOS los admins con token (no solo al primero)', async () => {
+      usersRepo.find.mockResolvedValue([
+        { id: 'admin-1', role: UserRole.ADMIN, fcmToken: 'token-1' },
+        { id: 'admin-2', role: UserRole.ADMIN, fcmToken: 'token-2' },
+      ]);
+      addressesRepo.findOne.mockResolvedValue(seedAddress(NEAR_COORDS));
+
+      await service.create(userId, { ...dto, addressId });
+
+      expect(notificationsService.sendPushNotification).toHaveBeenCalledTimes(
+        2,
+      );
+      const calledIds =
+        notificationsService.sendPushNotification.mock.calls.map(
+          (call) => (call as unknown[])[0] as string,
+        );
+      expect(calledIds).toEqual(['admin-1', 'admin-2']);
+    });
+
+    it('si sendPushNotification falla (best-effort), la creación del pedido no se ve afectada', async () => {
+      usersRepo.find.mockResolvedValue([
+        { id: 'admin-1', role: UserRole.ADMIN, fcmToken: 'token-admin-1' },
+      ]);
+      notificationsService.sendPushNotification.mockResolvedValue(false);
+      addressesRepo.findOne.mockResolvedValue(seedAddress(NEAR_COORDS));
+
+      const result = await service.create(userId, { ...dto, addressId });
+      expect(result.status).toBe(OrderStatus.PENDIENTE);
+    });
+  });
+
   describe('findMyOrders', () => {
     it('busca los pedidos del usuario con sus items', async () => {
       ordersRepo.find.mockResolvedValue([seedOrder()]);
@@ -623,6 +826,14 @@ describe('OrdersService', () => {
         totalPages: 1,
       });
       expect(result.items).toHaveLength(1);
+    });
+
+    it('carga la relación user (phone/fullName) además de items', async () => {
+      ordersRepo.findAndCount.mockResolvedValue([[seedOrder()], 1]);
+      await service.findAll({ page: 1, limit: 10 });
+      expect(ordersRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ relations: { items: true, user: true } }),
+      );
     });
 
     it('filtra por estado si se indica', async () => {
@@ -709,6 +920,18 @@ describe('OrdersService', () => {
         role: UserRole.ADMIN.valueOf(),
       });
       expect(result.userId).toBe(otherUserId);
+    });
+
+    it('carga la relación user (phone/fullName) además de items', async () => {
+      ordersRepo.findOne.mockResolvedValue(seedOrder());
+      await service.findOne('one-1', {
+        userId,
+        role: UserRole.CLIENTE.valueOf(),
+      });
+      expect(ordersRepo.findOne).toHaveBeenCalledWith({
+        where: { id: 'one-1' },
+        relations: { items: true, user: true },
+      });
     });
   });
 

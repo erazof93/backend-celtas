@@ -411,6 +411,40 @@ celtas-backend/
       su propio `comment` independiente, y un caso con caracteres especiales/unicode (emojis,
       comillas) dentro del link de WhatsApp.
 
+- [x] **Costo de delivery por distancia + aviso de pedidos lejanos (solo backend; primera parte de
+      la feature — `celtas-admin` y `celtas-app` quedan pendientes para después).**
+      `src/common/utils/geo.util.ts` (`haversineDistanceMeters`, fórmula de Haversine pura, sin API
+      externa). `SettingsService` gana 3 keys nuevas, mismo patrón que `business_hours_schedule`:
+      `store_location` (JSON `{latitude,longitude}`, sembrada SIN CONFIGURAR a propósito —
+      `getStoreLocation()` lanza `NotFoundException` en español hasta que el admin la configure),
+      `delivery_fee_tiers` (tramos ascendentes `{maxMeters,fee}`, sembrada con
+      `[{100,2},{400,4},{1000,6},{null,8}]`, cae al default si falta/JSON inválido) y
+      `delivery_alert_radius_meters` (sembrada `"2500"`, cae al default si falta/no numérico).
+      Columna nueva `Order.deliveryFee` (decimal 10,2, default 0). En `OrdersService.create()`:
+      si el snapshot de dirección trae `latitude`/`longitude`, calcula la distancia contra
+      `store_location` y busca el tramo correspondiente en `delivery_fee_tiers`; sin coordenadas
+      (dirección vieja o `addressSnapshot` de texto libre), `deliveryFee = 0` sin bloquear nunca el
+      pedido — **el pedido NUNCA se rechaza por distancia**, ni siquiera el tramo más lejano (tarifa
+      plana sin techo). `total = subtotal (o con cupón aplicado) + deliveryFee`. Tras persistir el
+      pedido, push best-effort a los admins con `fcmToken` (`🍔 Nuevo pedido...` normal, o
+      `⚠️ Nuevo pedido fuera de la zona habitual...` si supera `delivery_alert_radius_meters`).
+      `findOne`/`findAll` ahora cargan también la relación `user` (expone `phone`/`fullName`,
+      `password` sigue excluido globalmente); `findMyOrders` sin cambios. Migración
+      `AddDeliveryFeeToOrders` generada, corrida, revertida y reaplicada contra Postgres local real,
+      verificada 1:1 contra `\d orders`, sin drift posterior (`migration:generate` limpio). Auditado
+      por `@tester` (pase independiente, con mutación real sobre los dos puntos más frágiles —
+      comparación de tramo en `feeForDistance` y el guard "sin coordenadas" en `resolveDelivery`, la
+      segunda mutación reveló que sin el guard el pedido revienta con un `TypeError` real, no solo
+      un cálculo incorrecto — y prueba end-to-end real contra el servidor y Postgres local, incluido
+      un caso de tramo cercano con `deliveryFee` y `total` calculados a mano y verificados): **LISTO
+      PARA MARCAR COMPLETO (backend)** — 348 unit (20 suites) + 289 e2e (12 suites), build/lint
+      limpios. Riesgos anotados, no bloqueantes, en `docs/testing-checklist.md`: falta cobertura del
+      límite exacto de tramo (`distanceMeters === tier.maxMeters`) y del límite exacto del radio de
+      aviso (`distanceMeters === alertRadiusMeters`). **Pendiente, fuera de este backend**:
+      `celtas-admin` (formulario para configurar `store_location`/`delivery_fee_tiers`/
+      `delivery_alert_radius_meters`) y `celtas-app` (mostrar `deliveryFee` en el resumen del pedido)
+      quedan para una vuelta futura.
+
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)
 - [x] Cron job (`@nestjs/schedule`) que revisa usuarios que superaron el umbral (ej. S/50) desde el último cupón
@@ -554,6 +588,18 @@ celtas-backend/
 - [x] Variables de entorno reales pegadas en Render (secrets de JWT nuevos, no reutilizar los de local)
 - [x] **Gotcha resuelto**: conexión directa de Supabase (`db.xxx.supabase.co`) solo resuelve IPv6, y Render no soporta salida IPv6 (`ENETUNREACH`). Solución: usar el **Session Pooler** de Supabase (`aws-0-<region>.pooler.supabase.com:5432`, usuario `postgres.<project-ref>`) en vez de la conexión directa — es IPv4-compatible y funciona igual para una app persistente
 - [x] Primer deploy exitoso: migración corrió sola en el arranque, las 9 tablas + enums + FKs se crearon correctamente, `"Your service is live 🎉"` — backend real en `https://backend-celtas.onrender.com`
+- [ ] ⚠️ **ACCIÓN PENDIENTE para el día que se despliegue "costo de delivery por distancia"
+      (ver módulo 4)**: `store_location` se siembra SIN CONFIGURAR a propósito (no hay coordenadas
+      inventadas). A diferencia de `whatsapp_business_number`, esta setting **no tiene fallback a
+      `.env`** — apenas este cambio llegue a Render, CUALQUIER pedido cuya dirección tenga
+      `latitude`/`longitude` va a fallar con `404 Not Found` al confirmar, hasta que alguien cargue
+      la ubicación real del local a mano:
+      `PATCH /settings` con `{"key":"store_location","value":"{\"latitude\":-12.XXX,\"longitude\":-77.XXX}"}`
+      (admin, mismo endpoint de siempre). Pedidos con direcciones SIN coordenadas (o el fallback de
+      texto libre sin `addressId`) no se ven afectados — siguen creándose con `deliveryFee=0`. La
+      pantalla del panel admin para cargar esto todavía no existe (queda para `celtas-admin`, fase
+      siguiente) — hacerlo a mano vía `PATCH /settings` contra producción es obligatorio antes o
+      inmediatamente después de este deploy, no opcional.
 
 ### 10. Calidad — ✅ COMPLETO
 - [x] Cobertura reforzada en lógica crítica: `google-auth.service.ts` 23% → ~95%, casos de `auth.service.ts` (email inexistente, usuario sin password)

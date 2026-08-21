@@ -8,11 +8,19 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { DataSource, FindOptionsWhere, In, Repository } from 'typeorm';
+import {
+  DataSource,
+  FindOptionsWhere,
+  In,
+  IsNull,
+  Not,
+  Repository,
+} from 'typeorm';
+import { haversineDistanceMeters } from '../../common/utils/geo.util';
 import { CouponsService } from '../coupons/coupons.service';
 import { MenuItem } from '../menu/entities/menu-item.entity';
 import { NotificationsService } from '../notifications/notifications.service';
-import { SettingsService } from '../settings/settings.service';
+import { DeliveryFeeTier, SettingsService } from '../settings/settings.service';
 import { Address } from '../users/entities/address.entity';
 import { User, UserRole } from '../users/entities/user.entity';
 import { CreateOrderDto, CreateOrderItemDto } from './dto/create-order.dto';
@@ -83,6 +91,8 @@ export class OrdersService {
     }
 
     const addressSnapshot = await this.resolveAddressSnapshot(userId, dto);
+    const { deliveryFee, isFarOrder } =
+      await this.resolveDelivery(addressSnapshot);
     const items = await this.buildItems(dto.items);
     const subtotal = this.round2(
       items.reduce((sum, item) => sum + item.subtotal, 0),
@@ -91,7 +101,7 @@ export class OrdersService {
     const orderId = randomUUID();
 
     // Transacción explícita: el pedido y el canje del cupón se crean/revientan juntos.
-    return this.dataSource.transaction(async (manager) => {
+    const savedOrder = await this.dataSource.transaction(async (manager) => {
       let total = subtotal;
       let coupon:
         Awaited<ReturnType<CouponsService['applyToOrder']>>['coupon'] | null =
@@ -105,6 +115,7 @@ export class OrdersService {
         total = applied.discountedTotal;
         coupon = applied.coupon;
       }
+      total = this.round2(total + deliveryFee);
 
       const order = manager.create(Order, {
         id: orderId,
@@ -112,6 +123,7 @@ export class OrdersService {
         status: OrderStatus.PENDIENTE,
         addressSnapshot,
         total,
+        deliveryFee,
         items,
       } as Partial<Order>);
       order.whatsappUrl = await this.buildWhatsappUrl(
@@ -121,16 +133,23 @@ export class OrdersService {
         addressSnapshot,
       );
 
-      const savedOrder = await manager.save(Order, order);
+      const saved = await manager.save(Order, order);
 
       // Marcar el cupón usado DESPUÉS de persistir el pedido (la FK usedInOrderId
       // debe apuntar a un pedido que ya exista). Si algo falla, todo se revierte.
       if (coupon) {
-        await this.couponsService.markUsed(manager, coupon, savedOrder.id);
+        await this.couponsService.markUsed(manager, coupon, saved.id);
       }
 
-      return savedOrder;
+      return saved;
     });
+
+    // Fuera de la transacción, tras el commit: aviso a los admins con push,
+    // best-effort (sendPushNotification nunca lanza, no hace falta try/catch).
+    // Si esto fallara igual, la creación del pedido ya quedó registrada.
+    await this.notifyAdminsNewOrder(savedOrder, isFarOrder);
+
+    return savedOrder;
   }
 
   /** Lista los pedidos del usuario autenticado (más recientes primero). */
@@ -155,7 +174,7 @@ export class OrdersService {
     }
     const [items, total] = await this.ordersRepository.findAndCount({
       where,
-      relations: { items: true },
+      relations: { items: true, user: true },
       take: limit,
       skip: (page - 1) * limit,
       order: { createdAt: 'DESC' },
@@ -181,7 +200,7 @@ export class OrdersService {
   ): Promise<Order> {
     const order = await this.ordersRepository.findOne({
       where: { id },
-      relations: { items: true },
+      relations: { items: true, user: true },
     });
     if (!order) {
       throw new NotFoundException('Pedido no encontrado');
@@ -316,6 +335,109 @@ export class OrdersService {
     }
     throw new BadRequestException(
       'Debes indicar una dirección (addressId o addressSnapshot)',
+    );
+  }
+
+  /**
+   * Costo de delivery por distancia (Haversine contra `store_location`) y si
+   * el pedido supera el radio de aviso interno. Si la dirección no trae
+   * coordenadas (dato viejo, o `addressSnapshot` de texto libre sin
+   * `addressId`, ya documentado como fuera de alcance), NUNCA bloquea el
+   * pedido: `deliveryFee = 0` y solo se loguea un warning.
+   */
+  private async resolveDelivery(
+    addressSnapshot: string,
+  ): Promise<{ deliveryFee: number; isFarOrder: boolean }> {
+    const coords = this.parseAddressCoords(addressSnapshot);
+    if (!coords) {
+      this.logger.warn(
+        'No se pudo calcular el delivery por distancia: la dirección del pedido no tiene coordenadas. deliveryFee = 0.',
+      );
+      return { deliveryFee: 0, isFarOrder: false };
+    }
+
+    const store = await this.settingsService.getStoreLocation();
+    const distanceMeters = haversineDistanceMeters(
+      store.latitude,
+      store.longitude,
+      coords.latitude,
+      coords.longitude,
+    );
+    const [tiers, alertRadiusMeters] = await Promise.all([
+      this.settingsService.getDeliveryFeeTiers(),
+      this.settingsService.getDeliveryAlertRadiusMeters(),
+    ]);
+
+    return {
+      deliveryFee: this.feeForDistance(distanceMeters, tiers),
+      isFarOrder: distanceMeters > alertRadiusMeters,
+    };
+  }
+
+  /** Extrae `{ latitude, longitude }` del snapshot JSON, o `null` si no están presentes/son válidas. */
+  private parseAddressCoords(
+    snapshot: string,
+  ): { latitude: number; longitude: number } | null {
+    try {
+      const parsed = JSON.parse(snapshot) as {
+        latitude?: number | null;
+        longitude?: number | null;
+      };
+      if (
+        typeof parsed.latitude === 'number' &&
+        typeof parsed.longitude === 'number'
+      ) {
+        return { latitude: parsed.latitude, longitude: parsed.longitude };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Tramo de `delivery_fee_tiers` que corresponde a `distanceMeters` (el primero con `<= maxMeters`). */
+  private feeForDistance(
+    distanceMeters: number,
+    tiers: DeliveryFeeTier[],
+  ): number {
+    for (const tier of tiers) {
+      if (tier.maxMeters === null || distanceMeters <= tier.maxMeters) {
+        return tier.fee;
+      }
+    }
+    // Defensivo: si la config no trae un tramo final con maxMeters=null, usa
+    // el último tramo en vez de dejar el pedido sin tarifa.
+    return tiers[tiers.length - 1]?.fee ?? 0;
+  }
+
+  /**
+   * Push a los admins con token registrado avisando el pedido nuevo.
+   * Fire-and-forget best-effort: `sendPushNotification` nunca lanza (ver
+   * contrato en NotificationsService), así que no hace falta try/catch acá.
+   */
+  private async notifyAdminsNewOrder(
+    order: Order,
+    isFarOrder: boolean,
+  ): Promise<void> {
+    const admins = await this.usersRepository.find({
+      where: { role: UserRole.ADMIN, fcmToken: Not(IsNull()) },
+    });
+    if (admins.length === 0) return;
+
+    const shortId = order.id.slice(0, 8).toUpperCase();
+    const title = isFarOrder
+      ? `⚠️ Nuevo pedido fuera de la zona habitual #${shortId} — S/ ${order.total.toFixed(2)}`
+      : `🍔 Nuevo pedido #${shortId} — S/ ${order.total.toFixed(2)}`;
+    const body = this.readableAddress(order.addressSnapshot);
+
+    await Promise.all(
+      admins.map((admin) =>
+        this.notificationsService.sendPushNotification(admin.id, {
+          title,
+          body,
+          data: { orderId: order.id, status: order.status },
+        }),
+      ),
     );
   }
 

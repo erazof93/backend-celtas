@@ -8,7 +8,10 @@ import {
   BUSINESS_MANUAL_CLOSED_KEY,
   BUSINESS_MANUAL_CLOSED_REASON_KEY,
   BusinessHoursSchedule,
+  DELIVERY_ALERT_RADIUS_METERS_KEY,
+  DELIVERY_FEE_TIERS_KEY,
   SettingsService,
+  STORE_LOCATION_KEY,
   WHATSAPP_NUMBER_KEY,
 } from './settings.service';
 
@@ -85,6 +88,44 @@ describe('SettingsService', () => {
         expect.objectContaining({
           key: WHATSAPP_NUMBER_KEY,
           value: '51999999999',
+        }),
+      );
+    });
+
+    it('siembra store_location SIN CONFIGURAR (value vacío) — no inventa coordenadas', async () => {
+      settingsRepo.findOne.mockResolvedValue(null);
+      configService.get.mockReturnValue(undefined);
+      await service.onModuleInit();
+      expect(settingsRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ key: STORE_LOCATION_KEY, value: '' }),
+      );
+    });
+
+    it('siembra delivery_fee_tiers con la tabla default', async () => {
+      settingsRepo.findOne.mockResolvedValue(null);
+      configService.get.mockReturnValue(undefined);
+      await service.onModuleInit();
+      expect(settingsRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: DELIVERY_FEE_TIERS_KEY,
+          value: JSON.stringify([
+            { maxMeters: 100, fee: 2 },
+            { maxMeters: 400, fee: 4 },
+            { maxMeters: 1000, fee: 6 },
+            { maxMeters: null, fee: 8 },
+          ]),
+        }),
+      );
+    });
+
+    it('siembra delivery_alert_radius_meters con "2500"', async () => {
+      settingsRepo.findOne.mockResolvedValue(null);
+      configService.get.mockReturnValue(undefined);
+      await service.onModuleInit();
+      expect(settingsRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: DELIVERY_ALERT_RADIUS_METERS_KEY,
+          value: '2500',
         }),
       );
     });
@@ -483,6 +524,100 @@ describe('SettingsService', () => {
       const result = await service.getBusinessHoursSchedule();
       expect(result['0'].open).toBe('11:00');
       expect(result['5'].close).toBe('01:00');
+    });
+  });
+
+  describe('getStoreLocation', () => {
+    it('devuelve latitude/longitude si la setting está configurada', async () => {
+      settingsRepo.findOne.mockResolvedValue(
+        seedSetting({
+          key: STORE_LOCATION_KEY,
+          value: JSON.stringify({ latitude: -12.1631, longitude: -76.97 }),
+        }),
+      );
+      const result = await service.getStoreLocation();
+      expect(result).toEqual({ latitude: -12.1631, longitude: -76.97 });
+    });
+
+    it('lanza NotFoundException si la setting está vacía (sin configurar)', async () => {
+      settingsRepo.findOne.mockResolvedValue(
+        seedSetting({ key: STORE_LOCATION_KEY, value: '' }),
+      );
+      await expect(service.getStoreLocation()).rejects.toThrow(
+        'La ubicación del local todavía no está configurada',
+      );
+    });
+
+    it('lanza NotFoundException si la key no existe', async () => {
+      settingsRepo.findOne.mockResolvedValue(null);
+      await expect(service.getStoreLocation()).rejects.toThrow();
+    });
+
+    it('lanza NotFoundException si el JSON es inválido', async () => {
+      settingsRepo.findOne.mockResolvedValue(
+        seedSetting({ key: STORE_LOCATION_KEY, value: 'no-es-json' }),
+      );
+      await expect(service.getStoreLocation()).rejects.toThrow();
+    });
+  });
+
+  describe('getDeliveryFeeTiers', () => {
+    it('devuelve los tramos configurados', async () => {
+      const tiers = [
+        { maxMeters: 500, fee: 3 },
+        { maxMeters: null, fee: 5 },
+      ];
+      settingsRepo.findOne.mockResolvedValue(
+        seedSetting({
+          key: DELIVERY_FEE_TIERS_KEY,
+          value: JSON.stringify(tiers),
+        }),
+      );
+      const result = await service.getDeliveryFeeTiers();
+      expect(result).toEqual(tiers);
+    });
+
+    it('cae a la tabla default si la key no existe', async () => {
+      settingsRepo.findOne.mockResolvedValue(null);
+      const result = await service.getDeliveryFeeTiers();
+      expect(result).toEqual([
+        { maxMeters: 100, fee: 2 },
+        { maxMeters: 400, fee: 4 },
+        { maxMeters: 1000, fee: 6 },
+        { maxMeters: null, fee: 8 },
+      ]);
+    });
+
+    it('cae a la tabla default si el JSON es inválido', async () => {
+      settingsRepo.findOne.mockResolvedValue(
+        seedSetting({ key: DELIVERY_FEE_TIERS_KEY, value: 'no-es-json' }),
+      );
+      const result = await service.getDeliveryFeeTiers();
+      expect(result[0]).toEqual({ maxMeters: 100, fee: 2 });
+    });
+  });
+
+  describe('getDeliveryAlertRadiusMeters', () => {
+    it('devuelve el valor configurado como número', async () => {
+      settingsRepo.findOne.mockResolvedValue(
+        seedSetting({ key: DELIVERY_ALERT_RADIUS_METERS_KEY, value: '3000' }),
+      );
+      expect(await service.getDeliveryAlertRadiusMeters()).toBe(3000);
+    });
+
+    it('cae al default (2500) si la key no existe', async () => {
+      settingsRepo.findOne.mockResolvedValue(null);
+      expect(await service.getDeliveryAlertRadiusMeters()).toBe(2500);
+    });
+
+    it('cae al default si el valor no es un número válido', async () => {
+      settingsRepo.findOne.mockResolvedValue(
+        seedSetting({
+          key: DELIVERY_ALERT_RADIUS_METERS_KEY,
+          value: 'no-es-numero',
+        }),
+      );
+      expect(await service.getDeliveryAlertRadiusMeters()).toBe(2500);
     });
   });
 

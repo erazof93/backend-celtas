@@ -56,6 +56,24 @@ export class Order {
   total: number;
 
   /**
+   * Costo de delivery calculado por distancia (Haversine) contra el tramo de
+   * `delivery_fee_tiers` que corresponda. `0` cuando la dirección del pedido
+   * no tiene coordenadas (dato viejo o texto libre sin `addressId`) — nunca
+   * se rechaza un pedido por no poder calcularlo. Ya incluido en `total`.
+   */
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    transformer: {
+      to: (value: number): number => value,
+      from: (value: string): number => parseFloat(value),
+    },
+  })
+  deliveryFee: number;
+
+  /**
    * Link de WhatsApp generado al crear el pedido. Se persiste para no tener que
    * regenerarlo después y para poder reenviarlo en el historial.
    */
