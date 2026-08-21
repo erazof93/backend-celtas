@@ -24,6 +24,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from '../users/entities/user.entity';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { EstimateDeliveryFeeDto } from './dto/estimate-delivery-fee.dto';
 import { QueryOrdersDto } from './dto/query-orders.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrdersService } from './orders.service';
@@ -62,6 +63,30 @@ export class OrdersController {
   })
   create(@Req() req: AuthenticatedRequest, @Body() dto: CreateOrderDto) {
     return this.ordersService.create(req.user.userId, dto);
+  }
+
+  @Post('estimate-delivery-fee')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({
+    summary: 'Estimar el costo de delivery de una dirección guardada (cliente)',
+    description:
+      'Mismo cálculo que POST /orders (Haversine contra store_location + tramo de delivery_fee_tiers), sin crear un pedido. Si la dirección no tiene coordenadas: deliveryFee 0, isFarOrder false, distanceMeters null (no bloquea).',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'deliveryFee, isFarOrder y distanceMeters calculados',
+  })
+  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
+  @ApiResponse({
+    status: 404,
+    description:
+      'La dirección no existe, no pertenece al usuario, o store_location no está configurada',
+  })
+  estimateDeliveryFee(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: EstimateDeliveryFeeDto,
+  ) {
+    return this.ordersService.estimateDeliveryFee(req.user.userId, dto);
   }
 
   @Get('me')

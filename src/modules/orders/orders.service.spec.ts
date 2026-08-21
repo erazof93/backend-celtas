@@ -802,6 +802,73 @@ describe('OrdersService', () => {
     });
   });
 
+  describe('estimateDeliveryFee', () => {
+    // Mismos store_location/tramos que el describe de create() (mock default de
+    // settingsService: { latitude: -12.1631, longitude: -76.97 }).
+    const NEAR_COORDS = { latitude: -12.16315, longitude: -76.97005 }; // ~7.77m → tramo 1 (<=100m, S/2)
+    const FAR_COORDS = { latitude: -12.19, longitude: -76.95 }; // ~3697.65m → tramo 4, supera el radio de aviso (2500m)
+
+    it('dirección con coordenadas (tramo 1) → deliveryFee, isFarOrder y distanceMeters calculados, sin crear pedido', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress(NEAR_COORDS));
+
+      const result = await service.estimateDeliveryFee(userId, { addressId });
+
+      expect(result.deliveryFee).toBe(2);
+      expect(result.isFarOrder).toBe(false);
+      expect(result.distanceMeters).toBeCloseTo(7.77, 1);
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(addressesRepo.findOne).toHaveBeenCalledWith({
+        where: { id: addressId, userId },
+      });
+    });
+
+    it('dirección lejana → isFarOrder true y deliveryFee del tramo sin techo', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress(FAR_COORDS));
+
+      const result = await service.estimateDeliveryFee(userId, { addressId });
+
+      expect(result.deliveryFee).toBe(8);
+      expect(result.isFarOrder).toBe(true);
+      expect(result.distanceMeters).toBeGreaterThan(2500);
+    });
+
+    it('dirección sin coordenadas → deliveryFee 0, isFarOrder false, distanceMeters null (no bloquea)', async () => {
+      addressesRepo.findOne.mockResolvedValue(
+        seedAddress({ latitude: null, longitude: null }),
+      );
+
+      const result = await service.estimateDeliveryFee(userId, { addressId });
+
+      expect(result).toEqual({
+        deliveryFee: 0,
+        isFarOrder: false,
+        distanceMeters: null,
+      });
+      expect(settingsService.getStoreLocation).not.toHaveBeenCalled();
+    });
+
+    it('dirección inexistente o de otro usuario → NotFoundException (mismo criterio que /users/:id/addresses)', async () => {
+      addressesRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.estimateDeliveryFee(otherUserId, { addressId }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('store_location sin configurar + dirección con coordenadas → NotFoundException', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress(NEAR_COORDS));
+      settingsService.getStoreLocation.mockRejectedValue(
+        new NotFoundException(
+          'La ubicación del local todavía no está configurada (setting "store_location")',
+        ),
+      );
+
+      await expect(
+        service.estimateDeliveryFee(userId, { addressId }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
   describe('findMyOrders', () => {
     it('busca los pedidos del usuario con sus items', async () => {
       ordersRepo.find.mockResolvedValue([seedOrder()]);

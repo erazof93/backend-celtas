@@ -169,6 +169,7 @@ verde. Sin bloqueantes restantes.
 - [ ] Al pasar a `entregado`, `totalSpent` del usuario se incrementa correctamente (verificar con un caso de prueba numérico)
 - [ ] Un cliente solo puede ver sus propios pedidos; admin puede ver todos
 - [x] `GET /orders?userId=X` (admin) filtra solo los pedidos de ese usuario; userId inexistente → lista vacía (200); userId malformado → 400; combinado con `status`; sin el param el comportamiento previo (paginación + status) queda intacto
+- [x] `POST /orders/estimate-delivery-fee` (cliente autenticado) calcula `deliveryFee`/`isFarOrder`/`distanceMeters` de una dirección propia sin crear un pedido; 404 si la dirección no existe o pertenece a otro usuario; ver sección dedicada más abajo
 
 ## Links de Google Maps/Waze en el mensaje de WhatsApp (`OrdersService`)
 
@@ -386,6 +387,103 @@ viaja en la respuesta de `user`), y ningún hallazgo bloqueante. Los ⚠️ de a
 cobertura de casos borde de bajo riesgo, no bloqueantes — vale la pena cerrarlos en una vuelta
 futura, en particular el límite exacto de tramo (`distanceMeters === maxMeters`) dado que ya se
 demostró que `feeForDistance` es mutable sin que ningún test de borde lo detecte hoy.
+
+### `POST /orders/estimate-delivery-fee` (endpoint nuevo, cierra la parte backend de la feature)
+
+> Endpoint nuevo, solo backend (`celtas-admin`/`celtas-app` sin cambios). Reusa el cálculo de
+> `create()` vía un helper compartido nuevo, `OrdersService.computeDelivery(coords)`, del que ahora
+> derivan tanto `resolveDelivery()` (usado por `create()`) como `estimateDeliveryFee()` (usado por
+> este endpoint). Protegido con `JwtAuthGuard` (cliente autenticado, sin rol especial). Valida que
+> la `Address` pertenezca al usuario autenticado (`where: { id: dto.addressId, userId }`, mismo
+> criterio que `resolveAddressSnapshot()` de `create()` y que el resto de `/users/:id/addresses`).
+> Nunca crea un pedido.
+>
+> **Auditado por `@tester` (pase independiente, con mutación real sobre los dos puntos más frágiles
+> — el guard de "dirección ajena" y el guard compartido de "sin coordenadas" en `computeDelivery`)
+> — veredicto "LISTO".**
+
+- [x] `pnpm run build` compila sin errores (confirmado de forma independiente)
+- [x] `pnpm run test`: 353/353 en verde (20 suites) — confirmado de forma independiente, incluye los
+      5 tests nuevos de `describe('estimateDeliveryFee')` en `orders.service.spec.ts`: tramo cercano
+      (deliveryFee/isFarOrder/distanceMeters calculados, sin llamar a `dataSource.transaction`),
+      tramo lejano (`isFarOrder: true`, tarifa del tramo sin techo), sin coordenadas (`deliveryFee:
+      0, isFarOrder: false, distanceMeters: null`, `getStoreLocation` nunca llamado), dirección
+      inexistente/ajena → `NotFoundException`, `store_location` sin configurar + coordenadas →
+      `NotFoundException`
+- [x] `pnpm run test:e2e`: 296/296 en verde (12 suites) contra Postgres local real — confirmado de
+      forma independiente, incluye los 7 tests nuevos de `describe('POST /orders/estimate-delivery-fee')`
+      en `test/orders.e2e-spec.ts`: 401 sin token, sin coordenadas, tramo cercano (con conteo real de
+      `orders` antes/después confirmando que no se crea ningún pedido), tramo lejano, 404 dirección
+      inexistente, **404 dirección de otro usuario (con dos usuarios reales, `clientAToken`/
+      `clientBToken`, y una `Address` real de `clientA`, no un mock)**, 400 `addressId` no-UUID
+- [x] **Refactor `resolveDelivery` → `computeDelivery` compartido, sin regresión en `POST /orders`**:
+      confirmado leyendo `create()` línea por línea (nada cambió en su flujo: sigue llamando
+      `resolveDelivery(addressSnapshot)`, que ahora solo agrega el warning de log y delega en
+      `computeDelivery`) y con la suite `describe('create — delivery por distancia...')` completa
+      (14 tests, ninguno tocado en este diff) en verde: tramo cercano/intermedio/lejano, deliveryFee
+      sumado después del cupón, `store_location` sin configurar → 404 sin iniciar transacción, push a
+      admins con/sin `isFarOrder`, best-effort ante fallo de notificación
+- [x] **Verificado con mutación real por `@tester`**: se deshabilitó el guard `if (!coords)` de
+      `computeDelivery` (forzado a `if (false && !coords)`) — rompió 25/72 tests de
+      `orders.service.spec.ts`, con el mismo `TypeError: Cannot read properties of null (reading
+      'latitude')` real documentado en la auditoría anterior (no un fallo silencioso), y esta vez
+      afectando AMBOS callers: los tests de `create()` sin coordenadas Y los 2 tests nuevos de
+      `estimateDeliveryFee` sin coordenadas — confirma que compartir el helper no introdujo un guard
+      duplicado ni divergente. Mutación revertida, `git diff --stat` confirma el archivo idéntico al
+      estado previo, suite completa vuelve a 353/353
+- [x] **Verificado con mutación real por `@tester`**: se quitó el filtro `userId` del `where` de
+      `estimateDeliveryFee` (`{ id: dto.addressId, userId }` → `{ id: dto.addressId }`) — rompió
+      exactamente el test e2e "404 si la dirección le pertenece a otro usuario" (1/53 de la suite
+      completa de `orders.e2e-spec.ts`, contra Postgres local real con dos usuarios reales) y ningún
+      otro; sin el filtro, `clientBToken` pudo estimar el delivery de una dirección de `clientA`
+      (`201` en vez de `404`). Confirma que el guard de propiedad es real, no solo que el `addressId`
+      exista. Mutación revertida, `git diff --stat` confirma el archivo idéntico al estado previo,
+      suite completa vuelve a 296/296
+- [x] Contrato del DTO verificado con `curl` real contra el servidor y Postgres local reales (token
+      real de un usuario registrado en esta sesión): sin `addressId` → 400 `"addressId debe ser un
+      UUID válido"`; `addressId` como número (`123`) → mismo 400 (rechaza el tipo, no coacciona);
+      `addressId` no-UUID (`"not-a-uuid"`) → mismo 400; `addressId` UUID válido pero inexistente →
+      404 `"Dirección no encontrada"`; sin token, cualquier body → 401 (el guard corre antes que el
+      `ValidationPipe`, consistente con el resto del proyecto)
+- [x] Prueba real end-to-end adicional (no solo la suite automatizada) contra el servidor
+      (`pnpm run start:dev`) y Postgres local reales: usuario y dirección reales creados vía API
+      (`POST /auth/register` + `POST /users/me/addresses`, dirección a ~70m del `store_location` de
+      prueba) → `POST /orders/estimate-delivery-fee` real devolvió `{"deliveryFee":2,"isFarOrder":
+      false,"distanceMeters":70.229...}`; `SELECT COUNT(*) FROM orders` antes y después del llamado
+      se mantuvo igual (1→1), confirmando que el endpoint nunca persiste un pedido. Usuario y
+      dirección de prueba borrados de la BD al finalizar
+- [x] Seguridad: `POST /auth/register` (mismo flujo usado para generar el token de prueba) confirma
+      que `password` no aparece en el JSON de la respuesta (ni la clave ni el valor); el endpoint en
+      sí no expone ningún usuario/entidad completa, solo el objeto plano
+      `{deliveryFee, isFarOrder, distanceMeters}`, así que no aplica ningún otro chequeo de campo
+      sensible aquí
+- [x] Documentación: confirmado contra `/docs-json` real (servidor levantado) que el endpoint está
+      documentado con `@ApiOperation`, `security: [{bearer: []}]`, y las 3 respuestas (201/401/404)
+      con descripciones correctas; `EstimateDeliveryFeeDto` documenta `addressId` como `string`
+      (UUID) requerido, con ejemplo
+
+⚠️ Riesgos / casos borde no cubiertos (bajo riesgo, no bloqueantes, algunos heredados de la feature
+base y confirmados que también aplican a este endpoint nuevo):
+- Los mismos gaps de límite exacto de tramo (`distanceMeters === tier.maxMeters`) y de radio de
+  aviso (`distanceMeters === alertRadiusMeters`) ya documentados arriba para `create()` también
+  aplican a `estimateDeliveryFee()`, porque ambos comparten `computeDelivery`/`feeForDistance` — no
+  es una regresión nueva de esta sesión, pero tampoco se cerró en esta vuelta.
+- No hay test (unitario ni e2e) de `delivery_fee_tiers` configurado como array vacío (`[]`) para
+  este endpoint específicamente — mismo gap ya anotado para `create()`.
+- No hay test de qué devuelve el endpoint si `addressId` corresponde a una dirección con
+  `latitude`/`longitude` igual a `0` (Null Island) — el chequeo en `estimateDeliveryFee` es
+  `typeof address.latitude === 'number'`, que sí trataría `0` como coordenada válida (correcto en
+  principio, a diferencia del riesgo `== null` vs truthy ya documentado en la sección de links de
+  WhatsApp), pero no está ejercitado con un test explícito.
+
+**Veredicto: LISTO.** Build limpio, 353/353 unit y 296/296 e2e (confirmados de forma independiente),
+Swagger correcto, contrato del DTO validado con `curl` real, cero password expuesto, y dos mutaciones
+reales en los puntos más frágiles (guard de "sin coordenadas" compartido y guard de "dirección
+ajena") que confirman que la cobertura nueva es real y que el refactor `resolveDelivery` →
+`computeDelivery` no introdujo ninguna regresión en `POST /orders`. Sin bloqueantes. Los ⚠️ de arriba
+son gaps de cobertura ya conocidos de la feature base (límite exacto de tramo/radio de aviso), que
+ahora también aplican a este endpoint por compartir el mismo cálculo — vale la pena cerrarlos para
+ambos endpoints juntos en una vuelta futura.
 
 ## Comentario libre por ítem (`OrderItem.comment`)
 

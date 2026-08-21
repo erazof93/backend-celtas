@@ -536,6 +536,118 @@ describe('Orders (e2e)', () => {
     });
   });
 
+  describe('POST /orders/estimate-delivery-fee', () => {
+    const estimate = (token: string, body: Record<string, unknown>) =>
+      request(app.getHttpServer())
+        .post('/orders/estimate-delivery-fee')
+        .set('Authorization', `Bearer ${token}`)
+        .send(body);
+
+    it('401 sin token', async () => {
+      await request(app.getHttpServer())
+        .post('/orders/estimate-delivery-fee')
+        .send({ addressId })
+        .expect(401);
+    });
+
+    it('dirección sin coordenadas: deliveryFee 0, isFarOrder false, distanceMeters null', async () => {
+      const res = await estimate(clientAToken, { addressId }).expect(201);
+      const data = (res.body as Envelope).data as {
+        deliveryFee: number;
+        isFarOrder: boolean;
+        distanceMeters: number | null;
+      };
+      expect(data).toEqual({
+        deliveryFee: 0,
+        isFarOrder: false,
+        distanceMeters: null,
+      });
+    });
+
+    it('dirección cercana: calcula el mismo tramo que POST /orders (S/2), sin crear ningún pedido', async () => {
+      const addrNear = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Estimación cerca',
+          fullAddress: 'Av. Los Álamos 321',
+          district: 'San Juan de Miraflores',
+          latitude: -12.16315,
+          longitude: -76.97005,
+        })
+        .expect(201);
+      const addrNearId = ((addrNear.body as Envelope).data as { id: string })
+        .id;
+      const ordersBefore = await ordersRepo.count({
+        where: { userId: clientAId },
+      });
+
+      const res = await estimate(clientAToken, {
+        addressId: addrNearId,
+      }).expect(201);
+      const data = (res.body as Envelope).data as {
+        deliveryFee: number;
+        isFarOrder: boolean;
+        distanceMeters: number;
+      };
+
+      expect(data.deliveryFee).toBe(2);
+      expect(data.isFarOrder).toBe(false);
+      expect(data.distanceMeters).toBeCloseTo(7.77, 1);
+      const ordersAfter = await ordersRepo.count({
+        where: { userId: clientAId },
+      });
+      expect(ordersAfter).toBe(ordersBefore);
+    });
+
+    it('dirección lejana: isFarOrder true y tarifa del tramo sin techo (S/8)', async () => {
+      const addrFar = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Estimación lejos',
+          fullAddress: 'Av. Los Álamos 654',
+          district: 'San Juan de Miraflores',
+          latitude: -12.19,
+          longitude: -76.95,
+        })
+        .expect(201);
+      const addrFarId = ((addrFar.body as Envelope).data as { id: string }).id;
+
+      const res = await estimate(clientAToken, {
+        addressId: addrFarId,
+      }).expect(201);
+      const data = (res.body as Envelope).data as {
+        deliveryFee: number;
+        isFarOrder: boolean;
+        distanceMeters: number;
+      };
+
+      expect(data.deliveryFee).toBe(8);
+      expect(data.isFarOrder).toBe(true);
+      expect(data.distanceMeters).toBeGreaterThan(2500);
+    });
+
+    it('404 si la dirección no existe', async () => {
+      const res = await estimate(clientAToken, {
+        addressId: '11111111-1111-4111-8111-111111111111',
+      }).expect(404);
+      expect((res.body as ErrorResponse).statusCode).toBe(404);
+    });
+
+    it('404 si la dirección le pertenece a otro usuario', async () => {
+      const res = await estimate(clientBToken, { addressId }).expect(404);
+      expect((res.body as ErrorResponse).statusCode).toBe(404);
+    });
+
+    it('400 si addressId no es un UUID', async () => {
+      const res = await estimate(clientAToken, {
+        addressId: 'no-es-un-uuid',
+      }).expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+  });
+
   describe('GET /orders/me y GET /orders/:id', () => {
     let orderId: string;
 

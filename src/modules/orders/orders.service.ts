@@ -24,6 +24,7 @@ import { DeliveryFeeTier, SettingsService } from '../settings/settings.service';
 import { Address } from '../users/entities/address.entity';
 import { User, UserRole } from '../users/entities/user.entity';
 import { CreateOrderDto, CreateOrderItemDto } from './dto/create-order.dto';
+import { EstimateDeliveryFeeDto } from './dto/estimate-delivery-fee.dto';
 import { QueryOrdersDto } from './dto/query-orders.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrderItem } from './entities/order-item.entity';
@@ -295,6 +296,36 @@ export class OrdersService {
       });
   }
 
+  /**
+   * Estima el costo de delivery de una dirección ya guardada del usuario, sin crear
+   * un pedido. Mismo cálculo que `create()` (Haversine + tramo + radio de aviso),
+   * reutilizado vía `computeDelivery` — no lo duplica. Misma dirección ajena → 404
+   * que el resto de `/users/:id/addresses`.
+   */
+  async estimateDeliveryFee(
+    userId: string,
+    dto: EstimateDeliveryFeeDto,
+  ): Promise<{
+    deliveryFee: number;
+    isFarOrder: boolean;
+    distanceMeters: number | null;
+  }> {
+    const address = await this.addressesRepository.findOne({
+      where: { id: dto.addressId, userId },
+    });
+    if (!address) {
+      throw new NotFoundException('Dirección no encontrada');
+    }
+
+    const coords =
+      typeof address.latitude === 'number' &&
+      typeof address.longitude === 'number'
+        ? { latitude: address.latitude, longitude: address.longitude }
+        : null;
+
+    return this.computeDelivery(coords);
+  }
+
   /** Etiqueta legible de un estado de pedido para las notificaciones. */
   private statusLabel(status: OrderStatus): string {
     const labels: Record<OrderStatus, string> = {
@@ -353,7 +384,25 @@ export class OrdersService {
       this.logger.warn(
         'No se pudo calcular el delivery por distancia: la dirección del pedido no tiene coordenadas. deliveryFee = 0.',
       );
-      return { deliveryFee: 0, isFarOrder: false };
+    }
+    return this.computeDelivery(coords);
+  }
+
+  /**
+   * Cálculo compartido de delivery por distancia (Haversine contra `store_location`
+   * + tramo de `delivery_fee_tiers` + radio de aviso), usado tanto por `create()`
+   * como por `estimateDeliveryFee()`. Sin coordenadas: `deliveryFee = 0`,
+   * `isFarOrder = false`, `distanceMeters = null` — nunca bloquea nada.
+   */
+  private async computeDelivery(
+    coords: { latitude: number; longitude: number } | null,
+  ): Promise<{
+    deliveryFee: number;
+    isFarOrder: boolean;
+    distanceMeters: number | null;
+  }> {
+    if (!coords) {
+      return { deliveryFee: 0, isFarOrder: false, distanceMeters: null };
     }
 
     const store = await this.settingsService.getStoreLocation();
@@ -371,6 +420,7 @@ export class OrdersService {
     return {
       deliveryFee: this.feeForDistance(distanceMeters, tiers),
       isFarOrder: distanceMeters > alertRadiusMeters,
+      distanceMeters,
     };
   }
 

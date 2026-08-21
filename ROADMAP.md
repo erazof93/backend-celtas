@@ -444,6 +444,14 @@ celtas-backend/
       `celtas-admin` (formulario para configurar `store_location`/`delivery_fee_tiers`/
       `delivery_alert_radius_meters`) y `celtas-app` (mostrar `deliveryFee` en el resumen del pedido)
       quedan para una vuelta futura.
+  - [x] **`POST /orders/estimate-delivery-fee`** (endpoint nuevo, solo backend): cliente autenticado
+        estima el `deliveryFee`/`isFarOrder`/`distanceMeters` de una dirección ya guardada, sin
+        crear un pedido. Reusa el cálculo de `create()` vía un helper compartido nuevo,
+        `OrdersService.computeDelivery(coords)`. Auditado por `@tester` (pase independiente, con
+        mutación real sobre el guard de "dirección ajena" y el guard compartido de "sin
+        coordenadas"): **LISTO** — 353 unit (20 suites) + 296 e2e (12 suites), build limpio,
+        Swagger correcto, refactor `resolveDelivery`→`computeDelivery` confirmado sin regresión en
+        `POST /orders`. Ver detalle en `docs/testing-checklist.md`.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)
