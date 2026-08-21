@@ -343,6 +343,77 @@ describe('Orders (e2e)', () => {
       expect(data.total).toBe(26.9); // 24.9 (subtotal) + 2 (deliveryFee)
     });
 
+    it('el mensaje de WhatsApp desglosa Subtotal y Envío cuando NO hay cupón (sin línea de Cupón)', async () => {
+      const addrNear = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Desglose sin cupón',
+          fullAddress: 'Av. Los Álamos 852',
+          district: 'San Juan de Miraflores',
+          latitude: -12.16315,
+          longitude: -76.97005,
+        })
+        .expect(201);
+      const addrNearId = ((addrNear.body as Envelope).data as { id: string })
+        .id;
+
+      const res = await createOrder(clientAToken, {
+        addressId: addrNearId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const data = (res.body as Envelope).data as OrderData;
+      const decoded = decodeURIComponent(data.whatsappUrl);
+
+      expect(decoded).toContain('Subtotal:* S/ 24.90');
+      expect(decoded).toContain('Envío:* S/ 2.00');
+      expect(decoded).not.toContain('Cupón');
+      expect(decoded).toContain('Total a pagar:* S/ 26.90');
+    });
+
+    it('el mensaje de WhatsApp desglosa Subtotal, Cupón (código + monto descontado) y Envío cuando SÍ hay cupón', async () => {
+      const addrNear = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Desglose con cupón',
+          fullAddress: 'Av. Los Álamos 963',
+          district: 'San Juan de Miraflores',
+          latitude: -12.16315,
+          longitude: -76.97005,
+        })
+        .expect(201);
+      const addrNearId = ((addrNear.body as Envelope).data as { id: string })
+        .id;
+
+      const coupon = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'fixed_amount',
+          discountValue: 5,
+        })
+        .expect(201);
+      const couponCode = ((coupon.body as Envelope).data as { code: string })
+        .code;
+
+      const res = await createOrder(clientAToken, {
+        addressId: addrNearId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+        couponCode,
+      }).expect(201);
+      const data = (res.body as Envelope).data as OrderData;
+      const decoded = decodeURIComponent(data.whatsappUrl);
+
+      // subtotal 24.9 - descuento 5 = 19.9, + deliveryFee 2 = 21.9
+      expect(data.total).toBe(21.9);
+      expect(decoded).toContain('Subtotal:* S/ 24.90');
+      expect(decoded).toContain(`Cupón (${couponCode}):* -S/ 5.00`);
+      expect(decoded).toContain('Envío:* S/ 2.00');
+      expect(decoded).toContain('Total a pagar:* S/ 21.90');
+    });
+
     it('un pedido lejano (fuera de todos los tramos con techo) usa la tarifa plana y NUNCA se rechaza', async () => {
       // ~3.7km del store_location → supera el último tramo con techo (1000m):
       // cae en el tramo final (maxMeters: null) → S/8, y el pedido se crea igual.

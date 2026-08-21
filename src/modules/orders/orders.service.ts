@@ -107,6 +107,7 @@ export class OrdersService {
       let coupon:
         Awaited<ReturnType<CouponsService['applyToOrder']>>['coupon'] | null =
         null;
+      let discountAmount = 0;
       if (dto.couponCode) {
         const applied = await this.couponsService.applyToOrder(manager, {
           code: dto.couponCode,
@@ -115,6 +116,7 @@ export class OrdersService {
         });
         total = applied.discountedTotal;
         coupon = applied.coupon;
+        discountAmount = this.round2(subtotal - applied.discountedTotal);
       }
       total = this.round2(total + deliveryFee);
 
@@ -132,6 +134,10 @@ export class OrdersService {
         items,
         total,
         addressSnapshot,
+        subtotal,
+        deliveryFee,
+        discountAmount,
+        coupon?.code ?? null,
       );
 
       const saved = await manager.save(Order, order);
@@ -585,6 +591,10 @@ export class OrdersService {
     }[],
     total: number,
     addressSnapshot: string,
+    subtotal: number,
+    deliveryFee: number,
+    discountAmount: number,
+    couponCode: string | null,
   ): Promise<string> {
     // El número vive en la tabla settings (gestionable desde el panel). Si la tabla
     // está vacía, SettingsService cae al valor de .env y loguea un warning.
@@ -601,6 +611,12 @@ export class OrdersService {
         return `  • ${item.quantity}x ${item.name}${sauces}${comment}`;
       })
       .join('\n');
+    // Desglose para que el dueño pueda verificar el monto sin abrir el panel admin:
+    // subtotal → cupón (solo si hubo descuento real) → envío, y el total ya existente al final.
+    const couponLine =
+      discountAmount > 0
+        ? `\n🎟️ *Cupón (${couponCode}):* -S/ ${discountAmount.toFixed(2)}`
+        : '';
     const message = `📌 *NUEVO PEDIDO #${orderId.slice(0, 8).toUpperCase()}*
 
 🛒 *Detalle:*
@@ -609,6 +625,8 @@ ${itemsText}
 📍 *Dirección de entrega:*
   ${this.readableAddress(addressSnapshot)}${this.mapsLinksBlock(addressSnapshot)}
 
+🧾 *Subtotal:* S/ ${subtotal.toFixed(2)}${couponLine}
+🛵 *Envío:* S/ ${deliveryFee.toFixed(2)}
 💰 *Total a pagar:* S/ ${total.toFixed(2)}`;
     return `https://wa.me/${number}?text=${encodeURIComponent(message)}`;
   }
