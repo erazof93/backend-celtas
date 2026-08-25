@@ -46,6 +46,14 @@ export class MenuItem {
   @Column({ type: 'boolean', default: true })
   available: boolean;
 
+  /**
+   * Si el producto puede canjearse con estrellas del programa de fidelización.
+   * El catálogo de canje que ve el cliente (`GET /rewards/catalog`) es
+   * `redeemableWithStars = true AND available = true` — no hay entidad aparte.
+   */
+  @Column({ type: 'boolean', default: false })
+  redeemableWithStars: boolean;
+
   @Index()
   @Column({ type: 'uuid' })
   categoryId: string;

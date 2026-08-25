@@ -55,6 +55,15 @@ export class CreateMenuItemDto {
   @IsBoolean({ message: 'available debe ser true o false' })
   available?: boolean;
 
+  @ApiPropertyOptional({
+    example: false,
+    description:
+      'Si el producto puede canjearse con estrellas del programa de fidelización (default false)',
+  })
+  @IsOptional()
+  @IsBoolean({ message: 'redeemableWithStars debe ser true o false' })
+  redeemableWithStars?: boolean;
+
   @ApiProperty({
     example: '3fa85f64-5717-4562-b3fc-2c963f66afa6',
     description: 'UUID de la categoría a la que pertenece',

@@ -50,6 +50,15 @@ export class CreateOrderItemDto {
     message: 'El comentario no puede superar los 140 caracteres',
   })
   comment?: string;
+
+  @ApiPropertyOptional({
+    example: '3fa85f64-5717-4562-b3fc-2c963f66afa6',
+    description:
+      'Si este ítem es un premio canjeado del programa de estrellas, el id del RewardRedemption que lo habilita. El backend fuerza el precio de este ítem a 0, sin importar el precio real del producto; quantity debe ser 1.',
+  })
+  @IsOptional()
+  @IsUUID('4', { message: 'rewardRedemptionId debe ser un UUID válido' })
+  rewardRedemptionId?: string;
 }
 
 /**

@@ -619,6 +619,38 @@ celtas-backend/
 - [x] Extra: `ThrottlerGuard` agregado a `POST /auth/refresh` (consistencia con register/login/google)
 - [x] Auditado por `@tester`: veredicto **GLOBAL LISTO** — 171 unit + 161 e2e, build/lint limpios
 
+### 11. Módulo Rewards (programa de fidelización "Estrellas") — ✅ COMPLETO
+- [x] Entidades `RewardRedemption` (premio ganado, 15 días de vigencia desde `earnedAt`) y
+  `StarPromotion` (promoción temporal de "estrellas dobles" por rango de fechas, CRUD admin sin
+  `DELETE`). Columna nueva `MenuItem.redeemableWithStars` (default `false`). Migración
+  `AddStarsRewardsProgram1787683759116`.
+- [x] Por cada `soles_por_estrella` (setting, default 10) de subtotal sin envío en pedidos
+  `entregado` del mes calendario actual (hora de Lima), 1 estrella; al juntar
+  `estrellas_por_premio` (setting, default 10) se genera un premio. El conteo se reinicia cada mes
+  (los premios ganados no se pierden). `StarPromotion` pesa el subtotal según `order.createdAt`
+  (día de la compra), el filtro de mes usa `deliveredAt`.
+- [x] `GET /rewards/progress` (cliente): progreso hacia el próximo premio, premios disponibles,
+  promoción vigente hoy — sin exponer `soles_por_estrella` crudo. `GET /rewards/catalog` (cliente):
+  productos `redeemableWithStars=true AND available=true`.
+- [x] `POST /orders` extendido: `rewardRedemptionId?` opcional por ítem, valida y bloquea (lock
+  pesimista) dentro de la transacción, fuerza `unitPrice=0`, exige `quantity=1` y producto
+  canjeable, rechaza premio repetido en el mismo pedido. Cancelar un pedido reactiva los premios
+  canjeados (mismo criterio que `CouponsService`); `entregado→cancelado` sigue sin ser una
+  transición válida.
+- [x] `GET/POST/PATCH /star-promotions` (admin): valida no-solapamiento de fechas entre
+  promociones activas al crear y al editar; `PATCH active:false` no dispara esa validación.
+- [x] Auditado por `@tester` (pase independiente, con Docker/Postgres local real levantados por el
+  propio `@tester` y mutación real sobre 2 puntos frágiles): **LISTO PARA MARCAR COMPLETO** —
+  391 unit (22 suites) + 329 e2e (13 suites) confirmados de forma independiente, build/lint
+  limpios, `tsc --noEmit` sin errores nuevos (19 preexistentes, idénticos a `origin/master`),
+  migración verificada 1:1 contra Postgres local real sin drift, Swagger completo. `@tester`
+  encontró y corrigió una fragilidad de aislamiento de datos en el propio `test/rewards.e2e-spec.ts`
+  (fechas de prueba de `StarPromotions` usaban un año fijo en vez de uno derivado de `suffix`,
+  causando falsos negativos contra una BD con datos residuales de pruebas manuales previas) — fix
+  dentro del archivo de test, sin tocar código de producción. Único riesgo no bloqueante: falta un
+  test explícito del caso borde "dos promociones se tocan en un solo día" (confirmado mutable sin
+  detección hoy). Detalle completo en `docs/testing-checklist.md`, sección "Rewards".
+
 ---
 
 ## Cómo trabajar con OpenCode

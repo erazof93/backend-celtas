@@ -20,6 +20,8 @@ import { haversineDistanceMeters } from '../../common/utils/geo.util';
 import { CouponsService } from '../coupons/coupons.service';
 import { MenuItem } from '../menu/entities/menu-item.entity';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RewardRedemption } from '../rewards/entities/reward-redemption.entity';
+import { RewardsService } from '../rewards/rewards.service';
 import { DeliveryFeeTier, SettingsService } from '../settings/settings.service';
 import { Address } from '../users/entities/address.entity';
 import { User, UserRole } from '../users/entities/user.entity';
@@ -76,6 +78,7 @@ export class OrdersService {
     private readonly usersRepository: Repository<User>,
     private readonly dataSource: DataSource,
     private readonly couponsService: CouponsService,
+    private readonly rewardsService: RewardsService,
     private readonly notificationsService: NotificationsService,
     private readonly settingsService: SettingsService,
   ) {}
@@ -94,7 +97,7 @@ export class OrdersService {
     const addressSnapshot = await this.resolveAddressSnapshot(userId, dto);
     const { deliveryFee, isFarOrder } =
       await this.resolveDelivery(addressSnapshot);
-    const items = await this.buildItems(dto.items);
+    const { items, rewardClaims } = await this.buildItems(dto.items);
     const subtotal = this.round2(
       items.reduce((sum, item) => sum + item.subtotal, 0),
     );
@@ -119,6 +122,22 @@ export class OrdersService {
         discountAmount = this.round2(subtotal - applied.discountedTotal);
       }
       total = this.round2(total + deliveryFee);
+
+      // Validar y bloquear los premios canjeados ANTES de persistir el pedido
+      // (mismo patrón que el cupón): si alguno no es válido, la transacción se
+      // revierte y el pedido no se crea.
+      const validatedRewards: {
+        redemption: RewardRedemption;
+        menuItemId: string;
+      }[] = [];
+      for (const claim of rewardClaims) {
+        const redemption = await this.rewardsService.validateForOrder(manager, {
+          rewardRedemptionId: claim.rewardRedemptionId,
+          userId,
+          menuItemId: claim.menuItemId,
+        });
+        validatedRewards.push({ redemption, menuItemId: claim.menuItemId });
+      }
 
       const order = manager.create(Order, {
         id: orderId,
@@ -146,6 +165,14 @@ export class OrdersService {
       // debe apuntar a un pedido que ya exista). Si algo falla, todo se revierte.
       if (coupon) {
         await this.couponsService.markUsed(manager, coupon, saved.id);
+      }
+      for (const { redemption, menuItemId } of validatedRewards) {
+        await this.rewardsService.markUsed(
+          manager,
+          redemption,
+          saved.id,
+          menuItemId,
+        );
       }
 
       return saved;
@@ -258,6 +285,12 @@ export class OrdersService {
             manager,
             order.id,
           );
+          // Mismo criterio para premios del programa de estrellas: un pedido
+          // cancelado nunca debe dejar al cliente sin el premio que canjeó.
+          await this.rewardsService.reactivateForCancelledOrder(
+            manager,
+            order.id,
+          );
         }
 
         if (dto.status === OrderStatus.ENTREGADO) {
@@ -284,6 +317,14 @@ export class OrdersService {
           } catch (err) {
             this.logger.error(
               `No se pudo generar el cupón automático para el usuario ${saved.userId}`,
+              err as Error,
+            );
+          }
+          try {
+            await this.rewardsService.recalculateForUser(saved.userId);
+          } catch (err) {
+            this.logger.error(
+              `No se pudo recalcular las estrellas del usuario ${saved.userId}`,
               err as Error,
             );
           }
@@ -497,8 +538,19 @@ export class OrdersService {
     );
   }
 
-  /** Valida los productos y construye los OrderItem con precio/nombre SNAPSHOT y subtotales. */
-  private async buildItems(items: CreateOrderItemDto[]): Promise<OrderItem[]> {
+  /**
+   * Valida los productos y construye los OrderItem con precio/nombre SNAPSHOT y
+   * subtotales. Si un ítem trae `rewardRedemptionId` (premio del programa de
+   * estrellas), fuerza su precio a 0 y lo devuelve aparte en `rewardClaims` —
+   * la validación real (pertenencia, uso, vigencia) requiere lock y ocurre
+   * DENTRO de la transacción de `create()` (ver `RewardsService.validateForOrder`),
+   * no acá: acá solo se resuelve lo que no necesita lock (que el producto
+   * elegido sea canjeable, que no se repita el mismo premio en el pedido).
+   */
+  private async buildItems(items: CreateOrderItemDto[]): Promise<{
+    items: OrderItem[];
+    rewardClaims: { rewardRedemptionId: string; menuItemId: string }[];
+  }> {
     const ids = items.map((item) => item.menuItemId);
     const menuItems = await this.menuItemsRepository.find({
       where: { id: In(ids) },
@@ -507,6 +559,10 @@ export class OrdersService {
     const byId = new Map(menuItems.map((menuItem) => [menuItem.id, menuItem]));
 
     const result: OrderItem[] = [];
+    const rewardClaims: { rewardRedemptionId: string; menuItemId: string }[] =
+      [];
+    const seenRewardIds = new Set<string>();
+
     for (const item of items) {
       const menuItem = byId.get(item.menuItemId);
       if (!menuItem) {
@@ -519,14 +575,40 @@ export class OrdersService {
           `El producto "${menuItem.name}" no está disponible`,
         );
       }
+
+      let unitPrice = menuItem.price;
+      if (item.rewardRedemptionId) {
+        if (!menuItem.redeemableWithStars) {
+          throw new BadRequestException(
+            `El producto "${menuItem.name}" no es canjeable con estrellas`,
+          );
+        }
+        if (item.quantity !== 1) {
+          throw new BadRequestException(
+            'Un premio canjeado solo habilita 1 unidad del producto',
+          );
+        }
+        if (seenRewardIds.has(item.rewardRedemptionId)) {
+          throw new BadRequestException(
+            'No puedes usar el mismo premio más de una vez en el mismo pedido',
+          );
+        }
+        seenRewardIds.add(item.rewardRedemptionId);
+        unitPrice = 0;
+        rewardClaims.push({
+          rewardRedemptionId: item.rewardRedemptionId,
+          menuItemId: menuItem.id,
+        });
+      }
+
       const selectedSauces = this.resolveSelectedSauces(menuItem, item);
       const comment = this.resolveComment(item);
-      const subtotal = this.round2(menuItem.price * item.quantity);
+      const subtotal = this.round2(unitPrice * item.quantity);
       result.push(
         this.orderItemsRepository.create({
           menuItemId: menuItem.id,
           name: menuItem.name,
-          unitPrice: menuItem.price,
+          unitPrice,
           quantity: item.quantity,
           subtotal,
           selectedSauces,
@@ -534,7 +616,7 @@ export class OrdersService {
         }),
       );
     }
-    return result;
+    return { items: result, rewardClaims };
   }
 
   /**

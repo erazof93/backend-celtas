@@ -1184,3 +1184,233 @@ distintas en total. No se encontró ninguna causa de código que lo explique. Pu
 del entorno donde se hizo la verificación externa (dependencias no instaladas/desactualizadas, BD
 de test con estado distinto, variables de entorno faltantes) — no se inventa una causa de código
 que no se pudo confirmar.
+
+## Rewards (programa de fidelización "Estrellas")
+
+> Módulo nuevo `src/modules/rewards/` (entidades `RewardRedemption`/`StarPromotion`, `RewardsService`
+> cliente + generación automática, `StarPromotionsService` CRUD admin sin `DELETE`). Por cada
+> `soles_por_estrella` (setting, default 10) de subtotal sin envío en pedidos `entregado` del mes
+> calendario actual (hora de Lima), 1 estrella; al juntar `estrellas_por_premio` (setting, default 10)
+> se genera un `RewardRedemption` con 15 días de vigencia. El conteo se reinicia cada mes calendario
+> (los premios ya ganados no se pierden — no hay cron, el filtro por mes ya logra el efecto).
+> `StarPromotion` pondera el subtotal por `order.createdAt` (día de la compra), no `deliveredAt`.
+> Canje: `POST /orders`, cada `CreateOrderItemDto` acepta `rewardRedemptionId?` opcional, valida y
+> bloquea (lock pesimista) DENTRO de la transacción de creación, fuerza `unitPrice=0`, exige
+> `quantity===1` y que el producto sea `redeemableWithStars`. Cancelar un pedido reactiva los premios
+> que canjeó (mismo criterio que `CouponsService.reactivateForCancelledOrder`); `entregado→cancelado`
+> no es una transición válida, así que un premio legítimamente usado nunca se reactiva por error.
+> `MenuItem` gana `redeemableWithStars` (boolean, default false). Migración
+> `AddStarsRewardsProgram1787683759116` (`reward_redemptions`, `star_promotions`, columna en
+> `menu_items`).
+>
+> **Auditado por `@tester` (pase independiente, con Docker/Postgres local real levantados por el
+> propio `@tester` — el entorno de la sesión principal no tenía Docker activo — y mutación real sobre
+> los dos puntos más frágiles) — veredicto "LISTO".**
+
+- [x] `pnpm run build` compila sin errores (confirmado de forma independiente)
+- [x] `pnpm run lint` limpio, exit 0 sin salida (confirmado de forma independiente)
+- [x] `npx tsc --noEmit`: exactamente los mismos 19 errores preexistentes que en `origin/master`,
+      confirmado línea por línea con `diff` entre una corrida sobre `git stash -u` (working tree
+      idéntico a master, incluyendo los archivos nuevos sin trackear) y una corrida con el feature
+      aplicado — **0 errores nuevos**. (La primera comparación, con `git stash` simple sin `-u`,
+      había dado un resultado engañoso — 19 vs 26 — porque `git stash` sin `-u` no oculta los
+      archivos nuevos sin trackear de `rewards/`, dejándolos huérfanos de las entidades/settings que
+      necesitan; corregido usando `-u` para una comparación real contra master.)
+- [x] `pnpm run test`: 391/391 en verde (22 suites) — confirmado de forma independiente, no solo
+      confiado en el conteo reportado por la sesión principal. Incluye 28 tests de
+      `rewards.service.spec.ts` (catálogo, progreso con/sin promoción, promoción fuera de rango,
+      `promocionActiva` solo si hoy cae en su ventana, premios disponibles ordenados por
+      `expiresAt`, generación de 1 premio / de 3 premios de una sola pasada, no regeneración si ya
+      se generaron este mes, sin generar si no se alcanza el umbral, las 6 ramas de
+      `validateForOrder` — no existe/ajeno/usado/vencido/producto no canjeable/válido —,
+      `markUsed`, `reactivateForCancelledOrder` con 2 premios y con 0) y 9 de
+      `star-promotions.service.spec.ts` (fechas invertidas, solapamiento en `create`, sin validar
+      solapamiento si se crea inactiva, `findOne` 404, `update` excluye la propia promoción del
+      chequeo de solapamiento, `update` no valida solapamiento al desactivar, rango inválido tras
+      merge)
+- [x] `pnpm run test:e2e`: 329/329 en verde (13 suites) contra Postgres local real — confirmado de
+      forma independiente, incluye los 31 tests de `test/rewards.e2e-spec.ts`: 401 sin token en los
+      3 endpoints, catálogo filtra por `redeemableWithStars`+`available`, cálculo sin promoción
+      (S/50→5 estrellas), cálculo con promoción de estrellas dobles activa (S/50×2→10 estrellas→1
+      premio, con `expiresAt` verificado dentro de ±60s de "ahora + 15 días"), generación de 3
+      premios de una sola pasada (S/300), no regeneración de premios ya contados este mes (3 pedidos
+      seguidos, verificado paso a paso), expiración (premio vencido no aparece en
+      `premiosDisponibles`, canjear un premio vencido → 400 y no crea el pedido), canje de premio
+      ajeno → 400 y no crea pedido, flujo completo de canje válido (precio forzado a 0, se marca
+      usado, reintento → 400, cancelar el pedido reactiva el premio y vuelve a aparecer en
+      `premiosDisponibles`), `quantity≠1` en ítem canjeado → 400, producto no canjeable → 400,
+      mismo `rewardRedemptionId` repetido en dos ítems del mismo pedido → 400, distinción real entre
+      `createdAt` (pesa el multiplicador de la promo) y `deliveredAt` (decide el mes calendario) con
+      3 casos dedicados, `PATCH /menu/items/:id` con `redeemableWithStars` (activar, no pisarlo con
+      un PATCH de otro campo — confirma `merge`, no `Object.assign` —, desactivar), y el CRUD
+      completo de `StarPromotions` (401/403, crear válida, fechas invertidas → 400, solapamiento →
+      400 con el mensaje exacto, no solapa mes siguiente → 201, `PATCH` que genera solapamiento →
+      400, `PATCH active:false` NO valida solapamiento aunque las fechas se solapen, 404 inexistente,
+      listado)
+- [x] Migración `AddStarsRewardsProgram1787683759116` verificada de forma independiente con
+      `docker exec celtas-db psql` contra Postgres local real: `\d reward_redemptions` y
+      `\d star_promotions` coinciden columna a columna con las entidades (tipos, nullability, FKs
+      `ON DELETE CASCADE`/`SET NULL` correctos), `\d menu_items` confirma
+      `redeemableWithStars boolean NOT NULL DEFAULT false`; `SELECT name FROM migrations ORDER BY id
+      DESC` la confirma registrada; `migration:generate` posterior reporta "No changes in database
+      schema were found" (sin drift)
+- [x] Cálculo de estrellas CON promoción activa: pesa el subtotal por el multiplicador vigente en la
+      fecha de CADA pedido (`order.createdAt`), no en la fecha de hoy ni en `deliveredAt` — 3 tests
+      e2e dedicados que fuerzan `createdAt`/`deliveredAt` a valores independientes vía UPDATE directo
+      (algo que la API no permite retroceder) y confirman que el peso histórico usa `createdAt` y el
+      filtro de "mes calendario actual" usa `deliveredAt`
+- [x] Cálculo SIN promoción activa: multiplicador 1 implícito, confirmado con test dedicado y con el
+      caso "promoción vigente en otro mes, pedido hecho fuera de su rango" (sin pesar)
+- [x] Generación de MÁS DE UN premio de una sola pasada: `recalculateForUser` genera
+      `premiosQueDeberiaTener - alreadyGenerated` en un solo `manager.save` con un array, no un loop
+      con múltiples llamadas — confirmado leyendo el código y con el test (S/300→3 premios, un solo
+      `save` con `toHaveLength(3)`)
+- [x] NO regeneración de premios ya contados en el mes: `alreadyGenerated` se cuenta con
+      `manager.count(RewardRedemption, { userId, earnedAt: And(MoreThanOrEqual(start),
+      LessThan(end)) })` DENTRO de la misma transacción con lock pesimista sobre el usuario — 1 test
+      unitario directo + 1 test e2e con 3 pedidos reales seguidos (100→1 premio, +5→sigue en 1,
+      +100→2 premios) que confirma el comportamiento a nivel de negocio, no solo de implementación
+- [x] Expiración de premios: `premiosDisponibles` filtra `usedAt: IsNull(), expiresAt: MoreThan(now)`
+      — un premio vencido no aparece en `GET /rewards/progress` y `validateForOrder` lo rechaza
+      explícitamente con `expiresAt.getTime() < Date.now()` (400 "Este premio ha expirado"),
+      cubierto en unit y e2e, e2e confirma además que NO se crea el pedido (conteo de `/orders/me`
+      antes/después idéntico)
+- [x] Canje inválido, las 6 ramas de `validateForOrder` (todas con test directo unitario Y, para las
+      relevantes al flujo completo, también e2e con mutación real de datos):
+      - [x] Premio de OTRO usuario → 400 "Este premio no pertenece a tu cuenta", no crea el pedido
+      - [x] Premio ya usado (reintento tras canje válido) → 400 "Este premio ya fue canjeado"
+      - [x] Premio vencido → 400 "Este premio ha expirado"
+      - [x] Producto no canjeable (`redeemableWithStars=false`) → 400 con mensaje que menciona "no es
+            canjeable con estrellas"
+      - [x] `quantity≠1` en el ítem que trae `rewardRedemptionId` → 400 "Un premio canjeado solo
+            habilita 1 unidad del producto", no crea el pedido, el premio sigue disponible después
+      - [x] Mismo `rewardRedemptionId` repetido en DOS ítems del mismo pedido → 400 "No puedes usar
+            el mismo premio más de una vez en el mismo pedido" (guardia `seenRewardIds`, dentro de
+            `buildItems`, antes de llegar a la transacción)
+- [x] Reactivación de premio al cancelar el pedido: `reactivateForCancelledOrder` revierte
+      `usedAt`/`usedInOrderId`/`menuItemId` a `null` para TODOS los premios que ese pedido canjeó
+      (puede ser más de uno), dentro de la misma transacción de `updateStatus` — confirmado con test
+      unitario (2 premios revertidos de una vez) y con el flujo e2e completo (canjear → cancelar →
+      el premio reaparece en `premiosDisponibles` del dueño real). Confirmado leyendo
+      `VALID_TRANSITIONS` que `entregado → cancelado` NO es una transición válida (array vacío para
+      `ENTREGADO`), así que un premio legítimamente entregado nunca puede reactivarse por error vía
+      esta ruta
+- [x] Validación de solapamiento de `StarPromotion`, crear Y editar: `assertNoOverlap` solo considera
+      promociones `active=true` (`promo.active = true` en el `WHERE`), compara
+      `startDate <= :endDate AND endDate >= :startDate` (rango inclusivo), y en `update()` excluye la
+      propia promoción (`promo.id != :excludeId`) — confirmado con unit tests dedicados a cada rama y
+      con e2e real (crear solapada → 400 con el mensaje exacto; `PATCH` que hace que el rango se
+      solape con otra activa → 400; mes siguiente sin solapar → 201)
+- [x] `PATCH active:false` NO dispara la validación de solapamiento aunque las fechas se
+      solapen con otra promoción activa existente: confirmado leyendo el código
+      (`if (promotion.active) { await this.assertNoOverlap(...) }`, evaluado DESPUÉS del `merge`, así
+      que si el DTO trae `active: false` la condición es falsa y `assertNoOverlap` ni se llama) y con
+      test unitario + e2e dedicados (`expect(repo.createQueryBuilder).not.toHaveBeenCalled()` en
+      unit; e2e real: `PATCH` con `{active:false, startDate: <fecha solapada>}` → 200, no 400)
+- [x] `GET /rewards/progress` NO expone `soles_por_estrella` (el campo ni siquiera existe en
+      `RewardsProgress`) ni el valor crudo de la setting — confirmado leyendo el código
+      (`RewardsProgress` interface solo expone `estrellasParaProximoPremio`, `estrellasPorPremio`,
+      `premiosDisponibles`, `promocionActiva`) y con `curl` real contra el servidor y Postgres local
+      reales (usuario real registrado en esta sesión): la respuesta real fue exactamente
+      `{"estrellasParaProximoPremio":0,"estrellasPorPremio":10,"premiosDisponibles":[],"promocionActiva":null}`
+      — sin ninguna clave `soles*`/`solesPorEstrella`. `estrellasPorPremio` SÍ se expone a propósito
+      (es el denominador necesario para la barra de progreso del cliente, ej. "3/10"), no es un dato
+      sensible de negocio — a diferencia de `soles_por_estrella` (el "precio" en soles de una
+      estrella), que si se expusiera revelaría al cliente el umbral de gasto exacto que el negocio no
+      necesariamente quiere hacer público
+- [x] Seguridad: `POST /auth/register` (mismo flujo usado para generar el token de prueba real
+      contra el servidor) confirma que `password` no aparece en el JSON de la respuesta (ni la clave
+      ni el valor). `GET/POST/PATCH /star-promotions` (admin): 401 sin token, 403 para `cliente`
+      real (no solo mockeado) — confirmado con e2e real. `GET /rewards/progress`,
+      `GET /rewards/catalog`: 401 sin token — confirmado con e2e real
+- [x] Documentación: confirmado contra `/docs-json` real (servidor levantado) que los 6 endpoints
+      nuevos (`GET /rewards/progress`, `GET /rewards/catalog`, `GET/POST /star-promotions`,
+      `GET/PATCH /star-promotions/:id`) documentan `security: [{bearer:[]}]` y los status codes
+      correctos (401/403/404/400 según aplica); `CreateStarPromotionDto`/`UpdateStarPromotionDto`
+      documentan sus 5 campos con ejemplos; `CreateMenuItemDto.redeemableWithStars` y
+      `CreateOrderItemDto.rewardRedemptionId` están documentados con `@ApiPropertyOptional` y
+      descripción real (confirmado el texto exacto contra el JSON de Swagger real, no asumido)
+- [x] **Verificado con mutación real por `@tester` (guardia de duplicado en `OrdersService
+      .buildItems`)**: se deshabilitó el chequeo `seenRewardIds.has(...)` (forzado a
+      `if (false && seenRewardIds.has(...))`) — rompió **exactamente** 1/31 tests de
+      `rewards.e2e-spec.ts` (el de "repetir el mismo rewardRedemptionId en dos ítems del mismo
+      pedido", que pasó de 400 a 201) y ningún otro (30/31 en verde con la mutación). Mutación
+      revertida, `git diff --stat` confirma el archivo idéntico al estado previo a la mutación
+      (mismas 94 líneas de diff que al inicio de la auditoría), suite completa vuelve a 391/391
+      unit + 329/329 e2e
+- [x] **Verificado con mutación real por `@tester` (rango inclusivo de `assertNoOverlap`)**: se
+      cambió `startDate <= :endDate` / `endDate >= :startDate` a `<`/`>` (rango exclusivo) — **la
+      suite completa de `rewards.e2e-spec.ts` siguió en verde, 31/31**, revelando un hallazgo real de
+      cobertura (ver ⚠️ abajo): ningún test ejercita el caso borde de dos promociones cuyo rango se
+      TOCA exactamente en un día (ej. una termina `2026-01-31`, otra empieza `2026-01-31`). Mutación
+      revertida inmediatamente, confirmado que el archivo volvió al estado previo
+- [x] **Bug real de fragilidad encontrado y corregido por `@tester` en el propio archivo e2e (no en
+      código de producción)**: al ejecutar `pnpm run test:e2e -- rewards` contra el Postgres local
+      real, la suite falló 5/31 con errores como `expected 201, got 400` y
+      `"startDate debe ser anterior o igual a endDate"` en vez del mensaje de solapamiento esperado.
+      Causa raíz confirmada: la BD local tenía datos huérfanos de una exploración manual anterior
+      (una `StarPromotion` llamada "QA solapada" con fechas `2031-01-20`/`2031-02-10`, `active:true`,
+      con un usuario `rewards-client-*@test.com` que no sigue el patrón `qa-rewards-*` de este
+      archivo — no fue creada por esta suite ni por su `afterAll`). El bloque de tests de
+      `StarPromotions` usaba `const year = new Date().getFullYear() + 5` — un valor **fijo**, no
+      atado a una corrida específica (a diferencia del resto del archivo, que sí usa
+      `suffix = Date.now()` para los emails) — así que cualquier promoción activa que quede en esa
+      misma ventana de fechas de una corrida interrumpida, prueba manual, o simplemente una segunda
+      corrida en el mismo año calendario, produce falsos negativos reproducibles. Se confirmó la
+      causa desactivando (`UPDATE ... SET active=false`, NUNCA `DELETE`, para no destruir datos que
+      no eran míos) la promoción huérfana y re-corriendo: 31/31 en verde. **Fix aplicado en
+      `test/rewards.e2e-spec.ts`** (único archivo de test, dentro de mi alcance como `@tester`):
+      `const year = 2030 + (suffix % 500)` — cada corrida usa su propia ventana de fechas real,
+      igual criterio que ya usa el resto del archivo con los emails. Verificado: `pnpm run test:e2e`
+      completo re-corrido 2 veces más tras el fix, 329/329 ambas veces
+- [x] Prueba real end-to-end adicional (no solo la suite automatizada) contra el servidor
+      (`pnpm run start:dev`, levantado por `@tester` con Docker Desktop iniciado manualmente ya que
+      el entorno de la sesión principal no lo tenía activo) y Postgres local reales: usuario real
+      registrado vía `POST /auth/register` → `password` ausente de la respuesta real (no solo del
+      mock) → `GET /rewards/progress` real devolvió
+      `{"estrellasParaProximoPremio":0,"estrellasPorPremio":10,"premiosDisponibles":[],"promocionActiva":null}`.
+      Usuario de prueba borrado de la BD al finalizar
+
+⚠️ Riesgos / casos borde no cubiertos (bajo riesgo, no bloqueantes):
+- **Confirmado con mutación real que sobrevive**: no hay ningún test (unitario ni e2e) del caso
+  borde exacto en que dos `StarPromotion` se TOCAN en un solo día (una `endDate` igual a la
+  `startDate` de la otra). El código (`<=`/`>=`, rango inclusivo) trata eso como solapamiento —
+  decisión de negocio razonable (evita ambigüedad de qué multiplicador aplica ese día), pero ningún
+  test lo confirma explícitamente ni protege contra una futura simplificación accidental a un rango
+  exclusivo (la mutación de arriba lo demostró: 31/31 en verde con el operador invertido). Vale la
+  pena agregar un caso explícito con `endDate` de una promo == `startDate` de otra (debe rechazar
+  con 400) y un caso con un día real de separación (`endDate` + 1 día == `startDate` de la otra, debe
+  aceptar con 201).
+- No hay ninguna prueba de concurrencia real (dos requests simultáneas) para el lock pesimista de
+  `validateForOrder`/`recalculateForUser` — el patrón es idéntico al de `CouponsService`, ya
+  auditado y confirmado en producción, pero no hay un test dedicado que dispare 2 canjes
+  concurrentes del mismo `rewardRedemptionId` y confirme que solo uno gana (mismo gap que ya existía
+  para Coupons, no una regresión nueva de este módulo).
+- El multiplicador de una `StarPromotion` no tiene límite superior de negocio más allá de
+  `@Max(99.99)` en el DTO — no hay test de qué pasa con un multiplicador muy alto combinado con un
+  pedido grande (overflow/redondeo), aunque `round2()` y `Math.floor()` deberían comportarse bien
+  con cualquier valor razonable; no ejercitado explícitamente.
+- Los dos usuarios (`rewards-admin-1787683931@test.com`, `rewards-client-1787683931@test.com`) y la
+  `StarPromotion` "Test promo" que quedaron huérfanos de una exploración manual previa a esta
+  auditoría (no de esta suite) se dejaron intactos en la BD local (solo se desactivó "Test promo" y
+  "QA solapada" con `active=false`, sin borrar nada) — quedan como basura de datos en el entorno
+  local, sin efecto sobre ningún test tras el fix aplicado, pero vale la pena limpiarlos a mano en
+  algún momento.
+
+**Veredicto: LISTO.** Todo lo crítico del checklist pasa: build/lint limpios (confirmados de forma
+independiente), `tsc --noEmit` sin errores nuevos (19 preexistentes, idénticos a `origin/master`,
+comparación corregida con `git stash -u`), 391/391 unit (22 suites) y 329/329 e2e (13 suites)
+confirmados de forma independiente contra Postgres local real (no solo el conteo reportado por la
+sesión principal), migración verificada 1:1 contra la BD real sin drift, Swagger completo y
+verificado contra `/docs-json` real, seguridad confirmada (`password` nunca expuesto, 401/403 reales
+en los endpoints de admin y de cliente), y los 7 puntos de negocio específicos pedidos para esta
+auditoría (cálculo con/sin promoción, más de un premio de una vez, no regeneración mensual,
+expiración, las 6 ramas de canje inválido, reactivación al cancelar, solapamiento de promociones en
+crear/editar/con `active:false`, y no-exposición de `soles_por_estrella`/`estrellas_por_premio`
+crudos) verificados uno por uno, varios con mutación real. Se encontró y corrigió **dentro del
+propio archivo de test** (no en código de producción, dentro del alcance de `@tester`) una
+fragilidad real de aislamiento de datos en `test/rewards.e2e-spec.ts` que causaba falsos negativos
+reproducibles contra una BD con datos residuales. El único hallazgo ⚠️ que sobrevivió una mutación
+real (rango inclusivo de fechas solapadas en el límite exacto de un día) no es bloqueante, pero vale
+la pena cerrarlo en una vuelta futura dado que ya se demostró que el código es mutable ahí sin que
+ningún test lo detecte hoy.

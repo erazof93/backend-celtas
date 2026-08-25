@@ -45,6 +45,16 @@ export const DELIVERY_FEE_TIERS_KEY = 'delivery_fee_tiers';
 export const DELIVERY_ALERT_RADIUS_METERS_KEY = 'delivery_alert_radius_meters';
 
 /**
+ * Clave de los soles gastados (subtotal sin envío) necesarios para ganar 1
+ * estrella del programa de fidelización. Datos de negocio del admin — no va
+ * en la whitelist pública.
+ */
+export const SOLES_POR_ESTRELLA_KEY = 'soles_por_estrella';
+
+/** Clave de las estrellas necesarias para ganar un premio. No es pública. */
+export const ESTRELLAS_POR_PREMIO_KEY = 'estrellas_por_premio';
+
+/**
  * Whitelist de keys que el endpoint público GET /settings/public puede exponer.
  * NUNCA exponer todo el key-value sin filtrar: solo lo que la app cliente necesita.
  */
@@ -110,6 +120,10 @@ const DEFAULT_DELIVERY_FEE_TIERS: DeliveryFeeTier[] = [
 /** Radio de aviso interno (metros) sembrado por defecto si la key no existe. */
 const DEFAULT_DELIVERY_ALERT_RADIUS_METERS = 2500;
 
+/** Defaults del programa de estrellas: S/10 → 1 estrella, 10 estrellas → 1 premio. */
+const DEFAULT_SOLES_POR_ESTRELLA = 10;
+const DEFAULT_ESTRELLAS_POR_PREMIO = 10;
+
 /**
  * Módulo Settings: configuración clave-valor gestionada desde el panel admin.
  * - El seed (no migración) inserta `whatsapp_business_number` al arrancar si no existe.
@@ -171,6 +185,17 @@ export class SettingsService implements OnModuleInit {
       DELIVERY_ALERT_RADIUS_METERS_KEY,
       String(DEFAULT_DELIVERY_ALERT_RADIUS_METERS),
       'Radio (metros) a partir del cual un pedido dispara el aviso interno de "fuera de la zona habitual" al admin — nunca bloquea el pedido',
+    );
+
+    await this.seedIfMissing(
+      SOLES_POR_ESTRELLA_KEY,
+      String(DEFAULT_SOLES_POR_ESTRELLA),
+      'Soles gastados (subtotal sin envío) necesarios para ganar 1 estrella del programa de fidelización',
+    );
+    await this.seedIfMissing(
+      ESTRELLAS_POR_PREMIO_KEY,
+      String(DEFAULT_ESTRELLAS_POR_PREMIO),
+      'Estrellas necesarias para ganar un premio (ítem gratis) del programa de fidelización',
     );
   }
 
@@ -354,6 +379,28 @@ export class SettingsService implements OnModuleInit {
     return Number.isFinite(parsed) && parsed > 0
       ? parsed
       : DEFAULT_DELIVERY_ALERT_RADIUS_METERS;
+  }
+
+  /** Soles necesarios para ganar 1 estrella; si la key falta o no es un número válido, cae al default. */
+  async getSolesPorEstrella(): Promise<number> {
+    const setting = await this.settingsRepository.findOne({
+      where: { key: SOLES_POR_ESTRELLA_KEY },
+    });
+    const parsed = Number(setting?.value);
+    return Number.isFinite(parsed) && parsed > 0
+      ? parsed
+      : DEFAULT_SOLES_POR_ESTRELLA;
+  }
+
+  /** Estrellas necesarias para ganar un premio; si la key falta o no es un número válido, cae al default. */
+  async getEstrellasPorPremio(): Promise<number> {
+    const setting = await this.settingsRepository.findOne({
+      where: { key: ESTRELLAS_POR_PREMIO_KEY },
+    });
+    const parsed = Number(setting?.value);
+    return Number.isFinite(parsed) && parsed > 0
+      ? parsed
+      : DEFAULT_ESTRELLAS_POR_PREMIO;
   }
 
   /** `true` si el interruptor manual "cerrado temporalmente" está activo. */

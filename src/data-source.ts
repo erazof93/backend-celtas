@@ -8,6 +8,8 @@ import { MenuItem } from './modules/menu/entities/menu-item.entity';
 import { MarketingNotification } from './modules/notifications/entities/marketing-notification.entity';
 import { OrderItem } from './modules/orders/entities/order-item.entity';
 import { Order } from './modules/orders/entities/order.entity';
+import { RewardRedemption } from './modules/rewards/entities/reward-redemption.entity';
+import { StarPromotion } from './modules/rewards/entities/star-promotion.entity';
 import { Sauce } from './modules/sauces/entities/sauce.entity';
 import { Setting } from './modules/settings/entities/setting.entity';
 import { Address } from './modules/users/entities/address.entity';
@@ -58,6 +60,8 @@ export const AppDataSource = new DataSource({
     Banner,
     Setting,
     MarketingNotification,
+    RewardRedemption,
+    StarPromotion,
   ],
   migrations: [__dirname + '/migrations/*{.ts,.js}'],
   synchronize: false,

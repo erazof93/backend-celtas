@@ -11,6 +11,7 @@ import { DataSource, EntityTarget, ObjectLiteral } from 'typeorm';
 import { CouponsService } from '../coupons/coupons.service';
 import { MenuItem } from '../menu/entities/menu-item.entity';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RewardsService } from '../rewards/rewards.service';
 import { SettingsService } from '../settings/settings.service';
 import { Address } from '../users/entities/address.entity';
 import { User, UserRole } from '../users/entities/user.entity';
@@ -41,6 +42,12 @@ describe('OrdersService', () => {
     markUsed: jest.Mock;
     checkAndGenerateForUser: jest.Mock;
     reactivateForCancelledOrder: jest.Mock;
+  };
+  let rewardsService: {
+    validateForOrder: jest.Mock;
+    markUsed: jest.Mock;
+    reactivateForCancelledOrder: jest.Mock;
+    recalculateForUser: jest.Mock;
   };
   let notificationsService: { sendPushNotification: jest.Mock };
   let settingsService: {
@@ -121,6 +128,12 @@ describe('OrdersService', () => {
       checkAndGenerateForUser: jest.fn().mockResolvedValue(null),
       reactivateForCancelledOrder: jest.fn().mockResolvedValue(undefined),
     };
+    rewardsService = {
+      validateForOrder: jest.fn(),
+      markUsed: jest.fn().mockResolvedValue(undefined),
+      reactivateForCancelledOrder: jest.fn().mockResolvedValue(undefined),
+      recalculateForUser: jest.fn().mockResolvedValue(undefined),
+    };
     notificationsService = {
       sendPushNotification: jest.fn().mockResolvedValue(true),
     };
@@ -155,6 +168,7 @@ describe('OrdersService', () => {
         { provide: DataSource, useValue: dataSource },
         { provide: ConfigService, useValue: configService },
         { provide: CouponsService, useValue: couponsService },
+        { provide: RewardsService, useValue: rewardsService },
         { provide: NotificationsService, useValue: notificationsService },
         { provide: SettingsService, useValue: settingsService },
       ],
@@ -615,6 +629,113 @@ describe('OrdersService', () => {
           couponCode: 'USADO',
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('create — canje de premios (programa de estrellas)', () => {
+    const rewardRedemptionId = '44444444-4444-4444-8444-444444444444';
+
+    beforeEach(() => {
+      orderItemsRepo.create.mockImplementation(passthrough);
+      ordersRepo.create.mockImplementation(passthrough);
+      ordersRepo.save.mockImplementation(passthrough);
+      dataSource.transaction.mockImplementation(
+        (cb: (m: { create: jest.Mock; save: jest.Mock }) => Promise<unknown>) =>
+          cb({
+            create: jest.fn((_entity: unknown, value: unknown) => value),
+            save: jest.fn((_entity: unknown, value: unknown) =>
+              Promise.resolve(value),
+            ),
+          }),
+      );
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+    });
+
+    it('fuerza el precio del ítem canjeado a 0, sin importar el price real del producto', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({ price: 24.9, redeemableWithStars: true }),
+      ]);
+      const redemption = { id: rewardRedemptionId, usedAt: null };
+      rewardsService.validateForOrder.mockResolvedValue(redemption);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 1, rewardRedemptionId }],
+      });
+
+      expect(result.items[0].unitPrice).toBe(0);
+      expect(result.items[0].subtotal).toBe(0);
+      expect(rewardsService.validateForOrder).toHaveBeenCalledWith(
+        expect.anything(),
+        { rewardRedemptionId, userId, menuItemId },
+      );
+      expect(rewardsService.markUsed).toHaveBeenCalledWith(
+        expect.anything(),
+        redemption,
+        result.id,
+        menuItemId,
+      );
+    });
+
+    it('lanza 400 si el producto no es canjeable con estrellas (no llega a validar el premio)', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({ redeemableWithStars: false }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 1, rewardRedemptionId }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(rewardsService.validateForOrder).not.toHaveBeenCalled();
+    });
+
+    it('lanza 400 si quantity no es 1 en un ítem canjeado', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({ redeemableWithStars: true }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 2, rewardRedemptionId }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('lanza 400 si el mismo premio se repite en dos ítems del pedido', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({ id: 'a', redeemableWithStars: true }),
+        menuMenuItem({ id: 'b', redeemableWithStars: true }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [
+            { menuItemId: 'a', quantity: 1, rewardRedemptionId },
+            { menuItemId: 'b', quantity: 1, rewardRedemptionId },
+          ],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('propaga el error si el premio no es válido (no crea el pedido)', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({ redeemableWithStars: true }),
+      ]);
+      rewardsService.validateForOrder.mockRejectedValue(
+        new BadRequestException('Este premio ya fue canjeado'),
+      );
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 1, rewardRedemptionId }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(rewardsService.markUsed).not.toHaveBeenCalled();
     });
   });
 
@@ -1085,6 +1206,39 @@ describe('OrdersService', () => {
       expect(couponsService.checkAndGenerateForUser).not.toHaveBeenCalled();
     });
 
+    it('dispara recalculateForUser tras entregar (programa de estrellas)', async () => {
+      const user = { id: userId, totalSpent: 100 } as User;
+      const order = seedOrder({ status: OrderStatus.EN_CAMINO, total: 59.7 });
+      setupTransaction(order, user);
+
+      await service.updateStatus('one-1', { status: OrderStatus.ENTREGADO });
+
+      expect(rewardsService.recalculateForUser).toHaveBeenCalledWith(userId);
+    });
+
+    it('no rompe el PATCH si recalculateForUser falla (best-effort)', async () => {
+      const user = { id: userId, totalSpent: 100 } as User;
+      const order = seedOrder({ status: OrderStatus.EN_CAMINO, total: 59.7 });
+      setupTransaction(order, user);
+      rewardsService.recalculateForUser.mockRejectedValue(new Error('boom'));
+
+      const result = await service.updateStatus('one-1', {
+        status: OrderStatus.ENTREGADO,
+      });
+
+      expect(result.status).toBe(OrderStatus.ENTREGADO);
+    });
+
+    it('no dispara recalculateForUser si no es entregado', async () => {
+      const user = { id: userId, totalSpent: 100 } as User;
+      const order = seedOrder({ status: OrderStatus.PENDIENTE });
+      setupTransaction(order, user);
+
+      await service.updateStatus('one-1', { status: OrderStatus.CONFIRMADO });
+
+      expect(rewardsService.recalculateForUser).not.toHaveBeenCalled();
+    });
+
     it('no toca totalSpent en transiciones que no son entregado', async () => {
       const user = { id: userId, totalSpent: 100 } as User;
       const order = seedOrder({ status: OrderStatus.PENDIENTE });
@@ -1134,6 +1288,29 @@ describe('OrdersService', () => {
         order.id,
       );
       expect(result.status).toBe(OrderStatus.CANCELADO);
+    });
+
+    it('reactiva los premios del programa de estrellas al cancelar (dentro de la transacción)', async () => {
+      const user = { id: userId, totalSpent: 0 } as User;
+      const order = seedOrder({ status: OrderStatus.PENDIENTE });
+      const manager = setupTransaction(order, user);
+
+      await service.updateStatus('one-1', { status: OrderStatus.CANCELADO });
+
+      expect(rewardsService.reactivateForCancelledOrder).toHaveBeenCalledWith(
+        manager,
+        order.id,
+      );
+    });
+
+    it('no reactiva premios en transiciones que no son cancelado', async () => {
+      const user = { id: userId, totalSpent: 0 } as User;
+      const order = seedOrder({ status: OrderStatus.PENDIENTE });
+      setupTransaction(order, user);
+
+      await service.updateStatus('one-1', { status: OrderStatus.CONFIRMADO });
+
+      expect(rewardsService.reactivateForCancelledOrder).not.toHaveBeenCalled();
     });
 
     it('cancelar un pedido sin cupón no rompe nada', async () => {
