@@ -578,7 +578,12 @@ export class OrdersService {
 
       let unitPrice = menuItem.price;
       if (item.rewardRedemptionId) {
-        if (!menuItem.redeemableWithStars) {
+        // Chequeo previo, sin lock: solo descarta productos que no participan
+        // de NINGÚN catálogo de canje. Cuál de los dos (normal o especial)
+        // aplica depende del hito de origen del premio (`redemption.isSpecial`),
+        // que recién se conoce y se valida con lock DENTRO de la transacción
+        // (ver `RewardsService.validateForOrder`) — nunca acá.
+        if (!menuItem.redeemableWithStars && !menuItem.specialReward) {
           throw new BadRequestException(
             `El producto "${menuItem.name}" no es canjeable con estrellas`,
           );

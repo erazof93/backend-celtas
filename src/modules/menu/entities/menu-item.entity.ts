@@ -54,6 +54,15 @@ export class MenuItem {
   @Column({ type: 'boolean', default: false })
   redeemableWithStars: boolean;
 
+  /**
+   * Si el producto puede canjearse específicamente con el PREMIO ESPECIAL
+   * (catálogo exclusivo, `GET /rewards/catalog?especial=true`) —
+   * independiente de `redeemableWithStars`. Un producto puede tener
+   * cualquier combinación de los dos switches.
+   */
+  @Column({ type: 'boolean', default: false })
+  specialReward: boolean;
+
   @Index()
   @Column({ type: 'uuid' })
   categoryId: string;

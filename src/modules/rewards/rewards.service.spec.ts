@@ -6,6 +6,7 @@ import { MenuItem } from '../menu/entities/menu-item.entity';
 import { Order, OrderStatus } from '../orders/entities/order.entity';
 import { SettingsService } from '../settings/settings.service';
 import { User } from '../users/entities/user.entity';
+import { RewardMilestone } from './entities/reward-milestone.entity';
 import { RewardRedemption } from './entities/reward-redemption.entity';
 import { StarPromotion } from './entities/star-promotion.entity';
 import { RewardsService } from './rewards.service';
@@ -13,6 +14,7 @@ import { RewardsService } from './rewards.service';
 describe('RewardsService', () => {
   let service: RewardsService;
   let rewardRedemptionsRepo: { find: jest.Mock };
+  let rewardMilestonesRepo: { find: jest.Mock };
   let menuItemsRepo: { find: jest.Mock };
   let dataSource: {
     manager: { find: jest.Mock };
@@ -20,10 +22,17 @@ describe('RewardsService', () => {
   };
   let settingsService: {
     getSolesPorEstrella: jest.Mock;
-    getEstrellasPorPremio: jest.Mock;
   };
 
   const userId = 'user-1';
+
+  const seedMilestone = (overrides: Partial<RewardMilestone> = {}) =>
+    ({
+      id: 'milestone-1',
+      starsRequired: 10,
+      isSpecial: false,
+      ...overrides,
+    }) as RewardMilestone;
 
   const seedOrder = (overrides: Partial<Order> = {}) =>
     ({
@@ -52,7 +61,7 @@ describe('RewardsService', () => {
     user?: User | null;
     orders?: Order[];
     promotions?: StarPromotion[];
-    alreadyGenerated?: number;
+    alreadyGranted?: RewardRedemption[];
   }) => {
     const manager = {
       findOne: jest.fn((entity: unknown) => {
@@ -63,9 +72,10 @@ describe('RewardsService', () => {
         if (entity === Order) return Promise.resolve(options.orders ?? []);
         if (entity === StarPromotion)
           return Promise.resolve(options.promotions ?? []);
+        if (entity === RewardRedemption)
+          return Promise.resolve(options.alreadyGranted ?? []);
         return Promise.resolve([]);
       }),
-      count: jest.fn().mockResolvedValue(options.alreadyGenerated ?? 0),
       create: jest.fn((_entity: unknown, value: unknown) => value),
       save: jest.fn((_entity: unknown, value: unknown) =>
         Promise.resolve(value),
@@ -79,6 +89,7 @@ describe('RewardsService', () => {
 
   beforeEach(async () => {
     rewardRedemptionsRepo = { find: jest.fn() };
+    rewardMilestonesRepo = { find: jest.fn().mockResolvedValue([]) };
     menuItemsRepo = { find: jest.fn() };
     dataSource = {
       manager: { find: jest.fn() },
@@ -86,7 +97,6 @@ describe('RewardsService', () => {
     };
     settingsService = {
       getSolesPorEstrella: jest.fn().mockResolvedValue(10),
-      getEstrellasPorPremio: jest.fn().mockResolvedValue(10),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -95,6 +105,10 @@ describe('RewardsService', () => {
         {
           provide: getRepositoryToken(RewardRedemption),
           useValue: rewardRedemptionsRepo,
+        },
+        {
+          provide: getRepositoryToken(RewardMilestone),
+          useValue: rewardMilestonesRepo,
         },
         { provide: getRepositoryToken(MenuItem), useValue: menuItemsRepo },
         { provide: DataSource, useValue: dataSource },
@@ -106,7 +120,7 @@ describe('RewardsService', () => {
   });
 
   describe('getCatalog', () => {
-    it('filtra por redeemableWithStars y available', async () => {
+    it('sin especial: filtra por redeemableWithStars y available', async () => {
       menuItemsRepo.find.mockResolvedValue([
         {
           id: 'a',
@@ -127,11 +141,44 @@ describe('RewardsService', () => {
         { id: 'a', name: 'Papas', description: null, price: 5, image: null },
       ]);
     });
+
+    it('con especial=true: filtra por specialReward y available, catálogo EXCLUYENTE', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        {
+          id: 'b',
+          name: 'Combo especial',
+          description: null,
+          price: 20,
+          image: null,
+        },
+      ]);
+
+      const result = await service.getCatalog(true);
+
+      expect(menuItemsRepo.find).toHaveBeenCalledWith({
+        where: { specialReward: true, available: true },
+        order: { name: 'ASC' },
+      });
+      expect(result).toEqual([
+        {
+          id: 'b',
+          name: 'Combo especial',
+          description: null,
+          price: 20,
+          image: null,
+        },
+      ]);
+    });
   });
 
   describe('getProgress', () => {
-    it('calcula las estrellas del mes sin promoción activa (multiplicador 1)', async () => {
+    it('devuelve estrellasDelMes y el estado alcanzado/no de cada hito', async () => {
       // S/50 gastados este mes / 10 soles-por-estrella = 5 estrellas.
+      rewardMilestonesRepo.find.mockResolvedValue([
+        seedMilestone({ starsRequired: 5, isSpecial: false }),
+        seedMilestone({ starsRequired: 8, isSpecial: false }),
+        seedMilestone({ starsRequired: 15, isSpecial: true }),
+      ]);
       dataSource.manager.find.mockImplementation((entity: unknown) => {
         if (entity === Order) return Promise.resolve([seedOrder()]);
         if (entity === StarPromotion) return Promise.resolve([]);
@@ -141,13 +188,20 @@ describe('RewardsService', () => {
 
       const result = await service.getProgress(userId);
 
-      expect(result.estrellasParaProximoPremio).toBe(5);
-      expect(result.estrellasPorPremio).toBe(10);
+      expect(result.estrellasDelMes).toBe(5);
+      expect(result.hitos).toEqual([
+        { estrellasRequeridas: 5, alcanzado: true, esEspecial: false },
+        { estrellasRequeridas: 8, alcanzado: false, esEspecial: false },
+        { estrellasRequeridas: 15, alcanzado: false, esEspecial: true },
+      ]);
       expect(result.promocionActiva).toBeNull();
     });
 
     it('pesa el subtotal con el multiplicador de la promoción activa el día del pedido', async () => {
-      // 50 * 2 (promo) = 100 soles pesados / 10 = 10 estrellas → 10 % 10 = 0
+      // 50 * 2 (promo) = 100 soles pesados / 10 = 10 estrellas.
+      rewardMilestonesRepo.find.mockResolvedValue([
+        seedMilestone({ starsRequired: 10 }),
+      ]);
       dataSource.manager.find.mockImplementation((entity: unknown) => {
         if (entity === Order) return Promise.resolve([seedOrder()]);
         if (entity === StarPromotion) return Promise.resolve([seedPromotion()]);
@@ -157,10 +211,12 @@ describe('RewardsService', () => {
 
       const result = await service.getProgress(userId);
 
-      expect(result.estrellasParaProximoPremio).toBe(0);
+      expect(result.estrellasDelMes).toBe(10);
+      expect(result.hitos[0].alcanzado).toBe(true);
     });
 
     it('no aplica el multiplicador si el pedido fue hecho fuera del rango de la promoción', async () => {
+      rewardMilestonesRepo.find.mockResolvedValue([]);
       dataSource.manager.find.mockImplementation((entity: unknown) => {
         if (entity === Order)
           return Promise.resolve([
@@ -173,12 +229,13 @@ describe('RewardsService', () => {
 
       const result = await service.getProgress(userId);
 
-      expect(result.estrellasParaProximoPremio).toBe(5); // sin pesar (multiplicador 1)
+      expect(result.estrellasDelMes).toBe(5); // sin pesar (multiplicador 1)
     });
 
     it('devuelve promocionActiva solo si la fecha de hoy cae dentro de su rango', async () => {
       const today = new Date();
       const iso = today.toISOString().slice(0, 10);
+      rewardMilestonesRepo.find.mockResolvedValue([]);
       dataSource.manager.find.mockImplementation((entity: unknown) => {
         if (entity === Order) return Promise.resolve([]);
         if (entity === StarPromotion)
@@ -198,10 +255,15 @@ describe('RewardsService', () => {
       });
     });
 
-    it('lista solo los premios sin usar y sin vencer, ordenados por expiresAt', async () => {
+    it('lista solo los premios sin usar y sin vencer, ordenados por expiresAt, con esEspecial por premio', async () => {
+      rewardMilestonesRepo.find.mockResolvedValue([]);
       dataSource.manager.find.mockResolvedValue([]);
       rewardRedemptionsRepo.find.mockResolvedValue([
-        { id: 'r1', expiresAt: new Date('2026-09-01T00:00:00.000Z') },
+        {
+          id: 'r1',
+          expiresAt: new Date('2026-09-01T00:00:00.000Z'),
+          isSpecial: true,
+        },
       ]);
 
       const result = await service.getProgress(userId);
@@ -210,7 +272,11 @@ describe('RewardsService', () => {
         expect.objectContaining({ order: { expiresAt: 'ASC' } }),
       );
       expect(result.premiosDisponibles).toEqual([
-        { id: 'r1', expiresAt: new Date('2026-09-01T00:00:00.000Z') },
+        {
+          id: 'r1',
+          expiresAt: new Date('2026-09-01T00:00:00.000Z'),
+          esEspecial: true,
+        },
       ]);
     });
   });
@@ -222,14 +288,16 @@ describe('RewardsService', () => {
       expect(manager.save).not.toHaveBeenCalled();
     });
 
-    it('genera un premio al llegar a las estrellas necesarias', async () => {
-      // S/100 gastados / 10 = 10 estrellas / 10 por premio = 1 premio.
+    it('otorga un premio al alcanzar un único hito', async () => {
+      rewardMilestonesRepo.find.mockResolvedValue([
+        seedMilestone({ starsRequired: 10, isSpecial: false }),
+      ]);
+      // S/100 gastados / 10 = 10 estrellas → alcanza el hito de 10.
       const manager = setupTransaction({
         user: { id: userId } as User,
         orders: [
           seedOrder({ items: [{ subtotal: 60 }, { subtotal: 40 }] as never }),
         ],
-        alreadyGenerated: 0,
       });
 
       await service.recalculateForUser(userId);
@@ -237,19 +305,60 @@ describe('RewardsService', () => {
       expect(manager.save).toHaveBeenCalledWith(
         RewardRedemption,
         expect.arrayContaining([
-          expect.objectContaining({ userId, usedAt: null, menuItemId: null }),
+          expect.objectContaining({
+            userId,
+            usedAt: null,
+            menuItemId: null,
+            milestoneStars: 10,
+            isSpecial: false,
+          }),
         ]),
       );
       const savedRewards = manager.save.mock.calls[0][1] as unknown[];
       expect(savedRewards).toHaveLength(1);
     });
 
-    it('genera más de un premio de una sola vez si el pedido es grande', async () => {
-      // S/300 / 10 = 30 estrellas / 10 = 3 premios en una sola pasada.
+    it('otorga TODOS los hitos alcanzados en una sola pasada (hitos irregulares 5/8/15, 20 estrellas de una)', async () => {
+      rewardMilestonesRepo.find.mockResolvedValue([
+        seedMilestone({ starsRequired: 5, isSpecial: false }),
+        seedMilestone({ starsRequired: 8, isSpecial: false }),
+        seedMilestone({ starsRequired: 15, isSpecial: true }),
+      ]);
+      // S/200 / 10 = 20 estrellas → cruza los 3 hitos de una.
       const manager = setupTransaction({
         user: { id: userId } as User,
-        orders: [seedOrder({ items: [{ subtotal: 300 }] as never })],
-        alreadyGenerated: 0,
+        orders: [seedOrder({ items: [{ subtotal: 200 }] as never })],
+      });
+
+      await service.recalculateForUser(userId);
+
+      const savedRewards = manager.save.mock.calls[0][1] as {
+        milestoneStars: number;
+        isSpecial: boolean;
+      }[];
+      expect(savedRewards).toHaveLength(3);
+      expect(
+        savedRewards.map((r) => r.milestoneStars).sort((a, b) => a - b),
+      ).toEqual([5, 8, 15]);
+      expect(savedRewards.find((r) => r.milestoneStars === 15)!.isSpecial).toBe(
+        true,
+      );
+      expect(savedRewards.find((r) => r.milestoneStars === 5)!.isSpecial).toBe(
+        false,
+      );
+    });
+
+    it('el excedente sobre el hito más alto no genera nada extra (tope de un tablero por mes)', async () => {
+      rewardMilestonesRepo.find.mockResolvedValue([
+        seedMilestone({ starsRequired: 5 }),
+        seedMilestone({ starsRequired: 8 }),
+        seedMilestone({ starsRequired: 15 }),
+      ]);
+      // S/1000 / 10 = 100 estrellas, muy por encima del hito más alto (15):
+      // sigue otorgando solo los 3 hitos configurados, nunca más.
+      const manager = setupTransaction({
+        user: { id: userId } as User,
+        orders: [seedOrder({ items: [{ subtotal: 1000 }] as never })],
       });
 
       await service.recalculateForUser(userId);
@@ -258,12 +367,14 @@ describe('RewardsService', () => {
       expect(savedRewards).toHaveLength(3);
     });
 
-    it('no regenera premios ya contados este mes', async () => {
-      // 1 premio calculado, pero ya se generó 1 este mes → no crea otro.
+    it('no regenera un hito ya otorgado este mes (idempotente, llamar 2 veces no duplica)', async () => {
+      rewardMilestonesRepo.find.mockResolvedValue([
+        seedMilestone({ starsRequired: 10 }),
+      ]);
       const manager = setupTransaction({
         user: { id: userId } as User,
         orders: [seedOrder({ items: [{ subtotal: 100 }] as never })],
-        alreadyGenerated: 1,
+        alreadyGranted: [{ milestoneStars: 10 } as RewardRedemption],
       });
 
       await service.recalculateForUser(userId);
@@ -274,11 +385,33 @@ describe('RewardsService', () => {
       );
     });
 
-    it('no genera nada si no se alcanzó el umbral de estrellas', async () => {
+    it('otorga solo los hitos NUEVOS cuando algunos ya fueron otorgados este mes', async () => {
+      rewardMilestonesRepo.find.mockResolvedValue([
+        seedMilestone({ starsRequired: 5 }),
+        seedMilestone({ starsRequired: 8 }),
+      ]);
+      const manager = setupTransaction({
+        user: { id: userId } as User,
+        orders: [seedOrder({ items: [{ subtotal: 80 }] as never })], // 8 estrellas
+        alreadyGranted: [{ milestoneStars: 5 } as RewardRedemption],
+      });
+
+      await service.recalculateForUser(userId);
+
+      const savedRewards = manager.save.mock.calls[0][1] as {
+        milestoneStars: number;
+      }[];
+      expect(savedRewards).toHaveLength(1);
+      expect(savedRewards[0].milestoneStars).toBe(8);
+    });
+
+    it('no genera nada si no se alcanzó ningún hito', async () => {
+      rewardMilestonesRepo.find.mockResolvedValue([
+        seedMilestone({ starsRequired: 10 }),
+      ]);
       const manager = setupTransaction({
         user: { id: userId } as User,
         orders: [seedOrder({ items: [{ subtotal: 5 }] as never })],
-        alreadyGenerated: 0,
       });
 
       await service.recalculateForUser(userId);
@@ -304,6 +437,7 @@ describe('RewardsService', () => {
                   userId,
                   usedAt: null,
                   expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+                  isSpecial: false,
                 }
               : options.redemption,
           );
@@ -384,8 +518,15 @@ describe('RewardsService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('rechaza si el producto no es canjeable con estrellas', async () => {
+    it('premio normal (isSpecial=false): rechaza si el producto no es redeemableWithStars', async () => {
       const manager = setupManager({
+        redemption: {
+          id: rewardRedemptionId,
+          userId,
+          usedAt: null,
+          expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+          isSpecial: false,
+        },
         menuItem: { id: menuItemId, redeemableWithStars: false },
       });
       await expect(
@@ -394,10 +535,87 @@ describe('RewardsService', () => {
           userId,
           menuItemId,
         }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toThrow(
+        'El producto seleccionado no es canjeable con estrellas',
+      );
     });
 
-    it('acepta un premio válido y lo devuelve sin marcarlo usado', async () => {
+    it('premio normal (isSpecial=false): acepta un producto specialReward=true pero redeemableWithStars=false NO (catálogos excluyentes)', async () => {
+      const manager = setupManager({
+        redemption: {
+          id: rewardRedemptionId,
+          userId,
+          usedAt: null,
+          expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+          isSpecial: false,
+        },
+        menuItem: {
+          id: menuItemId,
+          redeemableWithStars: false,
+          specialReward: true,
+        },
+      });
+      await expect(
+        service.validateForOrder(manager as never, {
+          rewardRedemptionId,
+          userId,
+          menuItemId,
+        }),
+      ).rejects.toThrow(
+        'El producto seleccionado no es canjeable con estrellas',
+      );
+    });
+
+    it('premio especial (isSpecial=true): rechaza si el producto no es specialReward, aunque sea redeemableWithStars', async () => {
+      const manager = setupManager({
+        redemption: {
+          id: rewardRedemptionId,
+          userId,
+          usedAt: null,
+          expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+          isSpecial: true,
+        },
+        menuItem: {
+          id: menuItemId,
+          redeemableWithStars: true,
+          specialReward: false,
+        },
+      });
+      await expect(
+        service.validateForOrder(manager as never, {
+          rewardRedemptionId,
+          userId,
+          menuItemId,
+        }),
+      ).rejects.toThrow(
+        'El producto seleccionado no es parte del catálogo del premio especial',
+      );
+    });
+
+    it('premio especial (isSpecial=true): acepta un producto specialReward=true', async () => {
+      const manager = setupManager({
+        redemption: {
+          id: rewardRedemptionId,
+          userId,
+          usedAt: null,
+          expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+          isSpecial: true,
+        },
+        menuItem: {
+          id: menuItemId,
+          redeemableWithStars: false,
+          specialReward: true,
+        },
+      });
+      const result = await service.validateForOrder(manager as never, {
+        rewardRedemptionId,
+        userId,
+        menuItemId,
+      });
+      expect(result.id).toBe(rewardRedemptionId);
+    });
+
+    it('acepta un premio normal válido y lo devuelve sin marcarlo usado', async () => {
       const manager = setupManager({});
       const result = await service.validateForOrder(manager as never, {
         rewardRedemptionId,

@@ -55,6 +55,20 @@ export class RewardRedemption {
   @JoinColumn({ name: 'menuItemId' })
   menuItem: MenuItem | null;
 
+  /**
+   * Umbral de estrellas que generó este premio (snapshot al momento de
+   * ganarlo, NO una FK al `RewardMilestone` — así, si el admin borra o edita
+   * el hito después, este registro histórico no se ve afectado). `null` en
+   * premios generados ANTES de este cambio (no sabemos de qué umbral vinieron
+   * bajo el esquema viejo de `estrellas_por_premio`).
+   */
+  @Column({ type: 'int', nullable: true })
+  milestoneStars: number | null;
+
+  /** Si este premio es el "premio especial" (catálogo exclusivo `specialReward`) — snapshot igual que arriba. */
+  @Column({ type: 'boolean', default: false })
+  isSpecial: boolean;
+
   @CreateDateColumn()
   createdAt: Date;
 

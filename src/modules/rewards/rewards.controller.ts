@@ -1,7 +1,8 @@
-import { Controller, Get, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
+  ApiQuery,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
@@ -40,11 +41,17 @@ export class RewardsController {
   @ApiOperation({
     summary: 'Catálogo de productos canjeables con estrellas (cliente)',
     description:
-      'Productos con redeemableWithStars=true y available=true, el mismo criterio de disponibilidad que el menú público.',
+      'Sin especial=true: productos redeemableWithStars=true y available=true. Con especial=true: productos specialReward=true y available=true — lista EXCLUYENTE, no una unión de ambas.',
+  })
+  @ApiQuery({
+    name: 'especial',
+    required: false,
+    type: Boolean,
+    description: 'true para el catálogo exclusivo del premio especial',
   })
   @ApiResponse({ status: 200, description: 'Lista de productos canjeables' })
   @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
-  getCatalog() {
-    return this.rewardsService.getCatalog();
+  getCatalog(@Query('especial') especial?: string) {
+    return this.rewardsService.getCatalog(especial === 'true');
   }
 }

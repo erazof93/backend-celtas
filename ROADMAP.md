@@ -625,13 +625,13 @@ celtas-backend/
   `DELETE`). Columna nueva `MenuItem.redeemableWithStars` (default `false`). Migración
   `AddStarsRewardsProgram1787683759116`.
 - [x] Por cada `soles_por_estrella` (setting, default 10) de subtotal sin envío en pedidos
-  `entregado` del mes calendario actual (hora de Lima), 1 estrella; al juntar
-  `estrellas_por_premio` (setting, default 10) se genera un premio. El conteo se reinicia cada mes
+  `entregado` del mes calendario actual (hora de Lima), 1 estrella. El conteo se reinicia cada mes
   (los premios ganados no se pierden). `StarPromotion` pesa el subtotal según `order.createdAt`
   (día de la compra), el filtro de mes usa `deliveredAt`.
 - [x] `GET /rewards/progress` (cliente): progreso hacia el próximo premio, premios disponibles,
   promoción vigente hoy — sin exponer `soles_por_estrella` crudo. `GET /rewards/catalog` (cliente):
-  productos `redeemableWithStars=true AND available=true`.
+  productos `redeemableWithStars=true AND available=true` (o `specialReward=true AND available=true`
+  con `?especial=true`, ver rework de hitos abajo).
 - [x] `POST /orders` extendido: `rewardRedemptionId?` opcional por ítem, valida y bloquea (lock
   pesimista) dentro de la transacción, fuerza `unitPrice=0`, exige `quantity=1` y producto
   canjeable, rechaza premio repetido en el mismo pedido. Cancelar un pedido reactiva los premios
@@ -639,17 +639,30 @@ celtas-backend/
   transición válida.
 - [x] `GET/POST/PATCH /star-promotions` (admin): valida no-solapamiento de fechas entre
   promociones activas al crear y al editar; `PATCH active:false` no dispara esa validación.
-- [x] Auditado por `@tester` (pase independiente, con Docker/Postgres local real levantados por el
-  propio `@tester` y mutación real sobre 2 puntos frágiles): **LISTO PARA MARCAR COMPLETO** —
-  391 unit (22 suites) + 329 e2e (13 suites) confirmados de forma independiente, build/lint
-  limpios, `tsc --noEmit` sin errores nuevos (19 preexistentes, idénticos a `origin/master`),
-  migración verificada 1:1 contra Postgres local real sin drift, Swagger completo. `@tester`
-  encontró y corrigió una fragilidad de aislamiento de datos en el propio `test/rewards.e2e-spec.ts`
-  (fechas de prueba de `StarPromotions` usaban un año fijo en vez de uno derivado de `suffix`,
-  causando falsos negativos contra una BD con datos residuales de pruebas manuales previas) — fix
-  dentro del archivo de test, sin tocar código de producción. Único riesgo no bloqueante: falta un
-  test explícito del caso borde "dos promociones se tocan en un solo día" (confirmado mutable sin
-  detección hoy). Detalle completo en `docs/testing-checklist.md`, sección "Rewards".
+- [x] **Rework a hitos irregulares (`RewardMilestone`)**: el esquema original de "una sola cifra
+  `estrellas_por_premio` = 1 premio parejo" (setting ya removida de `SettingsService`) se reemplazó
+  por una entidad configurable `RewardMilestone` (`starsRequired` único, `isSpecial`) — lista de
+  hitos irregulares (ej. 5/8/15) donde el hito marcado `isSpecial=true` reparte de un catálogo de
+  canje EXCLUSIVO (`MenuItem.specialReward`, columna nueva e independiente de
+  `redeemableWithStars`). `RewardRedemption` gana snapshot `milestoneStars`/`isSpecial` (NO FK):
+  borrar o editar un hito después nunca corrompe premios ya otorgados. CRUD admin nuevo
+  `/reward-milestones` (a diferencia de `StarPromotion`, sí admite `DELETE` real), con traducción
+  de la violación UNIQUE de Postgres (23505) a 400 legible. `OrdersService.buildItems` relaja su
+  chequeo pre-transacción a `redeemableWithStars OR specialReward`, dejando la validación real de
+  cuál catálogo aplica (según `redemption.isSpecial`) dentro de la transacción con lock. Migración
+  `AddRewardMilestonesAndSpecialTier1787764736964`.
+- [x] Auditado por `@tester` (pase independiente, con Docker/Postgres local real y mutación real
+  sobre 2 puntos frágiles del esquema original + 3 puntos frágiles del rework de hitos): **LISTO
+  PARA MARCAR COMPLETO** — esquema original: 391 unit (22 suites) + 329 e2e (13 suites); rework de
+  hitos: 409 unit (23 suites) + 342 e2e (13 suites), todos confirmados de forma independiente.
+  Build/lint limpios ambas veces, `tsc --noEmit` sin errores nuevos, migraciones verificadas 1:1
+  contra Postgres local real sin drift, Swagger completo. `@tester` encontró y corrigió una
+  fragilidad de aislamiento de datos en el propio `test/rewards.e2e-spec.ts` (fechas de prueba de
+  `StarPromotions` con año fijo, causando falsos negativos contra datos residuales) — fix dentro
+  del archivo de test, sin tocar código de producción. Único hallazgo del rework de hitos (no
+  bloqueante): fila huérfana `estrellas_por_premio` en la tabla `settings`, sin efecto funcional
+  (nada la lee), pendiente de limpieza en una migración futura. Detalle completo en
+  `docs/testing-checklist.md`, secciones "Rewards" y "Rewards — rework a hitos irregulares".
 
 ---
 

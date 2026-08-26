@@ -21,6 +21,7 @@ import {
   Order,
   OrderStatus,
 } from './../src/modules/orders/entities/order.entity';
+import { RewardMilestone } from './../src/modules/rewards/entities/reward-milestone.entity';
 import { RewardRedemption } from './../src/modules/rewards/entities/reward-redemption.entity';
 import { StarPromotion } from './../src/modules/rewards/entities/star-promotion.entity';
 import { RewardsService } from './../src/modules/rewards/rewards.service';
@@ -64,12 +65,17 @@ interface MenuItemData {
   name: string;
   price: number;
   redeemableWithStars: boolean;
+  specialReward: boolean;
 }
 
 interface RewardsProgressData {
-  estrellasParaProximoPremio: number;
-  estrellasPorPremio: number;
-  premiosDisponibles: { id: string; expiresAt: string }[];
+  estrellasDelMes: number;
+  hitos: {
+    estrellasRequeridas: number;
+    alcanzado: boolean;
+    esEspecial: boolean;
+  }[];
+  premiosDisponibles: { id: string; expiresAt: string; esEspecial: boolean }[];
   promocionActiva: {
     label: string;
     multiplier: number;
@@ -92,7 +98,13 @@ interface StarPromotionData {
   active: boolean;
 }
 
-describe('Rewards — programa de estrellas (e2e)', () => {
+interface RewardMilestoneData {
+  id: string;
+  starsRequired: number;
+  isSpecial: boolean;
+}
+
+describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => {
   let app: INestApplication<App>;
   let usersRepo: Repository<User>;
   let addressesRepo: Repository<Address>;
@@ -101,17 +113,29 @@ describe('Rewards — programa de estrellas (e2e)', () => {
   let ordersRepo: Repository<Order>;
   let settingsRepo: Repository<Setting>;
   let rewardRedemptionsRepo: Repository<RewardRedemption>;
+  let rewardMilestonesRepo: Repository<RewardMilestone>;
   let starPromotionsRepo: Repository<StarPromotion>;
   let rewardsService: RewardsService;
   let businessHoursSnapshot: BusinessHoursSnapshot;
 
   let adminToken: string;
   let categoryId: string;
-  let itemBigId: string; // S/100, no canjeable — genera muchas estrellas rápido
-  let itemMediumId: string; // S/50, no canjeable
-  let itemSmallId: string; // S/5, no canjeable — para "no regenerar" sin cruzar umbral
-  let itemRedeemableId: string; // S/8, canjeable
-  let itemRedeemable2Id: string; // S/6, canjeable (segundo producto canjeable)
+  let itemBigId: string; // S/100, ningún catálogo — genera muchas estrellas rápido
+  let itemMediumId: string; // S/50, ningún catálogo
+  let itemSmallId: string; // S/5, ningún catálogo
+  let itemRedeemableId: string; // S/8, catálogo normal (redeemableWithStars)
+  let itemRedeemable2Id: string; // S/6, catálogo normal (segundo producto)
+  let itemSpecialId: string; // S/20, catálogo especial (specialReward), NO redeemableWithStars
+
+  // Hitos de la suite: 5 (normal), 8 (normal), 15 (especial) — el mockup
+  // aprobado con el usuario. Se limpia la tabla completa al empezar y se
+  // restaura el estado previo al terminar (mismo criterio que
+  // `forceBusinessAlwaysOpen`/`restoreBusinessHours`), porque `GET
+  // /rewards/progress` lee TODOS los hitos de la tabla, sin scope por suite.
+  let preExistingMilestones: RewardMilestone[] = [];
+  let milestone5Id: string;
+  let milestone8Id: string;
+  let milestone15Id: string;
 
   const suffix = Date.now();
   const password = 'password123';
@@ -210,6 +234,9 @@ describe('Rewards — programa de estrellas (e2e)', () => {
     rewardRedemptionsRepo = app.get<Repository<RewardRedemption>>(
       getRepositoryToken(RewardRedemption),
     );
+    rewardMilestonesRepo = app.get<Repository<RewardMilestone>>(
+      getRepositoryToken(RewardMilestone),
+    );
     starPromotionsRepo = app.get<Repository<StarPromotion>>(
       getRepositoryToken(StarPromotion),
     );
@@ -243,12 +270,12 @@ describe('Rewards — programa de estrellas (e2e)', () => {
     const mkItem = async (
       name: string,
       price: number,
-      redeemableWithStars = false,
+      flags: { redeemableWithStars?: boolean; specialReward?: boolean } = {},
     ): Promise<string> => {
       const res = await request(app.getHttpServer())
         .post('/menu/items')
         .set('Authorization', `Bearer ${adminToken}`)
-        .send({ name, price, categoryId, redeemableWithStars })
+        .send({ name, price, categoryId, ...flags })
         .expect(201);
       return ((res.body as Envelope).data as MenuItemData).id;
     };
@@ -256,8 +283,43 @@ describe('Rewards — programa de estrellas (e2e)', () => {
     itemBigId = await mkItem('QA Grande S/100', 100);
     itemMediumId = await mkItem('QA Mediano S/50', 50);
     itemSmallId = await mkItem('QA Chico S/5', 5);
-    itemRedeemableId = await mkItem('QA Canjeable S/8', 8, true);
-    itemRedeemable2Id = await mkItem('QA Canjeable 2 S/6', 6, true);
+    itemRedeemableId = await mkItem('QA Canjeable S/8', 8, {
+      redeemableWithStars: true,
+    });
+    itemRedeemable2Id = await mkItem('QA Canjeable 2 S/6', 6, {
+      redeemableWithStars: true,
+    });
+    itemSpecialId = await mkItem('QA Especial S/20', 20, {
+      specialReward: true,
+    });
+
+    // La tabla reward_milestones no tiene scope por suite: se limpia entera y
+    // se restaura al final (mismo criterio que business-hours.helper).
+    preExistingMilestones = await rewardMilestonesRepo.find();
+    if (preExistingMilestones.length > 0) {
+      await rewardMilestonesRepo.remove(preExistingMilestones);
+    }
+
+    const m5 = await request(app.getHttpServer())
+      .post('/reward-milestones')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ starsRequired: 5 })
+      .expect(201);
+    milestone5Id = ((m5.body as Envelope).data as RewardMilestoneData).id;
+
+    const m8 = await request(app.getHttpServer())
+      .post('/reward-milestones')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ starsRequired: 8 })
+      .expect(201);
+    milestone8Id = ((m8.body as Envelope).data as RewardMilestoneData).id;
+
+    const m15 = await request(app.getHttpServer())
+      .post('/reward-milestones')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ starsRequired: 15, isSpecial: true })
+      .expect(201);
+    milestone15Id = ((m15.body as Envelope).data as RewardMilestoneData).id;
   });
 
   afterAll(async () => {
@@ -279,6 +341,14 @@ describe('Rewards — programa de estrellas (e2e)', () => {
       await usersRepo.delete({ email });
     }
     await usersRepo.delete({ email: adminEmail });
+
+    await rewardMilestonesRepo.delete({
+      id: In([milestone5Id, milestone8Id, milestone15Id]),
+    });
+    if (preExistingMilestones.length > 0) {
+      await rewardMilestonesRepo.save(preExistingMilestones);
+    }
+
     await restoreBusinessHours(settingsRepo, businessHoursSnapshot);
     await app.close();
   });
@@ -290,6 +360,15 @@ describe('Rewards — programa de estrellas (e2e)', () => {
 
     it('GET /rewards/catalog: 401 sin token', async () => {
       await request(app.getHttpServer()).get('/rewards/catalog').expect(401);
+    });
+
+    it('GET /reward-milestones: 401 sin token, 403 para un cliente', async () => {
+      const { token } = await register('milestones-forbidden');
+      await request(app.getHttpServer()).get('/reward-milestones').expect(401);
+      await request(app.getHttpServer())
+        .get('/reward-milestones')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(403);
     });
 
     it('POST /star-promotions: 401 sin token', async () => {
@@ -305,8 +384,8 @@ describe('Rewards — programa de estrellas (e2e)', () => {
     });
   });
 
-  describe('GET /rewards/catalog', () => {
-    it('lista solo productos redeemableWithStars=true y available=true, no expone los demás', async () => {
+  describe('GET /rewards/catalog — dos catálogos EXCLUYENTES', () => {
+    it('sin especial: lista solo productos redeemableWithStars=true, nunca el del premio especial', async () => {
       const { token } = await register('catalog');
       const res = await request(app.getHttpServer())
         .get('/rewards/catalog')
@@ -319,11 +398,70 @@ describe('Rewards — programa de estrellas (e2e)', () => {
       expect(ids).not.toContain(itemBigId);
       expect(ids).not.toContain(itemMediumId);
       expect(ids).not.toContain(itemSmallId);
+      expect(ids).not.toContain(itemSpecialId);
+    });
+
+    it('especial=true: lista solo productos specialReward=true, nunca los del catálogo normal', async () => {
+      const { token } = await register('catalog-especial');
+      const res = await request(app.getHttpServer())
+        .get('/rewards/catalog?especial=true')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as CatalogItemData[];
+      const ids = data.map((i) => i.id);
+      expect(ids).toContain(itemSpecialId);
+      expect(ids).not.toContain(itemRedeemableId);
+      expect(ids).not.toContain(itemRedeemable2Id);
     });
   });
 
-  describe('Cálculo de estrellas sin promoción activa', () => {
-    it('S/50 sin envío = 5 estrellas, sin premio (10 soles/estrella, 10 estrellas/premio por default)', async () => {
+  describe('GET /reward-milestones', () => {
+    it('lista los hitos ordenados ASC por starsRequired', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/reward-milestones')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as RewardMilestoneData[];
+      expect(data.map((m) => m.starsRequired)).toEqual([5, 8, 15]);
+      expect(data.find((m) => m.starsRequired === 15)!.isSpecial).toBe(true);
+      expect(data.find((m) => m.starsRequired === 5)!.isSpecial).toBe(false);
+    });
+
+    it('GET /reward-milestones/:id: 404 si no existe', async () => {
+      await request(app.getHttpServer())
+        .get('/reward-milestones/11111111-1111-4111-8111-111111111111')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(404);
+    });
+  });
+
+  describe('POST /reward-milestones — unicidad de starsRequired', () => {
+    it('starsRequired repetido: 400, no un 500 crudo por la constraint de la DB', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/reward-milestones')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ starsRequired: 5 })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+      expect((res.body as ErrorResponse).message).toBe(
+        'Ya existe un premio configurado para esa cantidad de estrellas',
+      );
+    });
+
+    it('PATCH a un starsRequired ya usado por otro hito: 400', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/reward-milestones/${milestone8Id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ starsRequired: 5 })
+        .expect(400);
+      expect((res.body as ErrorResponse).message).toBe(
+        'Ya existe un premio configurado para esa cantidad de estrellas',
+      );
+    });
+  });
+
+  describe('Cálculo de estrellas y estado de cada hito (sin promoción activa)', () => {
+    it('S/50 sin envío = 5 estrellas: hito 5 alcanzado, 8 y 15 no, 1 premio disponible (no especial)', async () => {
       const { token } = await register('sin-promo');
       const created = await createOrder(token, [
         { menuItemId: itemMediumId, quantity: 1 },
@@ -332,9 +470,14 @@ describe('Rewards — programa de estrellas (e2e)', () => {
       await deliverOrder(orderId);
 
       const progress = await getProgress(token);
-      expect(progress.estrellasParaProximoPremio).toBe(5);
-      expect(progress.estrellasPorPremio).toBe(10);
-      expect(progress.premiosDisponibles).toHaveLength(0);
+      expect(progress.estrellasDelMes).toBe(5);
+      expect(progress.hitos).toEqual([
+        { estrellasRequeridas: 5, alcanzado: true, esEspecial: false },
+        { estrellasRequeridas: 8, alcanzado: false, esEspecial: false },
+        { estrellasRequeridas: 15, alcanzado: false, esEspecial: true },
+      ]);
+      expect(progress.premiosDisponibles).toHaveLength(1);
+      expect(progress.premiosDisponibles[0].esEspecial).toBe(false);
       expect(progress.promocionActiva).toBeNull();
     });
   });
@@ -365,7 +508,7 @@ describe('Rewards — programa de estrellas (e2e)', () => {
       expect(data.active).toBe(true);
     });
 
-    it('S/50 pesados x2 = 100 → 10 estrellas → genera 1 premio, y promocionActiva refleja la promo vigente hoy', async () => {
+    it('S/50 pesados x2 = 100 → 10 estrellas → hitos 5 y 8 alcanzados, promocionActiva refleja la promo vigente hoy', async () => {
       const { token } = await register('con-promo');
       const created = await createOrder(token, [
         { menuItemId: itemMediumId, quantity: 1 },
@@ -374,8 +517,17 @@ describe('Rewards — programa de estrellas (e2e)', () => {
       await deliverOrder(orderId);
 
       const progress = await getProgress(token);
-      expect(progress.estrellasParaProximoPremio).toBe(0);
-      expect(progress.premiosDisponibles).toHaveLength(1);
+      expect(progress.estrellasDelMes).toBe(10);
+      expect(
+        progress.hitos.find((h) => h.estrellasRequeridas === 5)!.alcanzado,
+      ).toBe(true);
+      expect(
+        progress.hitos.find((h) => h.estrellasRequeridas === 8)!.alcanzado,
+      ).toBe(true);
+      expect(
+        progress.hitos.find((h) => h.estrellasRequeridas === 15)!.alcanzado,
+      ).toBe(false);
+      expect(progress.premiosDisponibles).toHaveLength(2);
       expect(progress.promocionActiva).toMatchObject({
         label: 'QA doble estrella',
         multiplier: 2,
@@ -398,26 +550,51 @@ describe('Rewards — programa de estrellas (e2e)', () => {
     });
   });
 
-  describe('Generación de más de un premio de una sola vez (pedido grande)', () => {
-    it('S/300 sin envío = 30 estrellas → 3 premios en una sola pasada', async () => {
+  describe('Varios hitos alcanzados de una sola vez (20 estrellas con hitos 5/8/15)', () => {
+    it('S/200 sin envío = 20 estrellas → los 3 premios (5, 8 y 15-especial) en una sola pasada', async () => {
       const { token } = await register('pedido-grande');
       const created = await createOrder(token, [
-        { menuItemId: itemBigId, quantity: 3 },
+        { menuItemId: itemBigId, quantity: 2 },
       ]).expect(201);
       const orderId = ((created.body as Envelope).data as OrderData).id;
       await deliverOrder(orderId);
 
       const progress = await getProgress(token);
-      expect(progress.estrellasParaProximoPremio).toBe(0);
+      expect(progress.estrellasDelMes).toBe(20);
+      expect(progress.hitos.every((h) => h.alcanzado)).toBe(true);
       expect(progress.premiosDisponibles).toHaveLength(3);
+      const especiales = progress.premiosDisponibles.filter(
+        (p) => p.esEspecial,
+      );
+      expect(especiales).toHaveLength(1); // solo el hito de 15 es especial
     });
   });
 
-  describe('No regeneración de premios ya contados este mes', () => {
-    it('un segundo pedido pequeño que no cruza el próximo umbral no genera un premio nuevo', async () => {
-      const { token } = await register('no-regen');
+  describe('El excedente sobre el hito más alto no genera nada extra (tope de un tablero por mes)', () => {
+    it('S/1000 sin envío = 100 estrellas → sigue siendo solo 3 premios, no más', async () => {
+      const { token, userId } = await register('excedente');
+      const created = await createOrder(token, [
+        { menuItemId: itemBigId, quantity: 10 },
+      ]).expect(201);
+      const orderId = ((created.body as Envelope).data as OrderData).id;
+      await deliverOrder(orderId);
+
+      const progress = await getProgress(token);
+      expect(progress.estrellasDelMes).toBe(100);
+      expect(progress.premiosDisponibles).toHaveLength(3);
+
+      // Idempotencia: recalcular de nuevo sin pedidos nuevos no otorga nada extra.
+      await rewardsService.recalculateForUser(userId);
+      const progressAfter = await getProgress(token);
+      expect(progressAfter.premiosDisponibles).toHaveLength(3);
+    });
+  });
+
+  describe('No regeneración de premios ya otorgados este mes (idempotencia real, no solo un mock)', () => {
+    it('un segundo pedido pequeño que no cruza el próximo hito no genera un premio nuevo; uno que sí lo cruza, sí', async () => {
+      const { token, userId } = await register('no-regen');
       const first = await createOrder(token, [
-        { menuItemId: itemBigId, quantity: 1 }, // 100 → 10 estrellas → 1 premio
+        { menuItemId: itemMediumId, quantity: 1 }, // 50 → 5 estrellas → hito 5
       ]).expect(201);
       await deliverOrder(((first.body as Envelope).data as OrderData).id);
 
@@ -425,21 +602,53 @@ describe('Rewards — programa de estrellas (e2e)', () => {
       expect(progress.premiosDisponibles).toHaveLength(1);
 
       const second = await createOrder(token, [
-        { menuItemId: itemSmallId, quantity: 1 }, // +5 → 105 → floor(105/10)=10 → sigue en 1 premio
+        { menuItemId: itemSmallId, quantity: 1 }, // +5 → 55 → floor(55/10)=5 estrellas, sigue en el hito 5
       ]).expect(201);
       await deliverOrder(((second.body as Envelope).data as OrderData).id);
 
       progress = await getProgress(token);
       expect(progress.premiosDisponibles).toHaveLength(1); // no se regeneró
-      expect(progress.estrellasParaProximoPremio).toBe(0);
+      expect(progress.estrellasDelMes).toBe(5);
+
+      // Llamar recalculateForUser explícitamente sin pedidos nuevos: sigue sin duplicar.
+      await rewardsService.recalculateForUser(userId);
+      progress = await getProgress(token);
+      expect(progress.premiosDisponibles).toHaveLength(1);
 
       const third = await createOrder(token, [
-        { menuItemId: itemBigId, quantity: 1 }, // +100 → 205 → floor(205/10)=20 → 2 premios
+        { menuItemId: itemMediumId, quantity: 1 }, // +50 → 105 → 10 estrellas → cruza el hito 8 también
       ]).expect(201);
       await deliverOrder(((third.body as Envelope).data as OrderData).id);
 
       progress = await getProgress(token);
-      expect(progress.premiosDisponibles).toHaveLength(2); // ahora sí, uno nuevo
+      expect(progress.premiosDisponibles).toHaveLength(2); // ahora sí, el hito 8 nuevo
+    });
+  });
+
+  describe('El excedente no se arrastra al mes siguiente (corte de mes)', () => {
+    it('un pedido con 20 estrellas entregado el mes pasado no aporta nada al mes actual', async () => {
+      const { token, userId } = await register('sin-arrastre');
+      const created = await createOrder(token, [
+        { menuItemId: itemBigId, quantity: 2 }, // 200 → normalmente 20 estrellas, 3 premios
+      ]).expect(201);
+      const orderId = ((created.body as Envelope).data as OrderData).id;
+
+      // Se entrega "de verdad" el mes PASADO manipulando la fila directamente
+      // (no hay forma de retroceder deliveredAt vía la API).
+      const lastMonth = new Date();
+      lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 1);
+      await ordersRepo.update(orderId, {
+        status: OrderStatus.ENTREGADO,
+        deliveredAt: lastMonth,
+      });
+
+      await rewardsService.recalculateForUser(userId);
+
+      const progress = await getProgress(token);
+      // El mes actual arranca en 0: el excedente del mes pasado no se arrastra.
+      expect(progress.estrellasDelMes).toBe(0);
+      expect(progress.hitos.every((h) => !h.alcanzado)).toBe(true);
+      expect(progress.premiosDisponibles).toHaveLength(0);
     });
   });
 
@@ -454,6 +663,8 @@ describe('Rewards — programa de estrellas (e2e)', () => {
           usedAt: null,
           usedInOrderId: null,
           menuItemId: null,
+          milestoneStars: 5,
+          isSpecial: false,
         } as Partial<RewardRedemption>),
       );
 
@@ -474,6 +685,8 @@ describe('Rewards — programa de estrellas (e2e)', () => {
           usedAt: null,
           usedInOrderId: null,
           menuItemId: null,
+          milestoneStars: 5,
+          isSpecial: false,
         } as Partial<RewardRedemption>),
       );
 
@@ -492,13 +705,13 @@ describe('Rewards — programa de estrellas (e2e)', () => {
     });
   });
 
-  describe('Canje inválido / flujo de canje completo', () => {
+  describe('Canje inválido / flujo de canje completo (premio normal)', () => {
     it('canjear el premio de OTRO usuario se rechaza con 400 y no crea el pedido', async () => {
       const owner = await register('canje-owner');
       const stranger = await register('canje-stranger');
 
       const created = await createOrder(owner.token, [
-        { menuItemId: itemBigId, quantity: 1 }, // 100 → 1 premio
+        { menuItemId: itemMediumId, quantity: 1 }, // 50 → hito 5
       ]).expect(201);
       await deliverOrder(((created.body as Envelope).data as OrderData).id);
       const progress = await getProgress(owner.token);
@@ -571,7 +784,7 @@ describe('Rewards — programa de estrellas (e2e)', () => {
     it('quantity distinto de 1 en un ítem canjeado se rechaza con 400 y no crea el pedido', async () => {
       const { token } = await register('canje-qty');
       const created = await createOrder(token, [
-        { menuItemId: itemBigId, quantity: 1 },
+        { menuItemId: itemMediumId, quantity: 1 },
       ]).expect(201);
       await deliverOrder(((created.body as Envelope).data as OrderData).id);
       const progress = await getProgress(token);
@@ -596,11 +809,11 @@ describe('Rewards — programa de estrellas (e2e)', () => {
       ).toBe(true);
     });
 
-    it('canjear con un producto que NO es canjeable con estrellas se rechaza con 400', async () => {
+    it('canjear con un producto que NO es canjeable con estrellas (ningún catálogo) se rechaza con 400', async () => {
       const { token } = await register('canje-no-redimible');
       const res = await createOrder(token, [
         {
-          menuItemId: itemBigId, // no redeemableWithStars
+          menuItemId: itemBigId, // ni redeemableWithStars ni specialReward
           quantity: 1,
           rewardRedemptionId: '11111111-1111-4111-8111-111111111111',
         },
@@ -613,7 +826,7 @@ describe('Rewards — programa de estrellas (e2e)', () => {
     it('repetir el mismo rewardRedemptionId en dos ítems del mismo pedido se rechaza con 400', async () => {
       const { token } = await register('canje-repetido');
       const created = await createOrder(token, [
-        { menuItemId: itemBigId, quantity: 1 },
+        { menuItemId: itemMediumId, quantity: 1 },
       ]).expect(201);
       await deliverOrder(((created.body as Envelope).data as OrderData).id);
       const progress = await getProgress(token);
@@ -644,50 +857,129 @@ describe('Rewards — programa de estrellas (e2e)', () => {
     });
   });
 
+  describe('Canje del premio ESPECIAL — catálogo exclusivo, nunca el normal', () => {
+    it('canjear un premio especial con un producto SOLO redeemableWithStars (no specialReward) se rechaza con 400', async () => {
+      const { token } = await register('especial-catalogo-cruzado');
+      const created = await createOrder(token, [
+        { menuItemId: itemBigId, quantity: 2 }, // 200 → 20 estrellas → incluye el hito 15 (especial)
+      ]).expect(201);
+      await deliverOrder(((created.body as Envelope).data as OrderData).id);
+      const progress = await getProgress(token);
+      const specialRewardId = progress.premiosDisponibles.find(
+        (p) => p.esEspecial,
+      )!.id;
+
+      const before = await ordersCountFor(token);
+      const res = await createOrder(token, [
+        {
+          menuItemId: itemRedeemableId, // redeemableWithStars=true, specialReward=false
+          quantity: 1,
+          rewardRedemptionId: specialRewardId,
+        },
+      ]).expect(400);
+      expect((res.body as ErrorResponse).message).toBe(
+        'El producto seleccionado no es parte del catálogo del premio especial',
+      );
+      expect(await ordersCountFor(token)).toBe(before);
+    });
+
+    it('canjear un premio NORMAL con el producto del catálogo especial (specialReward, no redeemableWithStars) se rechaza con 400', async () => {
+      const { token } = await register('normal-catalogo-cruzado');
+      const created = await createOrder(token, [
+        { menuItemId: itemMediumId, quantity: 1 }, // 50 → hito 5 (normal)
+      ]).expect(201);
+      await deliverOrder(((created.body as Envelope).data as OrderData).id);
+      const progress = await getProgress(token);
+      const normalRewardId = progress.premiosDisponibles.find(
+        (p) => !p.esEspecial,
+      )!.id;
+
+      const res = await createOrder(token, [
+        {
+          menuItemId: itemSpecialId, // specialReward=true, redeemableWithStars=false
+          quantity: 1,
+          rewardRedemptionId: normalRewardId,
+        },
+      ]).expect(400);
+      expect((res.body as ErrorResponse).message).toBe(
+        'El producto seleccionado no es canjeable con estrellas',
+      );
+    });
+
+    it('canjear un premio especial con el producto correcto (specialReward=true) funciona: precio forzado a 0', async () => {
+      const { token } = await register('especial-ok');
+      const created = await createOrder(token, [
+        { menuItemId: itemBigId, quantity: 2 }, // 20 estrellas → incluye el hito especial (15)
+      ]).expect(201);
+      await deliverOrder(((created.body as Envelope).data as OrderData).id);
+      const progress = await getProgress(token);
+      const specialRewardId = progress.premiosDisponibles.find(
+        (p) => p.esEspecial,
+      )!.id;
+
+      const redeemed = await createOrder(token, [
+        {
+          menuItemId: itemSpecialId,
+          quantity: 1,
+          rewardRedemptionId: specialRewardId,
+        },
+      ]).expect(201);
+      const order = (redeemed.body as Envelope).data as OrderData;
+      expect(order.items[0].unitPrice).toBe(0);
+
+      const stored = await rewardRedemptionsRepo.findOne({
+        where: { id: specialRewardId },
+      });
+      expect(stored!.usedAt).not.toBeNull();
+      expect(stored!.menuItemId).toBe(itemSpecialId);
+    });
+  });
+
+  describe('Borrar un RewardMilestone no rompe premios ya otorgados con ese umbral (snapshot, no FK)', () => {
+    it('crea un hito temporal, otorga un premio con él, lo borra y confirma que el premio sigue intacto', async () => {
+      const temp = await request(app.getHttpServer())
+        .post('/reward-milestones')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ starsRequired: 3 })
+        .expect(201);
+      const tempMilestoneId = (
+        (temp.body as Envelope).data as RewardMilestoneData
+      ).id;
+
+      const { token, userId } = await register('milestone-borrado');
+      const created = await createOrder(token, [
+        { menuItemId: itemSmallId, quantity: 6 }, // 30 → 3 estrellas → hito temporal
+      ]).expect(201);
+      await deliverOrder(((created.body as Envelope).data as OrderData).id);
+
+      let progress = await getProgress(token);
+      const grantedId = progress.premiosDisponibles.find(
+        (p) => !p.esEspecial,
+      )!.id;
+
+      await request(app.getHttpServer())
+        .delete(`/reward-milestones/${tempMilestoneId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      // El hito ya no existe, pero el premio otorgado (snapshot en milestoneStars) sigue ahí.
+      const stillThere = await rewardRedemptionsRepo.findOne({
+        where: { id: grantedId },
+      });
+      expect(stillThere).not.toBeNull();
+      expect(stillThere!.milestoneStars).toBe(3);
+
+      progress = await getProgress(token);
+      expect(progress.premiosDisponibles.some((p) => p.id === grantedId)).toBe(
+        true,
+      );
+
+      // recalculateForUser sigue funcionando sin el hito borrado (no revienta).
+      await rewardsService.recalculateForUser(userId);
+    });
+  });
+
   describe('Distinción createdAt (multiplicador de promoción) vs deliveredAt (mes calendario)', () => {
-    it('un pedido entregado FUERA del mes actual no cuenta, aunque se haya creado hoy', async () => {
-      const { token, userId } = await register('temporal-fuera-mes');
-      const created = await createOrder(token, [
-        { menuItemId: itemBigId, quantity: 1 }, // 100 → normalmente 1 premio
-      ]).expect(201);
-      const orderId = ((created.body as Envelope).data as OrderData).id;
-
-      // Se entrega "de verdad" (fuera del mes actual) manipulando la fila
-      // directamente: no hay forma de retroceder deliveredAt vía la API.
-      const outsideCurrentMonth = new Date();
-      outsideCurrentMonth.setUTCMonth(outsideCurrentMonth.getUTCMonth() - 2);
-      await ordersRepo.update(orderId, {
-        status: OrderStatus.ENTREGADO,
-        deliveredAt: outsideCurrentMonth,
-      });
-
-      await rewardsService.recalculateForUser(userId);
-
-      const progress = await getProgress(token);
-      expect(progress.estrellasParaProximoPremio).toBe(0);
-      expect(progress.premiosDisponibles).toHaveLength(0);
-    });
-
-    it('un pedido con createdAt viejo pero deliveredAt de este mes SÍ cuenta (el mes lo decide deliveredAt)', async () => {
-      const { token, userId } = await register('temporal-createdat-viejo');
-      const created = await createOrder(token, [
-        { menuItemId: itemBigId, quantity: 1 },
-      ]).expect(201);
-      const orderId = ((created.body as Envelope).data as OrderData).id;
-
-      const oldCreatedAt = new Date('2020-03-10T12:00:00.000Z');
-      await ordersRepo.update(orderId, {
-        status: OrderStatus.ENTREGADO,
-        deliveredAt: new Date(),
-        createdAt: oldCreatedAt,
-      });
-
-      await rewardsService.recalculateForUser(userId);
-
-      const progress = await getProgress(token);
-      expect(progress.premiosDisponibles).toHaveLength(1);
-    });
-
     it('el multiplicador de una promoción se aplica según createdAt (día de la compra), no deliveredAt (día de entrega)', async () => {
       const promoStart = '2020-06-01';
       const promoEnd = '2020-06-30';
@@ -723,9 +1015,9 @@ describe('Rewards — programa de estrellas (e2e)', () => {
       await rewardsService.recalculateForUser(userId);
 
       const progress = await getProgress(token);
-      // 50 * 3 = 150 pesados / 10 = 15 estrellas → floor(15/10) = 1 premio.
-      expect(progress.premiosDisponibles).toHaveLength(1);
-      expect(progress.estrellasParaProximoPremio).toBe(5); // 15 % 10
+      // 50 * 3 = 150 pesados / 10 = 15 estrellas → cruza los 3 hitos (5/8/15).
+      expect(progress.estrellasDelMes).toBe(15);
+      expect(progress.premiosDisponibles).toHaveLength(3);
 
       // La promoción vigente HOY no es esta (es de 2020): "promocionActiva"
       // (para mostrar al cliente) y el peso histórico del multiplicador son
@@ -736,8 +1028,8 @@ describe('Rewards — programa de estrellas (e2e)', () => {
     });
   });
 
-  describe('PATCH /menu/items/:id — redeemableWithStars', () => {
-    it('permite activar redeemableWithStars en un producto existente', async () => {
+  describe('PATCH /menu/items/:id — redeemableWithStars y specialReward', () => {
+    it('permite activar ambos switches de forma independiente en un producto existente', async () => {
       const res = await request(app.getHttpServer())
         .patch(`/menu/items/${itemMediumId}`)
         .set('Authorization', `Bearer ${adminToken}`)
@@ -746,6 +1038,7 @@ describe('Rewards — programa de estrellas (e2e)', () => {
       expect((res.body as Envelope).data as MenuItemData).toMatchObject({
         id: itemMediumId,
         redeemableWithStars: true,
+        specialReward: false,
       });
 
       const list = await request(app.getHttpServer())
@@ -758,7 +1051,7 @@ describe('Rewards — programa de estrellas (e2e)', () => {
       expect(item!.redeemableWithStars).toBe(true);
     });
 
-    it('PATCH parcial de otro campo no pisa redeemableWithStars (merge, no Object.assign)', async () => {
+    it('PATCH parcial de otro campo no pisa redeemableWithStars/specialReward (merge, no Object.assign)', async () => {
       const res = await request(app.getHttpServer())
         .patch(`/menu/items/${itemMediumId}`)
         .set('Authorization', `Bearer ${adminToken}`)
@@ -885,12 +1178,6 @@ describe('Rewards — programa de estrellas (e2e)', () => {
     });
 
     describe('Caso límite: fechas que se tocan en un mismo día', () => {
-      // Mutation testing del @tester encontró que invertir los operadores de
-      // `assertNoOverlap` (<=/>= por </>) dejaba la suite completa en verde
-      // (31/31) — ningún test cubría el caso exacto en que el endDate de una
-      // promoción coincide con el startDate de otra. El criterio de negocio
-      // (comparación inclusiva: se consideran solapadas) no cambia, esto solo
-      // cierra el gap de cobertura.
       let baseId: string;
 
       it('crea la promoción base del caso límite (1-15 de abril)', async () => {
@@ -915,7 +1202,7 @@ describe('Rewards — programa de estrellas (e2e)', () => {
           .send({
             label: 'QA límite toca por la derecha',
             multiplier: 1.5,
-            startDate: `${year}-04-15`, // mismo día que el endDate de la base
+            startDate: `${year}-04-15`,
             endDate: `${year}-04-20`,
           })
           .expect(400);
@@ -932,7 +1219,7 @@ describe('Rewards — programa de estrellas (e2e)', () => {
             label: 'QA límite toca por la izquierda',
             multiplier: 1.5,
             startDate: `${year}-03-25`,
-            endDate: `${year}-04-01`, // mismo día que el startDate de la base
+            endDate: `${year}-04-01`,
           })
           .expect(400);
         expect((res.body as ErrorResponse).message).toBe(

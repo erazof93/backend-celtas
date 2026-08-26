@@ -1414,3 +1414,145 @@ reproducibles contra una BD con datos residuales. El único hallazgo ⚠️ que 
 real (rango inclusivo de fechas solapadas en el límite exacto de un día) no es bloqueante, pero vale
 la pena cerrarlo en una vuelta futura dado que ya se demostró que el código es mutable ahí sin que
 ningún test lo detecte hoy.
+
+## Rewards — rework a hitos irregulares (`RewardMilestone`) + premio especial (`specialReward`)
+
+> Reemplaza el esquema viejo "cada `estrellas_por_premio` estrellas parejas = 1 premio" (setting
+> única, ya removida de `SettingsService`) por una entidad configurable `RewardMilestone`
+> (`starsRequired` único, `isSpecial`) — lista de hitos irregulares (ej. 5/8/15) donde el/los hitos
+> con `isSpecial=true` reparten de un catálogo de canje EXCLUSIVO (`MenuItem.specialReward`, columna
+> nueva e independiente de `redeemableWithStars`). `RewardRedemption` gana snapshot
+> `milestoneStars`/`isSpecial` (NO FK a `RewardMilestone`): borrar o editar un hito después nunca
+> corrompe premios ya otorgados. CRUD admin nuevo `/reward-milestones` (a diferencia de
+> `StarPromotion`, sí admite `DELETE` real), con el mismo patrón de traducción de violación UNIQUE
+> (23505) a 400 ya usado en `menu.service.ts`. `OrdersService.buildItems` relaja su chequeo
+> pre-transacción (sin lock) a `redeemableWithStars OR specialReward`, dejando la validación real de
+> CUÁL catálogo aplica (según `redemption.isSpecial`) para `RewardsService.validateForOrder`, dentro
+> de la transacción con lock — nunca se confía en el cliente.
+>
+> **Auditado por `@tester` (pase independiente, con Docker/Postgres local real y mutación real sobre
+> los 3 puntos más frágiles) — veredicto "LISTO".**
+
+- [x] `pnpm run build` compila sin errores (confirmado de forma independiente)
+- [x] `pnpm run lint` limpio, exit 0 (confirmado de forma independiente)
+- [x] `npx tsc --noEmit`: exactamente los mismos 14 errores preexistentes (auth/banners/menu/users
+      specs y algunos e2e), ninguno relacionado a rewards/menu-item/settings/orders — confirmado
+      línea por línea
+- [x] `pnpm run test`: 409/409 en verde (23 suites) — confirmado de forma independiente
+- [x] `pnpm run test:e2e`: 342/342 en verde (13 suites) contra Postgres local real — confirmado de
+      forma independiente. `test/rewards.e2e-spec.ts` tiene 44 tests (contados directamente en el
+      archivo, no solo el número reportado)
+- [x] Migración `AddRewardMilestonesAndSpecialTier1787764736964` verificada de forma independiente
+      con `docker exec celtas-db psql` contra Postgres local real: `\d reward_milestones` (UNIQUE en
+      `starsRequired`), `\d reward_redemptions` (`milestoneStars`/`isSpecial` nuevos, sin FK),
+      `\d menu_items` (`specialReward boolean NOT NULL DEFAULT false`) coinciden 1:1 con las
+      entidades; `SELECT name FROM migrations ORDER BY id DESC` la confirma registrada;
+      `migration:generate` posterior (intento real contra la BD) reporta "No changes in database
+      schema were found" — cero drift
+- [x] **Punto 1 — idempotencia real de `recalculateForUser`** (no otorga el mismo hito 2 veces en el
+      mismo mes aunque se llame repetidas veces): cubierto con test unitario directo y con e2e real
+      (3 pedidos seguidos, verificando premio a premio) — **mutación real por `@tester`**: se
+      deshabilitó el guard de dedupe (`!grantedThresholds.has(...)` forzado a `!false`) — rompió
+      exactamente 2/26 tests unitarios y 2/44 tests e2e (duplicación real de premios confirmada:
+      `premiosDisponibles` pasó de 3 a 6 y de 1 a 2 respectivamente), ningún otro test se vio
+      afectado. Mutación revertida, `git diff --stat` confirma el archivo idéntico al estado previo,
+      suite completa vuelve a 409/409 unit + 342/342 e2e
+- [x] **Punto 2 — varios hitos alcanzados de una sola pasada** (20 estrellas con hitos 5/8/15):
+      cubierto con test unitario (`toHaveLength(3)`, umbrales `[5,8,15]`, un solo `manager.save` con
+      un array) y con e2e real (pedido de S/200 → 20 estrellas → 3 premios, 1 especial) — confirmado
+      que la generación ocurre en un solo `save`, no en un loop con llamadas separadas
+- [x] **Punto 3 — el excedente no genera nada extra ni se arrastra al mes siguiente**: cubierto con
+      test unitario (S/1000 → 100 estrellas → sigue siendo solo 3 premios) y con e2e real que
+      simula el corte de mes manipulando `deliveredAt` directamente vía `ordersRepo.update` (un
+      pedido de 20-estrellas "entregado" el mes pasado aporta `estrellasDelMes: 0` y
+      `premiosDisponibles: []` al mes actual, confirmando que el conteo realmente se reinicia por
+      mes calendario y no hay arrastre)
+- [x] **Punto 4 — catálogos cruzados en `validateForOrder`** (premio especial rechaza un producto
+      SOLO `redeemableWithStars`, y viceversa: premio normal rechaza un producto SOLO
+      `specialReward`): las 4 combinaciones cubiertas con test unitario directo Y con e2e real
+      (productos y premios reales contra Postgres) en ambas direcciones, incluyendo el camino feliz
+      de cada catálogo — **mutación real por `@tester`**: se reemplazó la selección de catálogo por
+      `menuItem?.redeemableWithStars` fijo (ignorando `redemption.isSpecial`) — rompió exactamente
+      2/26 tests unitarios y 2/44 tests e2e (permitía canjear un premio especial con un producto
+      `redeemableWithStars`-only, exactamente el bypass de exclusividad que el chequeo previene).
+      Mutación revertida, `git diff --stat` confirma el archivo idéntico al estado previo, suite
+      completa vuelve a 409/409 unit + 342/342 e2e
+- [x] **Punto 5 — borrar un `RewardMilestone` no rompe premios ya otorgados con ese umbral**
+      (snapshot, no FK): test e2e real crea un hito temporal (`starsRequired: 3`), otorga un premio
+      real con él, lo borra vía `DELETE /reward-milestones/:id`, y confirma que el
+      `RewardRedemption` sigue existiendo con `milestoneStars: 3` intacto, sigue apareciendo en
+      `premiosDisponibles`, y que `recalculateForUser` sigue funcionando sin el hito borrado (no
+      revienta) — confirmado además leyendo la entidad (`milestoneStars`/`isSpecial` son columnas
+      propias, sin `@ManyToOne`/FK a `RewardMilestone`)
+- [x] **Punto 6 — `POST /reward-milestones` con `starsRequired` repetido devuelve 400, no 500**:
+      cubierto con test unitario (mock de `QueryFailedError` con `code: '23505'`) y con e2e real
+      contra Postgres (constraint real de la BD, no un mock) — **mutación real por `@tester`**: se
+      forzó `isUniqueViolation` a devolver siempre `false` — rompió exactamente 2/12 tests unitarios
+      Y, verificado contra el servidor y Postgres reales, produjo un **500 real** de Postgres
+      (`duplicate key value violates unique constraint "UQ_f15ca86e0ce59c45c2852beda74"`) propagado
+      sin capturar — 2/44 tests e2e lo detectan, ningún otro test se vio afectado. Confirma que el
+      catch no es cosmético: evita un 500 real, no solo un mensaje distinto. Mutación revertida,
+      `git diff --stat` confirma el archivo idéntico al estado previo, suite completa vuelve a
+      409/409 unit + 342/342 e2e
+- [x] Lectura de código confirmada: `OrdersService.buildItems` (línea ~586) relajó el chequeo
+      pre-transacción de `if (!menuItem.redeemableWithStars)` a
+      `if (!menuItem.redeemableWithStars && !menuItem.specialReward)` — el fix es correcto y
+      suficiente: este chequeo sin lock solo descarta productos que no participan de NINGÚN
+      catálogo; la validación real de CUÁL catálogo aplica según `redemption.isSpecial` ocurre
+      exclusivamente dentro de `validateForOrder` (con lock, dentro de la transacción), donde nunca
+      se confía en el cliente
+- [x] Grep completo del repo por el esquema viejo (`estrellas_por_premio`, `estrellasPorPremio`,
+      `ESTRELLAS_POR_PREMIO`, `getEstrellasPorPremio`, case-insensitive): 0 resultados en código de
+      producción o tests — las únicas 2 apariciones restantes son comentarios/documentación
+      histórica (`reward-redemption.entity.ts`, explicando por qué `milestoneStars` puede ser
+      `null` en premios viejos, y `ROADMAP.md`/`docs/testing-checklist.md`, registro histórico de
+      auditorías previas)
+- [x] Seguridad: `POST /auth/register` (curl real contra el servidor y Postgres local reales)
+      confirma que `password` no aparece en el JSON de la respuesta. `GET/POST/PATCH/DELETE
+      /reward-milestones`: 401 sin token y 403 con rol `cliente` confirmados con curl real contra
+      el servidor (no solo e2e automatizado)
+- [x] Documentación: confirmado contra `/docs-json` real (servidor levantado) que los 5 endpoints de
+      `/reward-milestones` documentan `security: [{bearer:[]}]` y los status codes correctos
+      (200/201/400/401/403/404 según aplica); `CreateRewardMilestoneDto`/`UpdateRewardMilestoneDto`
+      documentan `starsRequired`/`isSpecial` con ejemplos
+- [x] Prueba real end-to-end adicional (no solo la suite automatizada) contra el servidor
+      (`pnpm run start:dev`) y Postgres local reales: admin real creado directamente en la BD,
+      `POST /reward-milestones` con `starsRequired: 77` → `201`; repetir el mismo `starsRequired` →
+      `400` exacto (`"Ya existe un premio configurado para esa cantidad de estrellas"`), nunca un
+      500. Datos de prueba (usuarios y el hito `77`) borrados de la BD al finalizar
+
+⚠️ Riesgos / casos borde no cubiertos (bajo riesgo, no bloqueantes):
+- **Dato huérfano en la BD, no un bug de código**: la migración no borra la fila `settings` con
+  `key = 'estrellas_por_premio'` que había sembrado la versión anterior del feature (confirmado con
+  `docker exec celtas-db psql`: la fila sigue existiendo con `value: '10'`). Nada en el código la
+  lee (`getEstrellasPorPremio()` fue removido de `SettingsService`), así que no tiene efecto
+  funcional ni de seguridad (no está en el whitelist de `GET /settings/public`), pero `GET /settings`
+  (admin, sin filtrar) la seguirá listando indefinidamente como una setting "fantasma" y editable sin
+  ningún efecto — confuso para quien use el panel admin. Vale la pena agregar
+  `DELETE FROM settings WHERE key = 'estrellas_por_premio'` al `up()` de una migración futura (con
+  su reseed correspondiente en `down()` para mantener la reversibilidad).
+- No hay ninguna prueba de concurrencia real (dos requests simultáneas) para el lock pesimista de
+  `recalculateForUser`/`validateForOrder` con el nuevo esquema de hitos — mismo gap ya documentado
+  para la versión anterior de este módulo, no una regresión nueva.
+- No hay test explícito de un `RewardMilestone` con más de un `isSpecial=true` a la vez (ej. dos
+  hitos especiales, 15 y 20) — el código no lo prohíbe explícitamente (no hay ninguna regla de
+  negocio que limite a un solo hito especial) y en principio funcionaría igual (cada uno reparte del
+  mismo catálogo `specialReward`), pero no está ejercitado con más de un hito especial simultáneo en
+  ningún test.
+- No hay test de `GET /reward-milestones` (lista) devolviendo un array vacío cuando no hay ningún
+  hito configurado (ej. justo después de un `DELETE` de todos los hitos) — el catálogo de
+  `GET /rewards/catalog`/`GET /rewards/progress` debería degradar con gracia (`hitos: []`), pero no
+  está verificado explícitamente con la tabla completamente vacía.
+
+**Veredicto: LISTO.** Todo lo crítico pasa: build/lint limpios, `tsc --noEmit` sin errores nuevos,
+409/409 unit y 342/342 e2e confirmados de forma independiente contra Postgres local real, migración
+verificada 1:1 sin drift, los 6 puntos de negocio pedidos para esta auditoría verificados uno por
+uno (3 de ellos además con mutación real que confirma que la cobertura es real, no cosmética:
+idempotencia de `recalculateForUser`, exclusividad de catálogos en `validateForOrder`, y traducción
+de la violación UNIQUE a 400 en vez de 500 — este último confirmado con un 500 real de Postgres al
+deshabilitar el catch), lectura de código confirmando que el fix de `OrdersService.buildItems` es
+correcto y suficiente, grep completo sin rastros del esquema viejo en código de producción,
+seguridad y Swagger confirmados con evidencia real (curl contra el servidor, no solo mocks). El
+único hallazgo real es un dato huérfano no destructivo en la tabla `settings` (fila
+`estrellas_por_premio` sin efecto funcional, ya no leída por ningún código) — no bloqueante, pero
+vale la pena limpiarla en una migración futura. Sin bloqueantes.

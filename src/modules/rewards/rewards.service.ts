@@ -18,16 +18,23 @@ import { MenuItem } from '../menu/entities/menu-item.entity';
 import { Order, OrderStatus } from '../orders/entities/order.entity';
 import { SettingsService } from '../settings/settings.service';
 import { User } from '../users/entities/user.entity';
+import { RewardMilestone } from './entities/reward-milestone.entity';
 import { RewardRedemption } from './entities/reward-redemption.entity';
 import { StarPromotion } from './entities/star-promotion.entity';
 
 /** Vigencia de un premio recién ganado: 15 días desde `earnedAt`. */
 const REWARD_EXPIRATION_DAYS = 15;
 
+export interface RewardMilestoneProgress {
+  estrellasRequeridas: number;
+  alcanzado: boolean;
+  esEspecial: boolean;
+}
+
 export interface RewardsProgress {
-  estrellasParaProximoPremio: number;
-  estrellasPorPremio: number;
-  premiosDisponibles: { id: string; expiresAt: Date }[];
+  estrellasDelMes: number;
+  hitos: RewardMilestoneProgress[];
+  premiosDisponibles: { id: string; expiresAt: Date; esEspecial: boolean }[];
   promocionActiva: {
     label: string;
     multiplier: number;
@@ -44,24 +51,32 @@ export interface RewardCatalogItem {
 }
 
 /**
- * Módulo Rewards (programa de "Estrellas").
- * - Por cada S/`soles_por_estrella` de subtotal (sin envío) en pedidos `entregado`
- *   del mes calendario actual (hora de Lima), el cliente gana 1 estrella; al
- *   juntar `estrellas_por_premio` gana un `RewardRedemption` con 15 días de
- *   vigencia. El conteo se reinicia cada mes; los premios ya ganados no se
- *   pierden (no hay cron: el filtro por mes calendario ya logra el efecto).
- * - El subtotal de cada pedido se deriva sumando `OrderItem.subtotal` (snapshot,
- *   ya excluye envío y no se ve afectado por el descuento de un cupón, que se
- *   aplica al total del pedido, no a los ítems) — más preciso que reconstruirlo
- *   desde `order.total`, que sí mezcla envío y descuento.
- * - El multiplicador de una `StarPromotion` activa pesa el subtotal según el día
- *   en que se hizo el pedido (`order.createdAt`), no el día de entrega.
+ * Módulo Rewards (programa de "Estrellas"), esquema de HITOS irregulares
+ * (ej. 5, 8, 15) en vez de una sola cifra "cada N estrellas = 1 premio".
+ * - Por cada S/`soles_por_estrella` de subtotal (sin envío) en pedidos
+ *   `entregado` del mes calendario actual (hora de Lima), el cliente gana 1
+ *   estrella. Cada `RewardMilestone` se puede ganar como MÁXIMO una vez por
+ *   mes calendario (tope de un tablero por mes, sin arrastre): el excedente
+ *   sobre el hito más alto no genera nada extra ni se guarda para el mes
+ *   siguiente. El conteo se reinicia cada mes; los premios ya ganados no se
+ *   pierden.
+ * - El subtotal de cada pedido se deriva sumando `OrderItem.subtotal`
+ *   (snapshot, ya excluye envío y no se ve afectado por el descuento de un
+ *   cupón, que se aplica al total del pedido, no a los ítems) — más preciso
+ *   que reconstruirlo desde `order.total`, que sí mezcla envío y descuento.
+ * - El multiplicador de una `StarPromotion` activa pesa el subtotal según el
+ *   día en que se hizo el pedido (`order.createdAt`), no el día de entrega.
+ * - Un hito con `isSpecial=true` reparte del catálogo exclusivo
+ *   `MenuItem.specialReward`; los demás reparten del catálogo normal
+ *   `MenuItem.redeemableWithStars`. Son dos listas separadas, no una unión.
  */
 @Injectable()
 export class RewardsService {
   constructor(
     @InjectRepository(RewardRedemption)
     private readonly rewardRedemptionsRepository: Repository<RewardRedemption>,
+    @InjectRepository(RewardMilestone)
+    private readonly rewardMilestonesRepository: Repository<RewardMilestone>,
     @InjectRepository(MenuItem)
     private readonly menuItemsRepository: Repository<MenuItem>,
     private readonly dataSource: DataSource,
@@ -70,12 +85,12 @@ export class RewardsService {
 
   // ── Cliente ──────────────────────────────────────────────────────────────────
 
-  /** Progreso hacia el próximo premio + premios disponibles + promoción vigente hoy. */
+  /** Progreso de cada hito del mes + premios disponibles + promoción vigente hoy. */
   async getProgress(userId: string): Promise<RewardsProgress> {
-    const [solesPorEstrella, estrellasPorPremio] = await Promise.all([
-      this.settingsService.getSolesPorEstrella(),
-      this.settingsService.getEstrellasPorPremio(),
-    ]);
+    const solesPorEstrella = await this.settingsService.getSolesPorEstrella();
+    const milestones = await this.rewardMilestonesRepository.find({
+      order: { starsRequired: 'ASC' },
+    });
 
     const { start, end } = this.currentMonthRangeInLima();
     const { estrellasDelMes, promotions } = await this.monthlyStats(
@@ -84,7 +99,6 @@ export class RewardsService {
       start,
       end,
       solesPorEstrella,
-      estrellasPorPremio,
     );
 
     const now = new Date();
@@ -100,11 +114,16 @@ export class RewardsService {
       ) ?? null;
 
     return {
-      estrellasParaProximoPremio: estrellasDelMes % estrellasPorPremio,
-      estrellasPorPremio,
+      estrellasDelMes,
+      hitos: milestones.map((m) => ({
+        estrellasRequeridas: m.starsRequired,
+        alcanzado: estrellasDelMes >= m.starsRequired,
+        esEspecial: m.isSpecial,
+      })),
       premiosDisponibles: disponibles.map((r) => ({
         id: r.id,
         expiresAt: r.expiresAt,
+        esEspecial: r.isSpecial,
       })),
       promocionActiva: activePromo
         ? {
@@ -116,10 +135,16 @@ export class RewardsService {
     };
   }
 
-  /** Catálogo de canje: productos activos y marcados como canjeables con estrellas. */
-  async getCatalog(): Promise<RewardCatalogItem[]> {
+  /**
+   * Catálogo de canje. `especial=false` (default): productos
+   * `redeemableWithStars=true`. `especial=true`: productos
+   * `specialReward=true` — lista EXCLUYENTE, no una unión de ambas.
+   */
+  async getCatalog(especial = false): Promise<RewardCatalogItem[]> {
     const items = await this.menuItemsRepository.find({
-      where: { redeemableWithStars: true, available: true },
+      where: especial
+        ? { specialReward: true, available: true }
+        : { redeemableWithStars: true, available: true },
       order: { name: 'ASC' },
     });
     return items.map(({ id, name, description, price, image }) => ({
@@ -134,16 +159,20 @@ export class RewardsService {
   // ── Generación automática (disparada tras cada entrega) ─────────────────────
 
   /**
-   * Recalcula las estrellas del mes calendario actual (hora de Lima) y genera
-   * los `RewardRedemption` que falten. Lock pesimista sobre el usuario (mismo
-   * patrón que `CouponsService.checkAndGenerateForUser`) para serializar
-   * llamadas concurrentes y evitar generar premios duplicados.
+   * Recalcula las estrellas del mes calendario actual (hora de Lima) y otorga,
+   * por cada hito cuyo umbral ya se alcanzó este mes Y todavía no se le
+   * otorgó un premio ESE MES (comparando por `milestoneStars`, no por
+   * cantidad), un `RewardRedemption` nuevo. Naturalmente idempotente: llamarlo
+   * dos veces el mismo mes sin estrellas nuevas no genera nada de más. Lock
+   * pesimista sobre el usuario (mismo patrón que
+   * `CouponsService.checkAndGenerateForUser`) para serializar llamadas
+   * concurrentes.
    */
   async recalculateForUser(userId: string): Promise<void> {
-    const [solesPorEstrella, estrellasPorPremio] = await Promise.all([
-      this.settingsService.getSolesPorEstrella(),
-      this.settingsService.getEstrellasPorPremio(),
-    ]);
+    const solesPorEstrella = await this.settingsService.getSolesPorEstrella();
+    const milestones = await this.rewardMilestonesRepository.find({
+      order: { starsRequired: 'ASC' },
+    });
 
     await this.dataSource.transaction(async (manager) => {
       const user = await manager.findOne(User, {
@@ -153,28 +182,33 @@ export class RewardsService {
       if (!user) return;
 
       const { start, end } = this.currentMonthRangeInLima();
-      const { premiosQueDeberiaTener } = await this.monthlyStats(
+      const { estrellasDelMes } = await this.monthlyStats(
         manager,
         userId,
         start,
         end,
         solesPorEstrella,
-        estrellasPorPremio,
       );
 
-      const alreadyGenerated = await manager.count(RewardRedemption, {
-        where: {
-          userId,
-          earnedAt: And(MoreThanOrEqual(start), LessThan(end)),
-        },
+      const alreadyGranted = await manager.find(RewardRedemption, {
+        where: { userId, earnedAt: And(MoreThanOrEqual(start), LessThan(end)) },
       });
+      const grantedThresholds = new Set(
+        alreadyGranted
+          .map((r) => r.milestoneStars)
+          .filter((v): v is number => v !== null),
+      );
 
-      const toCreate = premiosQueDeberiaTener - alreadyGenerated;
-      if (toCreate <= 0) return;
+      const toGrant = milestones.filter(
+        (m) =>
+          estrellasDelMes >= m.starsRequired &&
+          !grantedThresholds.has(m.starsRequired),
+      );
+      if (toGrant.length === 0) return;
 
       const now = new Date();
       const expiresAt = this.addDays(now, REWARD_EXPIRATION_DAYS);
-      const rewards = Array.from({ length: toCreate }, () =>
+      const rewards = toGrant.map((m) =>
         manager.create(RewardRedemption, {
           userId,
           earnedAt: now,
@@ -182,6 +216,8 @@ export class RewardsService {
           usedAt: null,
           usedInOrderId: null,
           menuItemId: null,
+          milestoneStars: m.starsRequired,
+          isSpecial: m.isSpecial,
         }),
       );
       await manager.save(RewardRedemption, rewards);
@@ -191,10 +227,12 @@ export class RewardsService {
   // ── Canje dentro de la transacción del pedido ───────────────────────────────
 
   /**
-   * Valida y bloquea el premio DENTRO de la transacción de creación del pedido
-   * (mismo patrón que `CouponsService.applyToOrder`). No lo marca usado todavía:
-   * `OrdersService` guarda primero el pedido y luego llama a `markUsed`, para
-   * que `usedInOrderId` apunte a un pedido que ya existe.
+   * Valida y bloquea el premio DENTRO de la transacción de creación del
+   * pedido (mismo patrón que `CouponsService.applyToOrder`). No lo marca
+   * usado todavía: `OrdersService` guarda primero el pedido y luego llama a
+   * `markUsed`, para que `usedInOrderId` apunte a un pedido que ya existe.
+   * El catálogo contra el que se valida el producto depende de si el premio
+   * es especial (`redemption.isSpecial`) — nunca se confía en el cliente.
    */
   async validateForOrder(
     manager: EntityManager,
@@ -219,9 +257,14 @@ export class RewardsService {
     const menuItem = await manager.findOne(MenuItem, {
       where: { id: params.menuItemId },
     });
-    if (!menuItem || !menuItem.redeemableWithStars) {
+    const eligible = redemption.isSpecial
+      ? menuItem?.specialReward
+      : menuItem?.redeemableWithStars;
+    if (!eligible) {
       throw new BadRequestException(
-        'El producto seleccionado no es canjeable con estrellas',
+        redemption.isSpecial
+          ? 'El producto seleccionado no es parte del catálogo del premio especial'
+          : 'El producto seleccionado no es canjeable con estrellas',
       );
     }
     return redemption;
@@ -267,9 +310,9 @@ export class RewardsService {
   // ── Helpers privados ─────────────────────────────────────────────────────────
 
   /**
-   * Estrellas/premios del mes calendario actual para un usuario: suma el
-   * subtotal (sin envío) de los pedidos `entregado` con `deliveredAt` dentro
-   * del rango, pesado por el multiplicador de la `StarPromotion` activa el día
+   * Estrellas del mes calendario actual para un usuario: suma el subtotal
+   * (sin envío) de los pedidos `entregado` con `deliveredAt` dentro del
+   * rango, pesado por el multiplicador de la `StarPromotion` activa el día
    * de CADA pedido (`order.createdAt`, no `deliveredAt`).
    */
   private async monthlyStats(
@@ -278,10 +321,8 @@ export class RewardsService {
     start: Date,
     end: Date,
     solesPorEstrella: number,
-    estrellasPorPremio: number,
   ): Promise<{
     estrellasDelMes: number;
-    premiosQueDeberiaTener: number;
     promotions: StarPromotion[];
   }> {
     const [orders, promotions] = await Promise.all([
@@ -309,11 +350,8 @@ export class RewardsService {
     const estrellasDelMes = Math.floor(
       this.round2(weightedSubtotal) / solesPorEstrella,
     );
-    const premiosQueDeberiaTener = Math.floor(
-      estrellasDelMes / estrellasPorPremio,
-    );
 
-    return { estrellasDelMes, premiosQueDeberiaTener, promotions };
+    return { estrellasDelMes, promotions };
   }
 
   /** Multiplicador vigente en la fecha (Lima) dada; 1 si ninguna promoción activa la cubre. */
