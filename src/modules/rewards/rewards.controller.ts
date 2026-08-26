@@ -41,7 +41,7 @@ export class RewardsController {
   @ApiOperation({
     summary: 'Catálogo de productos canjeables con estrellas (cliente)',
     description:
-      'Sin especial=true: productos redeemableWithStars=true y available=true. Con especial=true: productos specialReward=true y available=true — lista EXCLUYENTE, no una unión de ambas.',
+      'Sin especial=true: productos redeemableWithStars=true. Con especial=true: productos specialReward=true — lista EXCLUYENTE, no una unión de ambas. No filtra por available: incluye productos exclusivos del programa de premios que nunca se venden sueltos en el menú.',
   })
   @ApiQuery({
     name: 'especial',

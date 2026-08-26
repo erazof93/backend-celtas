@@ -120,7 +120,7 @@ describe('RewardsService', () => {
   });
 
   describe('getCatalog', () => {
-    it('sin especial: filtra por redeemableWithStars y available', async () => {
+    it('sin especial: filtra solo por redeemableWithStars, sin importar available', async () => {
       menuItemsRepo.find.mockResolvedValue([
         {
           id: 'a',
@@ -134,7 +134,7 @@ describe('RewardsService', () => {
       const result = await service.getCatalog();
 
       expect(menuItemsRepo.find).toHaveBeenCalledWith({
-        where: { redeemableWithStars: true, available: true },
+        where: { redeemableWithStars: true },
         order: { name: 'ASC' },
       });
       expect(result).toEqual([
@@ -142,7 +142,7 @@ describe('RewardsService', () => {
       ]);
     });
 
-    it('con especial=true: filtra por specialReward y available, catálogo EXCLUYENTE', async () => {
+    it('con especial=true: filtra solo por specialReward, catálogo EXCLUYENTE, sin importar available', async () => {
       menuItemsRepo.find.mockResolvedValue([
         {
           id: 'b',
@@ -156,7 +156,7 @@ describe('RewardsService', () => {
       const result = await service.getCatalog(true);
 
       expect(menuItemsRepo.find).toHaveBeenCalledWith({
-        where: { specialReward: true, available: true },
+        where: { specialReward: true },
         order: { name: 'ASC' },
       });
       expect(result).toEqual([
@@ -165,6 +165,36 @@ describe('RewardsService', () => {
           name: 'Combo especial',
           description: null,
           price: 20,
+          image: null,
+        },
+      ]);
+    });
+
+    it('producto EXCLUSIVO del programa (available=false, redeemableWithStars=true) aparece en el catálogo', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        {
+          id: 'c',
+          name: 'Pieza de pollo con papas',
+          description: null,
+          price: 0,
+          image: null,
+          available: false,
+          redeemableWithStars: true,
+        },
+      ]);
+
+      const result = await service.getCatalog();
+
+      expect(menuItemsRepo.find).toHaveBeenCalledWith({
+        where: { redeemableWithStars: true },
+        order: { name: 'ASC' },
+      });
+      expect(result).toEqual([
+        {
+          id: 'c',
+          name: 'Pieza de pollo con papas',
+          description: null,
+          price: 0,
           image: null,
         },
       ]);

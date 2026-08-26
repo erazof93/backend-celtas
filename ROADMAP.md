@@ -663,6 +663,15 @@ celtas-backend/
   bloqueante): fila huérfana `estrellas_por_premio` en la tabla `settings`, sin efecto funcional
   (nada la lee), pendiente de limpieza en una migración futura. Detalle completo en
   `docs/testing-checklist.md`, secciones "Rewards" y "Rewards — rework a hitos irregulares".
+- [x] **`available` desacoplado del catálogo/canje de premios**: `GET /rewards/catalog` ya no
+  filtra por `available` (permite productos EXCLUSIVOS del programa, que nunca se venden sueltos en
+  el menú normal); `OrdersService.buildItems` solo exige `available=true` para ítems que NO son un
+  canje (`rewardRedemptionId` ausente). Auditado por `@tester` (pase independiente, mutación real
+  sobre el guard nuevo, prueba manual end-to-end vía curl contra el servidor real) — veredicto
+  **LISTO**: 411 unit + 344 e2e confirmados de forma independiente, grep completo del repo sin
+  ningún otro lugar que dependa de la relación vieja `available AND redeemableWithStars`. Detalle en
+  `docs/testing-checklist.md`, sección "Rewards — `available` desacoplado del catálogo/canje de
+  premios (productos EXCLUSIVOS)".
 
 ---
 

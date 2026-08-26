@@ -42,14 +42,21 @@ export class MenuItem {
   @Column({ type: 'varchar', nullable: true })
   image: string | null;
 
-  /** Si el producto se ofrece en la app. */
+  /**
+   * Si el producto se vende directo en el menú normal de la app. NO afecta
+   * los catálogos de premios (`redeemableWithStars`, `specialReward`): un
+   * producto EXCLUSIVO del programa de estrellas (nunca se vende suelto)
+   * tiene `available=false` y aun así aparece en `GET /rewards/catalog` y
+   * puede canjearse — los tres switches son independientes entre sí.
+   */
   @Column({ type: 'boolean', default: true })
   available: boolean;
 
   /**
    * Si el producto puede canjearse con estrellas del programa de fidelización.
    * El catálogo de canje que ve el cliente (`GET /rewards/catalog`) es
-   * `redeemableWithStars = true AND available = true` — no hay entidad aparte.
+   * `redeemableWithStars = true` — independiente de `available`, no hay
+   * entidad aparte.
    */
   @Column({ type: 'boolean', default: false })
   redeemableWithStars: boolean;
@@ -57,8 +64,8 @@ export class MenuItem {
   /**
    * Si el producto puede canjearse específicamente con el PREMIO ESPECIAL
    * (catálogo exclusivo, `GET /rewards/catalog?especial=true`) —
-   * independiente de `redeemableWithStars`. Un producto puede tener
-   * cualquier combinación de los dos switches.
+   * independiente de `redeemableWithStars` y de `available`. Un producto
+   * puede tener cualquier combinación de los tres switches.
    */
   @Column({ type: 'boolean', default: false })
   specialReward: boolean;

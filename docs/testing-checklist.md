@@ -1556,3 +1556,119 @@ seguridad y Swagger confirmados con evidencia real (curl contra el servidor, no 
 único hallazgo real es un dato huérfano no destructivo en la tabla `settings` (fila
 `estrellas_por_premio` sin efecto funcional, ya no leída por ningún código) — no bloqueante, pero
 vale la pena limpiarla en una migración futura. Sin bloqueantes.
+
+## Rewards — `available` desacoplado del catálogo/canje de premios (productos EXCLUSIVOS)
+
+> Cambio puntual sobre el módulo Rewards ya auditado: antes, `GET /rewards/catalog` filtraba
+> siempre `redeemableWithStars=true AND available=true` (o `specialReward=true AND available=true`
+> con `?especial=true`) — un producto que el negocio quisiera vender EXCLUSIVAMENTE como premio
+> (nunca suelto en el menú normal) no podía existir, porque `available=false` lo sacaba también del
+> catálogo de canje. Ahora `getCatalog()` ya no filtra por `available` en ninguna rama, y
+> `OrdersService.buildItems` solo aplica el guard `"no está disponible"` a ítems que NO traen
+> `rewardRedemptionId` (`if (!item.rewardRedemptionId && !menuItem.available)`) — un ítem de canje
+> se sigue validando por su propio camino (`redeemableWithStars`/`specialReward`, dentro de
+> `validateForOrder` con lock). `available`, `redeemableWithStars` y `specialReward` quedan como 3
+> switches totalmente independientes.
+>
+> **Auditado por `@tester` (pase independiente, contra Docker/Postgres local real ya levantado, con
+> mutación real sobre el punto más frágil del fix, y prueba manual end-to-end adicional vía curl
+> contra el servidor real) — veredicto "LISTO".**
+
+- [x] `pnpm run build` compila sin errores (`nest build`, exit 0) — confirmado de forma
+      independiente
+- [x] `pnpm run test`: 411/411 en verde (23 suites) — confirmado de forma independiente. Incluye
+      el caso nuevo en `orders.service.spec.ts` ("acepta el canje de un producto EXCLUSIVO del
+      programa (available=false, redeemableWithStars=true)") y el caso nuevo en
+      `rewards.service.spec.ts` ("producto EXCLUSIVO del programa (available=false,
+      redeemableWithStars=true) aparece en el catálogo")
+- [x] `pnpm run test:e2e`: 344/344 en verde (13 suites) contra Postgres local real — confirmado de
+      forma independiente (`rewards` 46/46, `orders` 55/55 corridos también de forma aislada).
+      Incluye los 2 casos nuevos de `test/rewards.e2e-spec.ts`: catálogo incluye el producto
+      EXCLUSIVO (`available=false`), y canje real de ese producto acepta con `unitPrice: 0`
+- [x] **(a) Catálogo incluye `available=false`**: confirmado con test automatizado y, además, con
+      curl real contra el servidor (`pnpm run start:dev`) y Postgres local reales — se creó un
+      producto real `available=false, redeemableWithStars=true` vía `POST /menu/items` (admin real)
+      y `GET /rewards/catalog` lo devolvió en la respuesta real:
+      `{"id":"b164fdea-...","name":"QA Manual Exclusivo Pollo",...}` (sin el campo `available` en la
+      respuesta del catálogo, que solo expone `id/name/description/price/image`, igual que antes)
+- [x] **(b) Pedido normal (sin `rewardRedemptionId`) sobre `available=false` sigue rechazado con
+      400**: no es una regresión — el test e2e preexistente `400 si el producto no está disponible`
+      (`test/orders.e2e-spec.ts`) sigue en verde tal cual. Confirmado ADEMÁS con curl real: un
+      producto `available=false` sin `redeemableWithStars` (`QA Manual Oculto`) devolvió
+      `{"success":false,"message":"El producto \"QA Manual Oculto\" no está disponible",
+      "statusCode":400}` real. Verificado también el caso intermedio no cubierto por ningún test
+      automatizado: el MISMO producto EXCLUSIVO (`available=false, redeemableWithStars=true`) SIN
+      `rewardRedemptionId` en el ítem también devuelve 400 (`"El producto \"QA Manual Exclusivo
+      Pollo\" no está disponible"`) — confirma que un producto exclusivo del programa nunca se puede
+      comprar "suelto", solo canjear; el guard `!item.rewardRedemptionId && !menuItem.available` lo
+      cubre correctamente en ambos casos
+- [x] **(c) Pedido con `rewardRedemptionId` sobre `available=false` + `redeemableWithStars=true` se
+      ACEPTA**: confirmado con el test automatizado nuevo (unit + e2e) y, además, con un flujo
+      manual completo contra el servidor y Postgres local reales — admin real, hito
+      (`RewardMilestone starsRequired=5`) creado real, pedido real de S/50 llevado a `entregado`
+      (transiciones válidas `pendiente→confirmado→en_camino→entregado`), `GET /rewards/progress`
+      real confirmó 1 premio disponible, y `POST /orders` canjeando ese premio sobre el producto
+      EXCLUSIVO devolvió `201` real con `"total":0`, `"unitPrice":0` en el ítem — flujo de negocio
+      completo, no solo el contrato del DTO
+- [x] **(d) Grep completo del repo** por el patrón viejo (`available.*redeemableWithStars`,
+      `redeemableWithStars.*available`, `available.*specialReward`, `specialReward.*available`,
+      con y sin distinción de mayúsculas): 0 resultados en código de producción. El único archivo
+      que sigue filtrando por `available` solo (`menu.service.ts:65`, `GET /menu` público) es
+      correcto y no relacionado — es el menú normal del cliente, que SÍ debe seguir ocultando
+      productos `available=false` (incluyendo los EXCLUSIVOS del programa, que por diseño nunca
+      deben aparecer ahí). No hay ningún otro service, controller de admin, ni código de
+      `celtas-admin`/`celtas-mobile` (fuera de alcance, no auditado en este repo) que combine ambas
+      condiciones
+- [x] **Verificado con mutación real por `@tester`** (punto más frágil: el guard nuevo de
+      `buildItems`): se revirtió `if (!item.rewardRedemptionId && !menuItem.available)` a
+      `if (!menuItem.available)` (el guard viejo, sin la excepción para canjes) — rompió
+      **exactamente** el test unitario nuevo (`orders.service.spec.ts`, "acepta el canje de un
+      producto EXCLUSIVO...", `BadRequestException: El producto "Celtas Clásica" no está
+      disponible`) y el test e2e nuevo (`rewards.e2e-spec.ts`, "canjear un producto EXCLUSIVO del
+      programa... se acepta", `expected 201, got 400`) — confirma que ambos tests de regresión son
+      reales, no cosméticos: fallan si el fix se revierte. Mutación revertida, `git diff --stat`
+      confirma el archivo idéntico al estado previo a la mutación (1 archivo, 1 inserción/1
+      eliminación, igual que al inicio de la auditoría), suite completa re-confirmada en verde
+      (411/411 unit, 46/46 e2e de `rewards` corrido aislado tras el revert)
+- [x] Seguridad: `POST /auth/register` (curl real contra el servidor y Postgres local reales)
+      confirma que `password` no aparece en el JSON de la respuesta (ni la clave ni el valor). No se
+      tocó ningún endpoint de admin nuevo ni ningún guard de rol en este cambio — no aplica chequeo
+      adicional de 401/403 más allá de lo ya cubierto en las auditorías previas del módulo
+- [x] Documentación: confirmado contra `/docs-json` real (servidor levantado) que la descripción de
+      `GET /rewards/catalog` refleja el comportamiento nuevo: *"Sin especial=true: productos
+      redeemableWithStars=true. Con especial=true: productos specialReward=true — lista EXCLUYENTE,
+      no una unión de ambas. No filtra por available: incluye productos exclusivos del programa de
+      premios que nunca se venden sueltos en el menú."* — el texto real de Swagger, no un resumen.
+      Comentarios de `menu-item.entity.ts` también actualizados y consistentes con el código
+- [x] Datos de prueba de la verificación manual (usuario, categoría, 3 productos, 1 dirección, 2
+      pedidos, 1 `RewardRedemption`, 1 `RewardMilestone`) borrados de la BD local al finalizar
+      (`docker exec celtas-db psql`, confirmado con los `DELETE N` de cada tabla)
+
+⚠️ Riesgos / casos borde no cubiertos (bajo riesgo, no bloqueantes):
+- No hay ningún test (unitario ni e2e) que combine un producto EXCLUSIVO (`available=false`) con el
+  catálogo ESPECIAL (`specialReward=true`) simultáneamente — la lógica debería comportarse igual
+  (mismo guard, mismo `getCatalog(especial=true)` sin filtro de `available`), pero solo está
+  ejercitado explícitamente con `redeemableWithStars`, no con `specialReward`.
+- No se auditó `celtas-admin` (panel React) para confirmar que el formulario de creación/edición de
+  productos comunica correctamente al usuario admin que `available=false` + `redeemableWithStars`/
+  `specialReward=true` es una combinación válida e intencional (fuera de alcance de este repo, y de
+  este pase de `@tester`, que solo audita el backend).
+- No hay test de qué pasa si se cancela un pedido con un producto EXCLUSIVO canjeado (reactivación
+  del premio) — el flujo de `reactivateForCancelledOrder` ya está cubierto en general para premios
+  sobre productos `redeemableWithStars`/`specialReward` normales (ver sección "Rewards" arriba), pero
+  no hay un caso específico que combine reactivación + `available=false`; en principio no debería
+  importar (`reactivateForCancelledOrder` no lee `available` en ningún punto del código), pero no
+  está ejercitado explícitamente.
+
+**Veredicto: LISTO.** Los 3 cambios de producción (`rewards.service.ts::getCatalog`,
+`orders.service.ts::buildItems`, comentarios de `menu-item.entity.ts`/Swagger) hacen exactamente lo
+que dicen: build limpio, 411/411 unit y 344/344 e2e confirmados de forma independiente contra
+Postgres local real, los 4 puntos pedidos para esta auditoría (a/b/c/d) verificados con test
+automatizado Y evidencia cruda adicional (curl real contra el servidor, incluyendo un caso borde no
+cubierto por ningún test automatizado — el producto exclusivo sin `rewardRedemptionId` también
+rechaza con 400), mutación real confirmando que los 2 tests de regresión nuevos son genuinos (fallan
+si se revierte el fix), grep completo sin ningún otro lugar del código que dependa de la relación
+vieja `available AND (redeemableWithStars OR specialReward)`, seguridad y Swagger confirmados. Sin
+bloqueantes. Los ⚠️ de arriba son gaps de cobertura de bajo riesgo (combinación con `specialReward`,
+alcance de `celtas-admin`, reactivación tras cancelar) que valdría la pena cerrar en una vuelta
+futura, no bloqueantes para este cambio puntual.

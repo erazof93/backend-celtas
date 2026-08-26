@@ -570,7 +570,7 @@ export class OrdersService {
           `Producto no encontrado: ${item.menuItemId}`,
         );
       }
-      if (!menuItem.available) {
+      if (!item.rewardRedemptionId && !menuItem.available) {
         throw new BadRequestException(
           `El producto "${menuItem.name}" no está disponible`,
         );

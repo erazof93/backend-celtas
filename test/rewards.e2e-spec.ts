@@ -126,6 +126,7 @@ describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => 
   let itemRedeemableId: string; // S/8, catálogo normal (redeemableWithStars)
   let itemRedeemable2Id: string; // S/6, catálogo normal (segundo producto)
   let itemSpecialId: string; // S/20, catálogo especial (specialReward), NO redeemableWithStars
+  let itemExclusiveId: string; // S/12, available=false + redeemableWithStars=true — EXCLUSIVO del programa, nunca se vende suelto
 
   // Hitos de la suite: 5 (normal), 8 (normal), 15 (especial) — el mockup
   // aprobado con el usuario. Se limpia la tabla completa al empezar y se
@@ -270,7 +271,11 @@ describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => 
     const mkItem = async (
       name: string,
       price: number,
-      flags: { redeemableWithStars?: boolean; specialReward?: boolean } = {},
+      flags: {
+        redeemableWithStars?: boolean;
+        specialReward?: boolean;
+        available?: boolean;
+      } = {},
     ): Promise<string> => {
       const res = await request(app.getHttpServer())
         .post('/menu/items')
@@ -291,6 +296,10 @@ describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => 
     });
     itemSpecialId = await mkItem('QA Especial S/20', 20, {
       specialReward: true,
+    });
+    itemExclusiveId = await mkItem('QA Exclusivo S/12', 12, {
+      redeemableWithStars: true,
+      available: false,
     });
 
     // La tabla reward_milestones no tiene scope por suite: se limpia entera y
@@ -399,6 +408,17 @@ describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => 
       expect(ids).not.toContain(itemMediumId);
       expect(ids).not.toContain(itemSmallId);
       expect(ids).not.toContain(itemSpecialId);
+    });
+
+    it('incluye productos EXCLUSIVOS del programa (available=false) — available no filtra el catálogo', async () => {
+      const { token } = await register('catalog-exclusivo');
+      const res = await request(app.getHttpServer())
+        .get('/rewards/catalog')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as CatalogItemData[];
+      const ids = data.map((i) => i.id);
+      expect(ids).toContain(itemExclusiveId);
     });
 
     it('especial=true: lista solo productos specialReward=true, nunca los del catálogo normal', async () => {
@@ -854,6 +874,32 @@ describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => 
         where: { id: rewardId },
       });
       expect(stored!.usedAt).toBeNull();
+    });
+
+    it('canjear un producto EXCLUSIVO del programa (available=false, redeemableWithStars=true) se acepta: el checkout ignora available', async () => {
+      const { token } = await register('canje-exclusivo');
+      const created = await createOrder(token, [
+        { menuItemId: itemMediumId, quantity: 1 }, // 50 → hito 5 (normal)
+      ]).expect(201);
+      await deliverOrder(((created.body as Envelope).data as OrderData).id);
+      const progress = await getProgress(token);
+      const rewardId = progress.premiosDisponibles.find((p) => !p.esEspecial)!
+        .id;
+
+      const redeemed = await createOrder(token, [
+        {
+          menuItemId: itemExclusiveId,
+          quantity: 1,
+          rewardRedemptionId: rewardId,
+        },
+      ]).expect(201);
+      const order = (redeemed.body as Envelope).data as OrderData;
+      expect(order.items[0].unitPrice).toBe(0);
+
+      const stored = await rewardRedemptionsRepo.findOne({
+        where: { id: rewardId },
+      });
+      expect(stored!.usedAt).not.toBeNull();
     });
   });
 

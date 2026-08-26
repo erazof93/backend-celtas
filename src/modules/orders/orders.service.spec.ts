@@ -677,6 +677,25 @@ describe('OrdersService', () => {
       );
     });
 
+    it('acepta el canje de un producto EXCLUSIVO del programa (available=false, redeemableWithStars=true)', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({ available: false, redeemableWithStars: true }),
+      ]);
+      const redemption = { id: rewardRedemptionId, usedAt: null };
+      rewardsService.validateForOrder.mockResolvedValue(redemption);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 1, rewardRedemptionId }],
+      });
+
+      expect(result.items[0].unitPrice).toBe(0);
+      expect(rewardsService.validateForOrder).toHaveBeenCalledWith(
+        expect.anything(),
+        { rewardRedemptionId, userId, menuItemId },
+      );
+    });
+
     it('lanza 400 si el producto no es canjeable con estrellas (no llega a validar el premio)', async () => {
       menuItemsRepo.find.mockResolvedValue([
         menuMenuItem({ redeemableWithStars: false }),

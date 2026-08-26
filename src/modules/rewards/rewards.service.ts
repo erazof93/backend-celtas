@@ -139,12 +139,12 @@ export class RewardsService {
    * Catálogo de canje. `especial=false` (default): productos
    * `redeemableWithStars=true`. `especial=true`: productos
    * `specialReward=true` — lista EXCLUYENTE, no una unión de ambas.
+   * No filtra por `available`: un producto puede ser EXCLUSIVO del programa
+   * de premios (nunca se vende suelto en el menú) y aun así listarse acá.
    */
   async getCatalog(especial = false): Promise<RewardCatalogItem[]> {
     const items = await this.menuItemsRepository.find({
-      where: especial
-        ? { specialReward: true, available: true }
-        : { redeemableWithStars: true, available: true },
+      where: especial ? { specialReward: true } : { redeemableWithStars: true },
       order: { name: 'ASC' },
     });
     return items.map(({ id, name, description, price, image }) => ({
