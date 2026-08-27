@@ -117,6 +117,20 @@ export class UsersService {
   }
 
   /**
+   * Borra el token FCM del dispositivo actual (al cerrar sesión). Deja
+   * `fcmToken = null` para que el backend no le mande más notificaciones push a
+   * ese dispositivo — importante en celulares compartidos, donde el próximo
+   * usuario que inicie sesión no debe recibir notificaciones de la cuenta
+   * anterior. Es best-effort desde la app; si no se llama, el token se
+   * sobrescribe igual en el próximo `updateFcmToken`.
+   */
+  async clearFcmToken(userId: string): Promise<User> {
+    const user = await this.getProfile(userId);
+    user.fcmToken = null;
+    return this.usersRepository.save(user);
+  }
+
+  /**
    * Listado paginado de usuarios para el panel admin. `sortBy`/`order` son
    * opcionales (whitelist validada en el DTO); sin `sortBy` el comportamiento
    * previo (createdAt DESC) queda intacto.

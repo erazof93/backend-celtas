@@ -221,6 +221,68 @@ describe('Users (e2e)', () => {
     });
   });
 
+  describe('FCM token: PATCH/DELETE /users/me/fcm-token', () => {
+    it('DELETE devuelve 401 sin token', async () => {
+      await request(app.getHttpServer())
+        .delete('/users/me/fcm-token')
+        .expect(401);
+    });
+
+    it('ciclo completo: PATCH guarda el token, DELETE lo deja en null (logout)', async () => {
+      // 1. La app registra el token del dispositivo al iniciar sesión.
+      await request(app.getHttpServer())
+        .patch('/users/me/fcm-token')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({ fcmToken: 'fcm-token-dispositivo-compartido' })
+        .expect(200);
+
+      // 2. Queda persistido (visible en el perfil).
+      const afterPatch = await request(app.getHttpServer())
+        .get('/users/me')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(200);
+      expect(
+        ((afterPatch.body as Envelope).data as Record<string, unknown>)
+          .fcmToken,
+      ).toBe('fcm-token-dispositivo-compartido');
+
+      // 3. La app llama a DELETE al cerrar sesión.
+      await request(app.getHttpServer())
+        .delete('/users/me/fcm-token')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(200);
+
+      // 4. El token quedó en null: el backend no le manda más push a ese dispositivo.
+      const afterDelete = await request(app.getHttpServer())
+        .get('/users/me')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(200);
+      expect(
+        ((afterDelete.body as Envelope).data as Record<string, unknown>)
+          .fcmToken,
+      ).toBeNull();
+    });
+
+    it('DELETE es idempotente: llamarlo con el token ya en null sigue devolviendo 200', async () => {
+      await request(app.getHttpServer())
+        .delete('/users/me/fcm-token')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(200);
+      await request(app.getHttpServer())
+        .delete('/users/me/fcm-token')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(200);
+
+      const res = await request(app.getHttpServer())
+        .get('/users/me')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(200);
+      expect(
+        ((res.body as Envelope).data as Record<string, unknown>).fcmToken,
+      ).toBeNull();
+    });
+  });
+
   describe('Direcciones: GET/POST /users/me/addresses', () => {
     let addressIdA: string;
 

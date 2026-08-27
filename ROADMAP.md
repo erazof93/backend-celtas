@@ -195,6 +195,25 @@ celtas-backend/
   `npx tsc --noEmit` con los mismos 14 errores preexistentes de siempre (confirmados sin relación
   a este cambio vía `git stash`/`git stash pop`, ninguno nuevo). Detalle completo en
   `docs/testing-checklist.md`, sección "Direcciones: coordenadas GPS".
+- [x] **`DELETE /users/me/fcm-token` — limpiar el token FCM al cerrar sesión.** Antes, `logout()`
+  en la app no le avisaba al backend, así que el `fcmToken` de la cuenta que se iba quedaba
+  apuntando al mismo dispositivo — en un celular compartido, la cuenta B podía recibir
+  notificaciones de pedidos de la cuenta A. `PATCH /users/me/fcm-token` no servía para limpiarlo
+  porque su DTO exige `@IsNotEmpty()` (debilitarlo rompería su caso de uso normal). Nuevo método
+  `UsersService.clearFcmToken(userId)` (reusa `getProfile`, pone `fcmToken = null`, guarda —
+  simétrico con `updateFcmToken`) y nuevo endpoint `DELETE /users/me/fcm-token`
+  (`JwtAuthGuard`, sin body, usa `req.user.userId`, best-effort del lado de la app). No hizo
+  falta migración (la columna `fcmToken` ya es `varchar` nullable). Unit test nuevo en
+  `users.service.spec.ts` (confirma `fcmToken = null` + `save`) y e2e nuevo en
+  `test/users.e2e-spec.ts` (401 sin token; ciclo real `PATCH` con valor → `GET /users/me`
+  confirma guardado → `DELETE` → `GET /users/me` confirma `null`; DELETE idempotente).
+  Auditado por `@tester` contra Docker/Postgres local real: **LISTO** — build/lint limpios,
+  412/413 unit (único rojo: fallo de fecha preexistente en `rewards.service.spec.ts`, ajeno,
+  confirmado con `git stash`), 347/347 e2e, mutación real (`user.fcmToken = null` quitado) que
+  rompe exactamente el unit nuevo y el e2e del ciclo y nada más, endpoint acotado a
+  `req.user.userId` verificado en código, `fcmToken` expuesto en `GET /users/me` y `password`
+  nunca presente (verificado en vivo con `curl`), Swagger correcto contra `/docs-json` real.
+  Detalle en `docs/testing-checklist.md`, sección "FCM token: DELETE /users/me/fcm-token (logout)".
 
 ### 3. Módulo Menu — ✅ COMPLETO
 - [x] Entidad `Category` (Burgers, Chicken, Bebidas, etc.)

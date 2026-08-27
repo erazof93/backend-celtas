@@ -87,6 +87,21 @@ export class UsersController {
     return this.usersService.updateFcmToken(req.user.userId, dto.fcmToken);
   }
 
+  @Delete('me/fcm-token')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({
+    summary: 'Borra el token FCM del dispositivo actual (logout)',
+    description:
+      'Best-effort desde la app al cerrar sesión: deja fcmToken en null para que ' +
+      'el backend deje de enviarle notificaciones push a ese dispositivo. Evita ' +
+      'que, en un celular compartido, el próximo usuario que inicie sesión reciba ' +
+      'notificaciones de pedidos de la cuenta anterior. Sin body.',
+  })
+  @ApiResponse({ status: 200, description: 'Token FCM borrado' })
+  clearFcmToken(@Req() req: AuthenticatedRequest) {
+    return this.usersService.clearFcmToken(req.user.userId);
+  }
+
   @Get('me/addresses')
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Listar las direcciones del usuario autenticado' })

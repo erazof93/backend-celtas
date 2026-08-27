@@ -125,6 +125,28 @@ describe('UsersService', () => {
     });
   });
 
+  describe('clearFcmToken', () => {
+    it('pone fcmToken en null y guarda (logout)', async () => {
+      const user = { ...makeUser(), fcmToken: 'token-viejo' } as User;
+      repo.findOne.mockResolvedValue(user);
+      repo.save.mockImplementation((u: User) => u);
+
+      const result = await service.clearFcmToken('user-1');
+
+      expect(repo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ fcmToken: null }),
+      );
+      expect(result.fcmToken).toBe(null);
+    });
+
+    it('lanza 401 si el usuario no existe', async () => {
+      repo.findOne.mockResolvedValue(null);
+      await expect(service.clearFcmToken('no-existe')).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+    });
+  });
+
   describe('findAll', () => {
     it('devuelve la lista paginada con meta (comportamiento previo intacto sin sortBy/order)', async () => {
       const user = makeUser();

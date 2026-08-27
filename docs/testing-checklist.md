@@ -48,6 +48,81 @@ cuando pasa lo aplicable de este checklist.
 - [x] `sortBy=totalSpent` ordena correctamente asc y desc; sin `sortBy`/`order` el comportamiento previo (`createdAt DESC`, paginación) queda 100% intacto (test explícito de no-regresión)
 - [ ] Endpoints protegidos devuelven 401 sin token
 
+### FCM token: `DELETE /users/me/fcm-token` (logout)
+
+> Cambio puntual: al cerrar sesión, la app llama `DELETE /users/me/fcm-token` para que el backend
+> deje de mandarle notificaciones push a ese dispositivo. Antes `logout()` no avisaba a nadie y el
+> `fcmToken` de la cuenta saliente seguía apuntando al mismo celular — riesgo real en dispositivos
+> compartidos (la cuenta B recibía notificaciones de pedidos de la cuenta A). `PATCH
+> /users/me/fcm-token` no sirve para limpiar porque su DTO exige `@IsNotEmpty()`. Nuevo método
+> `UsersService.clearFcmToken(userId)` (reusa `getProfile`, `fcmToken = null`, `save`) + endpoint
+> `DELETE /users/me/fcm-token` (`JwtAuthGuard`, sin body). Sin migración (columna ya nullable).
+>
+> **Auditado por `@tester` (pase independiente, con mutación real y prueba end-to-end contra el
+> servidor `pnpm run start:dev` + Postgres local `celtas-db` reales) — veredicto "LISTO".**
+
+- [x] `pnpm run build` compila sin errores (`nest build`, exit 0)
+- [x] `pnpm run lint` limpio, exit 0 (`eslint --fix`; un reformateo cosmético no relacionado en
+      `test/rewards.e2e-spec.ts` que `--fix` aplica siempre fue revertido para no ensuciar el diff)
+- [x] `pnpm test`: 412/413 en verde (22 suites). El único fallo, `RewardsService › getProgress ›
+      devuelve promocionActiva solo si la fecha de hoy cae dentro de su rango`, es **preexistente y
+      ajeno a este cambio** — falla idéntico con `git stash` sobre árbol limpio (bug de borde de
+      fecha en el spec de rewards: hoy 2026-08-26, el test espera `endDate 2026-08-27` y recibe
+      `null`). `users.service.spec.ts` aislado: 19/19, incluye `clearFcmToken` (pone `fcmToken` en
+      `null` + llama a `save`; 401 si el usuario no existe)
+- [x] `pnpm run test:e2e`: 347/347 en verde (13 suites) contra Postgres local real.
+      `users.e2e-spec.ts` aislado: 63/63 (eran 60 antes del cambio), incluye los 3 casos nuevos:
+      `DELETE /users/me/fcm-token` sin token → 401; ciclo real `PATCH` con valor → `GET /users/me`
+      confirma guardado → `DELETE` → `GET /users/me` confirma `fcmToken: null`; DELETE idempotente
+      (segundo DELETE con el token ya en null sigue 200). Los logs de `FirebaseAppError: Failed to
+      parse private key` que aparecen en la corrida son preexistentes (push best-effort sin
+      credenciales reales en test) y no afectan el resultado
+- [x] `DELETE /users/me/fcm-token` solo afecta al usuario autenticado — confirmado leyendo el
+      controller: `clearFcmToken(@Req() req) { return this.usersService.clearFcmToken(req.user.userId); }`,
+      ruta con literal `me` (no `:id`), sin `@Param`, sin `@Body`; el servicio `clearFcmToken(userId)`
+      reusa `getProfile(userId)`. No hay forma de pasar un id ajeno
+- [x] Verificación con mutación real: se quitó `user.fcmToken = null;` de `clearFcmToken`. Rompió
+      **exactamente** `UsersService › clearFcmToken › pone fcmToken en null y guarda (logout)` (unit)
+      y `Users (e2e) › FCM token: ... › ciclo completo: PATCH guarda el token, DELETE lo deja en null
+      (logout)` (e2e), ningún otro: suite unit completa 2 fallos (mutante + rewards preexistente),
+      suite e2e completa 1 fallo (solo el mutante). Mutación revertida; `git diff
+      src/modules/users/users.service.ts` vuelve a mostrar solo la adición del método
+      `clearFcmToken` (con `user.fcmToken = null;` presente), y `users.service.spec.ts` 19/19 +
+      `users.e2e-spec.ts` 63/63 de nuevo
+- [x] `fcmToken` se expone en `GET /users/me` — confirmado leyendo `user.entity.ts`: la columna
+      `fcmToken` NO tiene `@Exclude()` (solo `password` lo tiene); `getProfile` devuelve la entidad
+      `User` completa. Verificado en vivo: tras `PATCH` el `GET /users/me` real devuelve
+      `fcmToken: "tok-device-xyz"` y tras `DELETE` devuelve `fcmToken: null`. `password` no aparece
+      (ni la clave) en ninguna respuesta JSON (register, `GET /users/me`)
+- [x] Swagger: confirmado contra `/docs-json` real (servidor levantado) — `DELETE
+      /users/me/fcm-token` documentado con `summary`/`description`, respuestas `200` ("Token FCM
+      borrado") y `401`, `security: [{bearer: []}]`, tag `users`, `parameters: []` (sin body ni id)
+- [x] Prueba end-to-end en vivo (`curl` contra `pnpm run start:dev` + `celtas-db`): usuario real
+      registrado vía `POST /auth/register` → `DELETE` sin token → 401 → `PATCH` token → 200 →
+      `GET /users/me` `fcmToken=tok-device-xyz` → `DELETE` con token → 200 → `GET /users/me`
+      `fcmToken=null` → `DELETE` de nuevo (idempotente) → 200. Usuario de prueba borrado de la BD
+      al finalizar
+
+⚠️ Riesgos / casos borde no cubiertos (bajo riesgo, no bloqueantes):
+- (Cerrado en la sesión principal tras la auditoría) El test e2e "DELETE idempotente" originalmente
+  solo verificaba `status 200`; ahora también hace `GET /users/me` tras el segundo DELETE y afirma
+  `expect(data.fcmToken).toBeNull()`, así que el comportamiento queda cubierto aunque se refactorice
+  `clearFcmToken`.
+- No hay test de aislamiento entre cuentas en el mismo dispositivo (cuenta A guarda token, cuenta B
+  hace `DELETE` y NO borra el de A) — es imposible por diseño (cada usuario tiene su propia fila y
+  `req.user.userId`), pero no está ejercitado explícitamente con dos usuarios reales como sí se hace
+  en la sección de direcciones.
+- `DELETE` sobre un usuario cuyo JWT es válido pero cuya fila ya no existe en la BD devuelve `401`
+  (vía `getProfile`), no `404` — coherente con `updateFcmToken`/`updateProfile`, cubierto por el
+  unit test "401 si el usuario no existe", pero no por un e2e.
+
+**Veredicto: LISTO.** Todo lo crítico pasa: build y lint limpios, 412/413 unit (el único rojo es un
+fallo de fecha preexistente en `rewards.service.spec.ts`, ajeno — confirmado con `git stash`),
+347/347 e2e contra Postgres local real, mutación real que rompe exactamente el unit nuevo y el e2e
+del ciclo y nada más, endpoint acotado a `req.user.userId` verificado en código, `fcmToken` expuesto
+en `GET /users/me` y `password` nunca presente (verificado en vivo), y Swagger correcto contra
+`/docs-json` real. Sin bloqueantes.
+
 ### Direcciones: coordenadas GPS (`Address.latitude`/`Address.longitude`)
 
 > Feature nueva: contraparte backend de autocompletado + GPS + mapa (Geoapify) 100% client-side
