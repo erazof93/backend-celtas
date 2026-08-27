@@ -690,11 +690,114 @@ ambos endpoints juntos en una vuelta futura.
 - [x] `pnpm run test:e2e`: 241/241 en verde (12 suites) — la suite existente no tiene casos
       propios de `sauces` todavía (nada e2e cubre `/sauces` ni `sauceIds` en `POST /orders`), pero
       confirma cero regresiones en los endpoints ya existentes
-- [ ] Agregar casos e2e propios de `sauces` (`POST/GET/PATCH/DELETE /sauces`, `sauceIds` en
-      `POST /menu/items` y `POST /orders`) — hoy esa cobertura vive solo en unit tests +
-      la verificación manual con curl de arriba
-- [ ] Pase real de `@tester` (independiente, con mutación de al menos un fix para confirmar que
-      los tests nuevos realmente fallan sin él — mismo patrón que el resto del proyecto)
+- [x] Agregar casos e2e propios de `sauces` (`POST/GET/PATCH/DELETE /sauces`, `sauceIds` en
+      `POST /menu/items` y `POST /orders`) — hecho: `test/sauces.e2e-spec.ts` (nuevo, 28 tests, 1
+      suite). Antes NO existía NINGÚN e2e de salsas (`grep -rln sauce test/` daba cero). Ver el
+      detalle del pase de `@tester` abajo.
+- [x] Pase real de `@tester` (independiente, con mutación de al menos un fix para confirmar que
+      los tests nuevos realmente fallan sin él — mismo patrón que el resto del proyecto). **Hecho
+      — ver bloque "Pase de `@tester` sobre la feature completa" a continuación. Veredicto: LISTO.**
+
+#### Pase de `@tester` sobre la feature completa (salsas/cremas) — independiente, con mutación real
+
+> Pase pedido explícitamente para cerrar los 2 ítems abiertos de esta sección y los 2 checkboxes
+> de `ROADMAP.md` ("catálogo de salsas/cremas" en Módulo Menu; "salsas elegidas por ítem, snapshot
+> + WhatsApp" en Módulo Orders). Contra Postgres local real (`celtas-db`, Docker, `postgres:17`).
+> El archivo nuevo `test/sauces.e2e-spec.ts` (618 líneas, 28 tests) no toca código de producción.
+
+- [x] `pnpm run build` — exit 0 (`nest build`), confirmado de forma independiente.
+- [x] `pnpm run lint` — exit 0 (`eslint --fix`). Salvedad: `--fix` reformatea siempre 1 línea
+      cosmética preexistente ajena en `test/rewards.e2e-spec.ts` (~899-903); revertida, no es de
+      esta feature (se reproduce en cada corrida de lint, deuda cosmética independiente).
+- [x] `pnpm run test` (unit) — 413/413, 23 suites. Sin cambios (esta feature no agregó unit; la
+      cobertura unit de `SaucesService`/`MenuService`/`OrdersService` ya existía de la sesión
+      previa). El `ERROR [OrdersService] Error: boom` en el log es un throw intencional de un test.
+- [x] `pnpm run test:e2e` — **375/375, 14 suites** (antes 347/347, 13 suites; +28 tests, +1 suite
+      `sauces`). Corrido **6 veces completo, verde las 6** (más 3 corridas con mutación activa, que
+      solo rompieron los tests esperados). Tiempos 24-39 s.
+- [x] **Flaky de `rewards` reportado por la sesión principal (1 de 5 runs, `beforeAll` excede el
+      timeout default de 5 s): NO reproducido en ninguna de mis 9 ejecuciones de `test:e2e`** (6
+      limpias + 3 con mutación). Coincido con la hipótesis de que es flakiness de infra
+      preexistente (ninguna suite e2e del repo fija `jest.setTimeout`), no un problema introducido
+      por esta suite. No bloqueante; queda como ⚠️ abajo.
+- [x] **Contrato de DTOs** (`CreateSauceDto`/`UpdateSauceDto`): `name` `@IsString @IsNotEmpty`
+      (400 con `''` — test e2e), `active` `@IsBoolean`, `sortOrder` `@IsInt @Min(0)`; `id` de ruta
+      vía `ParseUUIDPipe` (400 con `no-es-uuid` — test e2e); 409 nombre duplicado al crear y al
+      renombrar (tests e2e). `sauceIds` (menu-item y order-item DTOs): `@IsOptional @IsArray
+      @IsUUID('4', { each: true })`.
+- [x] **Seguridad**: `SaucesController` tiene `@UseGuards(JwtAuthGuard, RolesGuard)` +
+      `@Roles(ADMIN)` a nivel de clase → los 4 endpoints (`GET/POST/PATCH/DELETE /sauces`)
+      devuelven 401 sin token y 403 con rol `cliente` — cubierto con tests e2e explícitos para
+      POST, GET y DELETE. La entidad `Sauce` no tiene ningún campo sensible; `GET /menu` público
+      solo expone `{ id, name }` de cada salsa (no `active`, no `sortOrder`, no timestamps).
+- [x] **Swagger**: `SaucesController` documentado con `@ApiTags('sauces')`, `@ApiBearerAuth()`,
+      `@ApiOperation` + `@ApiResponse` (200/201/400/401/403/404/409 según endpoint) y `@ApiParam`
+      en las rutas con `:id` — verificado leyendo el controller (consistente con la verificación
+      histórica contra `/docs-json` real de la sesión previa).
+- [x] **Mutación real #1 — `MenuService.findPublicMenu`**: se quitó `.filter((sauce) =>
+      sauce.active)` → rompió **exactamente 1 test** (`GET /menu ... › una salsa desactivada
+      desaparece de GET /menu pero sigue asignada al producto`), 374/375, ningún otro. Revertido,
+      `git diff` vacío, suite vuelve a 375/375.
+- [x] **Mutación real #2 — `OrdersService.resolveSelectedSauces`**: se desactivó la validación
+      contra `menuItem.sauces` (`if (false && !name)`) → rompió **exactamente 2 tests** (`POST
+      /orders ... › 400 si el ítem trae un sauceId que el producto NO ofrece` y `... › un sauceId
+      inexistente en el pedido devuelve 400`), 373/375, ningún otro e2e. En unit rompió además
+      exactamente 1 test preexistente coherente (`OrdersService › create › lanza 400 si el sauceId
+      no está entre las salsas que el producto ofrece`), 82/83. Revertido, `git diff` vacío.
+- [x] **Mutación real #3 — `MenuService.updateItem`, guard `if (sauceIds !== undefined)`**: se
+      eliminó el guard (`item.sauces = await findByIds(sauceIds ?? [])` incondicional) → rompió
+      **exactamente 1 test** (`sauceIds en POST/PATCH /menu/items › PATCH que NO incluye sauceIds
+      deja la relación intacta (guard explícito)`), 374/375, ningún otro. Confirma que ese test SÍ
+      cubre el guard tri-state del PATCH. Revertido, `git diff` vacío.
+- [x] Revisión de `test/sauces.e2e-spec.ts` por aislamiento de datos (la tabla `sauces` es global,
+      sin scope por usuario/categoría): todo se nombra con `${suffix}` (`Date.now()`); las
+      aserciones de listado global filtran primero por `.name.includes(\`${suffix}\`)` antes de
+      comparar orden, así que el orden relativo de las salsas de la suite es determinista
+      (`sortOrder` 0/2/5) e independiente de filas de otras suites. `afterAll` limpia en orden
+      correcto: `orders` (por `userId`) → `menu_items` (por `categoryId`, lo que cascadea las filas
+      de `menu_item_sauces` por el lado dueño) → `category` → `sauces` (`Like('%suffix%')`) →
+      `users` (admin + cliente) → `restoreBusinessHours` → `app.close()`. Las aserciones de orden
+      de `GET /menu` son sobre las salsas de UN ítem concreto (aislado por `itemId`), no sobre
+      índices absolutos de un array compartido.
+- [ ] ⚠️ **Hallazgo no bloqueante — la mutación sugerida sobre `SaucesService.remove()` NO rompe
+      ningún test**: se quitó la línea explícita `DELETE FROM menu_item_sauces WHERE "sauceId" =
+      $1` dejando solo `this.saucesRepository.remove(sauce)` → **28/28 siguen en verde**. Motivo
+      confirmado experimentalmente: `repository.remove(entity)` (versión por entidad, no
+      `delete(criteria)`) YA limpia las filas de la tabla de unión de la ManyToMany porque el lado
+      inverso está declarado en la metadata de `Sauce` (`@ManyToMany(() => MenuItem, m =>
+      m.sauces) menuItems`). La línea explícita es **redundancia defensiva** con la implementación
+      actual, no el único mecanismo. Se aisló así: (a) cambiando `remove(sauce)` →
+      `delete({ id })` **con** la línea explícita presente → 28/28 verde (la línea hace el
+      trabajo); (b) `delete({ id })` **sin** la línea → el test `Regresión ... DELETE /sauces/:id
+      sobre una salsa en uso → 200` rompe con 500 por violación de FK (`FK_81b7f07ad4e2d7bd67d8a9dc84a`,
+      `confdeltype = 'a'` / NO ACTION, verificado con SQL directo contra `celtas-db`). Conclusión:
+      el test de regresión SÍ protege el **comportamiento** (borrar salsa en uso → 200, no 500)
+      cuando ese comportamiento realmente regresiona, pero NO detecta la eliminación aislada de la
+      línea explícita mientras `remove(entity)` siga en uso. Recomendación (para la sesión
+      principal, no lo toco yo): dejar un comentario en `remove()` aclarando que la limpieza
+      explícita es defensiva y que `remove(entity)` ya cubre el caso, para que un futuro refactor a
+      `delete({ id })` sepa que debe conservar la línea.
+- [ ] ⚠️ Gaps de contrato de bajo riesgo no cubiertos por e2e (los validadores existen en el DTO,
+      pero sin test que los ejercite): `sortOrder: -1` → 400, `sortOrder: "abc"` → 400,
+      `active: "yes"` → 400 en `POST/PATCH /sauces`; `sauceIds: ["no-es-uuid"]` → 400 (formato UUID
+      inválido, distinto de "UUID válido pero inexistente" que sí está cubierto) en `POST
+      /menu/items` y `POST /orders`.
+- [ ] ⚠️ Flaky preexistente de `test/rewards.e2e-spec.ts` (timeout de `beforeAll`): no reproducido
+      en 9 corridas durante este pase, pero tampoco descartable — ninguna suite e2e del repo fija
+      `jest.setTimeout`, así que a mayor carga de suites la probabilidad sube marginalmente. Vale
+      la pena subir el timeout de los `beforeAll` pesados (rewards, y por consistencia el resto) en
+      una vuelta futura de infra de tests.
+
+**Veredicto `@tester`: LISTO.** Build/lint/unit/e2e verdes y confirmados de forma independiente
+(413/413 unit, 375/375 e2e × 6 corridas limpias). 3 mutaciones reales sobre fixes de producción de
+la feature (`findPublicMenu` filtro `active`, `resolveSelectedSauces` validación de oferta,
+`updateItem` guard tri-state), cada una rompe **exactamente** el/los test(s) que debe y ningún
+otro, revertidas con `git diff` vacío. Contrato de DTOs, seguridad (401/403 en los 4 endpoints
+admin, sin campos sensibles) y Swagger verificados. Los 3 ⚠️ son no bloqueantes: (1) la línea
+explícita de limpieza de junction en `SaucesService.remove()` es redundancia defensiva —
+`remove(entity)` ya cubre el caso, el test de regresión protege el comportamiento pero no la línea
+aislada; (2) gaps menores de contrato en el DTO de salsas; (3) flaky de infra preexistente en
+`rewards` no reproducido.
 
 ### Refinamiento: tri-state real de `sauceIds` (`undefined` vs `[]` vs con ids)
 
