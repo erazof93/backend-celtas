@@ -14,7 +14,10 @@ import { In, Repository } from 'typeorm';
 import { AppModule } from './../src/app.module';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
 import { TransformInterceptor } from './../src/common/interceptors/transform.interceptor';
-import { limaWallClockDate } from './../src/common/utils/lima-time.util';
+import {
+  limaWallClockDate,
+  limaWallClockToUtc,
+} from './../src/common/utils/lima-time.util';
 import { Category } from './../src/modules/menu/entities/category.entity';
 import { MenuItem } from './../src/modules/menu/entities/menu-item.entity';
 import {
@@ -654,9 +657,22 @@ describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => 
       const orderId = ((created.body as Envelope).data as OrderData).id;
 
       // Se entrega "de verdad" el mes PASADO manipulando la fila directamente
-      // (no hay forma de retroceder deliveredAt vía la API).
-      const lastMonth = new Date();
-      lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 1);
+      // (no hay forma de retroceder deliveredAt vía la API). Aritmética de
+      // año/mes sobre el mes calendario de Lima (mismo criterio que
+      // RewardsService.currentMonthRangeInLima): `setUTCMonth(-1)` desborda hacia
+      // adelante los días 29-31 cuando el mes anterior no tiene ese día (31 de
+      // marzo - 1 mes = 3 de marzo, sigue en el mes actual). Día fijo en 15 al
+      // mediodía UTC: existe en cualquier mes y no cruza medianoche en Lima.
+      const { year, month } = limaWallClockDate();
+      const lastMonthNumber = month === 1 ? 12 : month - 1;
+      const lastMonthYear = month === 1 ? year - 1 : year;
+      const lastMonth = limaWallClockToUtc(
+        lastMonthYear,
+        lastMonthNumber,
+        15,
+        12,
+        0,
+      );
       await ordersRepo.update(orderId, {
         status: OrderStatus.ENTREGADO,
         deliveredAt: lastMonth,

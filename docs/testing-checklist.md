@@ -1747,3 +1747,69 @@ vieja `available AND (redeemableWithStars OR specialReward)`, seguridad y Swagge
 bloqueantes. Los ⚠️ de arriba son gaps de cobertura de bajo riesgo (combinación con `specialReward`,
 alcance de `celtas-admin`, reactivación tras cancelar) que valdría la pena cerrar en una vuelta
 futura, no bloqueantes para este cambio puntual.
+
+---
+
+## Rewards — fix de fecha en `test/rewards.e2e-spec.ts` (`setUTCMonth(-1)` desbordaba hacia adelante)
+
+> Cambio SOLO de test (no toca código de producción). El describe "El excedente no se arrastra al
+> mes siguiente (corte de mes)" construía "el mes pasado" con
+> `const lastMonth = new Date(); lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 1)`. `setUTCMonth`
+> desborda hacia ADELANTE los días 29-31 cuando el mes anterior no tiene ese día:
+> `new Date(Date.UTC(2027,2,31)).setUTCMonth(-1)` → `2027-03-03` (sigue en marzo). Esos días
+> concretos del año, el pedido "del mes pasado" caería dentro del mes actual y el test rompería.
+> El fix reemplaza el cálculo por aritmética de año/mes sobre el mes calendario de Lima (mismo
+> criterio que `RewardsService.currentMonthRangeInLima`), fijando el día 15 al mediodía UTC (existe
+> en todo mes, no cruza medianoche en Lima), vía `limaWallClockDate` + `limaWallClockToUtc`.
+>
+> **Auditado por `@tester` (pase independiente contra Postgres local real) — veredicto "LISTO".**
+
+- [x] `npx tsc --noEmit`: exactamente 14 errores en 10 archivos, TODOS preexistentes y ajenos
+      (`validation.schema.spec`, `auth.service*.spec`, `banners.service.spec`, `menu.service.spec`,
+      `addresses.service.spec`, `users.service.spec`, `auth.e2e-spec`, `coupons.e2e-spec`,
+      `users.e2e-spec`). Ninguno en `test/rewards.e2e-spec.ts` — confirmado de forma independiente
+- [x] `npx eslint test/rewards.e2e-spec.ts`: 2 errores `prettier/prettier` en líneas 902-903
+      (`(p) => !p.esEspecial)!.id`), preexistentes y en otra parte del archivo, ajenos a este
+      cambio. Las líneas nuevas del fix (import ~17-20, cálculo ~666-675) salen limpias
+- [x] `pnpm run test:e2e`: 347/347 en verde, 13 suites, contra Postgres local `celtas-db`.
+      `test/rewards.e2e-spec.ts` aislado 46/46; el test `-t "corte de mes"` aislado pasa
+      (45 skipped, 1 passed). Los logs `FirebaseAppError: Failed to parse private key` en la
+      corrida son preexistentes (push best-effort sin credenciales reales en test)
+- [x] El fix refleja el criterio real del servicio, no fuerza el verde: `RewardsService`
+      (`recalculateForUser` → `currentMonthRangeInLima` → `monthlyStats`) filtra los pedidos
+      `ENTREGADO` por `deliveredAt ∈ [start, end)`, donde `start = limaWallClockToUtc(year, month,
+      1, 0, 0)` del mes calendario de Lima actual. El instante que produce el fix (día 15,
+      12:00 Lima = 17:00 UTC del mes anterior) cae inequívocamente dentro del mes calendario
+      anterior de Lima y estrictamente antes de `start` → el pedido queda fuera del rango del mes
+      actual → `estrellasDelMes = 0`, que es lo que el test afirma. El fix usa `month === 1 ? 12 :
+      month - 1` para retroceder, espejo exacto del `month === 12 ? 1 : month + 1` del servicio
+- [x] Barrido de `src/` y `test/` por `setMonth(` / `setUTCMonth(`: única ocurrencia real era esta
+      (ahora eliminada); el único match restante es la palabra dentro del comentario explicativo
+      nuevo. No hay el mismo patrón en ningún otro lugar
+- [x] `git diff --stat`: SOLO `test/rewards.e2e-spec.ts` (1 archivo, +20 −4). No se tocó código de
+      producción ni los commits `1e5ed5b` (fcm-token) / `5740d7c` (fix previo de promocionActiva)
+- [x] **Prueba de regresión (script, simulando "hoy = 31 marzo 2027")**: cálculo VIEJO →
+      `lastMonth = 2027-03-03T10:00:00Z`, que está DENTRO de `[2027-03-01T05:00Z, 2027-04-01T05:00Z)`
+      → el pedido "del mes pasado" contaría como del mes actual → el test fallaría
+      (`estrellasDelMes` sería 20, no 0). Cálculo NUEVO → `lastMonth = 2027-02-15T17:00:00Z`, antes
+      de `start` → mes anterior sin ambigüedad → `estrellasDelMes = 0`, test verde. Confirma que el
+      fix corrige un bug real de fecha, no cosmético
+
+⚠️ Riesgos / casos borde no cubiertos (bajo riesgo, no bloqueantes):
+- Los 14 errores de `tsc --noEmit` en specs y los 2 de `eslint` en `rewards.e2e-spec.ts` (líneas
+  902-903) son preexistentes y quedan pendientes de limpieza en la sesión principal — ajenos a
+  este fix pero conviene cerrarlos.
+- El test sigue dependiendo de manipular `deliveredAt` directamente vía `ordersRepo.update` (no hay
+  API para retroceder la fecha de entrega); es la única vía práctica, pero acopla el test al
+  nombre de la columna.
+- No hay un test parametrizado que ejercite el corte de mes en los 12 meses / en un 31 de mes
+  largo de forma explícita — el fix es correcto por construcción (día 15 siempre existe), pero la
+  cobertura automatizada sigue corriendo solo contra "el mes real en que se ejecuta la suite".
+
+**Veredicto: LISTO.** Cambio exclusivo de test: elimina un cálculo de fecha (`setUTCMonth(-1)`) que
+podía desbordar hacia adelante 3-5 días del año y volver el test un falso negativo. El reemplazo usa
+el mismo criterio de "mes calendario de Lima" que `RewardsService`, verificado leyendo el servicio y
+con un script de regresión que muestra el viejo cálculo cayendo en el mes actual y el nuevo en el
+mes anterior. `tsc` (14 errores preexistentes, ninguno en rewards e2e), `eslint` (2 errores
+preexistentes ajenos), `pnpm run test:e2e` 347/347, `git diff --stat` solo el archivo de test.
+Sin bloqueantes.
