@@ -272,7 +272,7 @@ celtas-backend/
       WhatsApp decodificado con el formato esperado — detalle completo en
       `docs/testing-checklist.md`, sección "Salsas/cremas". Mismo pendiente que la mejora del
       módulo Menu: falta `test:e2e` y el pase real de `@tester`.
-- [ ] **Refinamiento (en curso): tri-state real de `sauceIds` — distinguir "no aplica" de "Sin
+- [x] **Refinamiento: tri-state real de `sauceIds` — distinguir "no aplica" de "Sin
       salsas" elegido a propósito.** Antes, `sauceIds` no enviado (`undefined`) y `sauceIds: []`
       enviado explícito colapsaban al mismo `selectedSauces: null` — no había forma de saber si el
       cliente vio el selector y no quiso ninguna, o si el producto ni siquiera ofrece salsas.
