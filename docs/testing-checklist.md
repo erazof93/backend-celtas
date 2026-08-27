@@ -573,6 +573,15 @@ ambos endpoints juntos en una vuelta futura.
 >
 > **Auditado por `@tester` (pase independiente, con mutación real y prueba end-to-end contra
 > servidor `pnpm run start:dev` + Postgres local `celtas-db` reales) — veredicto "LISTO".**
+>
+> **Vuelta de cierre de gaps (contrato del frontend `celtas-admin`)**: se cerraron los 3 gaps de
+> cobertura que la auditoría anterior había dejado marcados como "riesgo bajo, no bloqueante" —
+> `cancelReason` de 501 caracteres ahora tiene un test e2e explícito de rechazo (antes solo se
+> había probado con `curl` manual, sin quedar como regresión automatizada), `cancelReason` de
+> exactamente 500 caracteres tiene test de aceptación (límite inclusive), y `GET /orders/:id` de
+> un pedido no cancelado tiene test explícito de `cancelReason: null`. Nada de la feature base
+> (entity, DTO, service, controller, migración) se tocó en esta vuelta, solo se agregaron 3 tests
+> a `test/orders.e2e-spec.ts`. Re-auditado por `@tester` — veredicto "LISTO" se mantiene.
 
 - [x] `pnpm run build` compila sin errores (confirmado de forma independiente)
 - [x] `pnpm run lint` limpio, exit 0 (confirmado de forma independiente, sin cambios más allá del
@@ -584,13 +593,18 @@ ambos endpoints juntos en una vuelta futura.
       `cancelado` sin motivo (sigue igual), `confirmado`→`cancelado` sin motivo (sigue igual),
       motivo guardado aunque no sea obligatorio (`pendiente`→`cancelado` con motivo),
       `en_camino`→`entregado` sigue funcionando (la transición nueva a `cancelado` no la rompe)
-- [x] `pnpm run test:e2e`: 377/377 en verde (14 suites) contra Postgres local real — confirmado
-      de forma independiente, incluye los 2 casos nuevos de `describe('PATCH
-      /orders/:id/status')` en `test/orders.e2e-spec.ts`: 400 al cancelar `en_camino` sin motivo
-      (+ verifica con un `GET` posterior que el pedido queda en `en_camino`, no a medias — no es
-      solo el código de status, es el estado real persistido), 200 al cancelar `en_camino` con
-      motivo (verifica `cancelReason` exacto en la respuesta) + confirma en el mismo test que
-      OTRO pedido puede seguir la transición `en_camino`→`entregado` sin romperse
+- [x] `pnpm run test:e2e`: 380/380 en verde (14 suites) contra Postgres local real — confirmado
+      de forma independiente (era 377/377; +3 por el cierre de gaps de esta vuelta), incluye los
+      casos de `describe('PATCH /orders/:id/status')` en `test/orders.e2e-spec.ts`: 400 al
+      cancelar `en_camino` sin motivo (+ verifica con un `GET` posterior que el pedido queda en
+      `en_camino`, no a medias — no es solo el código de status, es el estado real persistido),
+      200 al cancelar `en_camino` con motivo (verifica `cancelReason` exacto en la respuesta) +
+      confirma en el mismo test que OTRO pedido puede seguir la transición `en_camino`→
+      `entregado` sin romperse, y los 3 nuevos de esta vuelta: 400 si `cancelReason` supera 500
+      caracteres (con `GET` posterior confirmando que el pedido no quedó cancelado a medias,
+      sigue `pendiente`), 200 con `cancelReason` de exactamente 500 caracteres (límite inclusive,
+      verificado con `'a'.repeat(500).length === 500` en Node antes de confiar en el test),
+      `GET` de un pedido no cancelado devuelve `cancelReason: null` explícito
 - [x] Migración `AddCancelReasonToOrders1787841923730`: verificada de forma independiente con
       `docker exec celtas-db psql` contra Postgres local real — `\d orders` muestra
       `cancelReason` como `text`, nullable, coincide exactamente con la entidad;
@@ -628,6 +642,13 @@ ambos endpoints juntos en una vuelta futura.
       `curl` desde Git Bash en Windows fue un artefacto de encoding del propio shell al construir
       el payload, no un bug del backend, confirmado repitiendo la misma prueba sin shell de por
       medio)
+- [x] **Verificado con mutación real por `@tester` (vuelta de cierre de gaps)**: se cambió
+      `@MaxLength(500)` a `@MaxLength(600)` en `UpdateOrderStatusDto.cancelReason` — rompió
+      **exactamente** 1/60 test e2e (`400 si cancelReason supera los 500 caracteres (DTO)`, que
+      pasó a recibir `200` en vez de `400`), ningún otro (59/60 restantes en verde, incluyendo el
+      test de exactamente 500 caracteres, que no depende del límite superior). Mutación
+      revertida, `git status`/`git diff` confirman el archivo idéntico al estado del commit
+      `06b6968`, suite vuelve a 60/60 e2e de `orders` y 380/380 e2e completo
 - [x] Seguridad: `PATCH /orders/:id/status` devuelve 401 sin token y 403 con rol `cliente`
       (verificado en vivo); `password` no aparece en ninguna respuesta de `POST /auth/register`
       ni `POST /auth/login` usadas para generar los tokens de prueba de esta auditoría
@@ -653,10 +674,10 @@ ambos endpoints juntos en una vuelta futura.
   un test explícito que lo ejercite nombrando ese caso puntual.
 - No hay test de cancelar un pedido ya `cancelado` (doble cancelación) — mismo caso que arriba,
   cubierto implícitamente por `VALID_TRANSITIONS[CANCELADO] = []`, sin un test dedicado.
-- El límite exacto de `cancelReason` (exactamente 500 caracteres, debe aceptar) no tiene test
-  explícito — solo se probó 501 (rechaza) en esta auditoría; mismo patrón de gap ya visto y
-  documentado en otras features de este checklist (ej. `comment` de `OrderItem`, que si cerró
-  ese caso límite).
+- ~~El límite exacto de `cancelReason` (exactamente 500 caracteres, debe aceptar) no tiene test
+  explícito~~ — **cerrado en la vuelta de cierre de gaps**: ahora hay test e2e explícito tanto
+  del límite (500, acepta) como del exceso (501, rechaza con 400 del DTO) y del `cancelReason:
+  null` en un `GET` de pedido no cancelado.
 - El mensaje del 400 de motivo faltante y el mensaje del 400 de transición inválida son ambos
   `BadRequestException` (mismo `statusCode`), y la segunda mutación de arriba lo confirma: un test
   que solo verifique `toBeInstanceOf(BadRequestException)` sin revisar el mensaje no distinguiría
@@ -664,16 +685,18 @@ ambos endpoints juntos en una vuelta futura.
   mensaje exacto en los casos e2e (vía `res.body.message`), pero no en todos los unitarios.
 
 **Veredicto: LISTO.** Todo lo crítico del checklist pasa: build/lint limpios (confirmados de forma
-independiente), 420/420 unit y 377/377 e2e (confirmados de forma independiente, no solo el conteo
-reportado por la sesión principal), migración verificada 1:1 contra Postgres local real, dos
+independiente), 420/420 unit y 380/380 e2e (confirmados de forma independiente, no solo el conteo
+reportado por la sesión principal), migración verificada 1:1 contra Postgres local real, tres
 mutaciones reales en los puntos más frágiles (guard de motivo obligatorio, transición
-`EN_CAMINO→CANCELADO` en `VALID_TRANSITIONS`) que rompen exactamente los tests nuevos esperados y
-ningún otro, contrato del DTO validado en vivo (incluyendo unicode), seguridad confirmada
+`EN_CAMINO→CANCELADO` en `VALID_TRANSITIONS`, y ahora también `@MaxLength(500→600)` del DTO) que
+rompen exactamente los tests esperados y ningún otro, contrato del DTO validado en vivo
+(incluyendo unicode y el límite exacto de 500/501 caracteres), seguridad confirmada
 (401/403/sin password), Swagger correcto, y barrido completo de código confirmando que
-`VALID_TRANSITIONS` es la única fuente de verdad para las transiciones. Sin bloqueantes. Los ⚠️ de
-arriba son gaps de cobertura de bajo riesgo (casos ya cubiertos implícitamente por la tabla de
-transiciones, pero sin un test dedicado que los nombre) — vale la pena cerrarlos en una vuelta
-futura si se sigue tocando este flujo.
+`VALID_TRANSITIONS` es la única fuente de verdad para las transiciones. Sin bloqueantes. De los ⚠️
+de arriba, el gap del límite de `cancelReason` quedó cerrado en esta vuelta; los dos restantes
+(doble transición inválida desde `entregado`/`cancelado` sin test dedicado, y falta de chequeo de
+mensaje exacto en todos los tests unitarios) siguen siendo gaps de bajo riesgo, ya cubiertos
+implícitamente por `VALID_TRANSITIONS`, sin bloquear el veredicto.
 
 ## Comentario libre por ítem (`OrderItem.comment`)
 

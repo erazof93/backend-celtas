@@ -1053,6 +1053,64 @@ describe('Orders (e2e)', () => {
       );
     });
 
+    it('400 si cancelReason supera los 500 caracteres (DTO)', async () => {
+      const created = await createOrder(clientAToken, {
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const id = ((created.body as Envelope).data as OrderData).id;
+
+      const res = await request(app.getHttpServer())
+        .patch(`/orders/${id}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'cancelado', cancelReason: 'a'.repeat(501) })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+
+      // El pedido no debe haber quedado cancelado a medias: sigue pendiente.
+      const check = await request(app.getHttpServer())
+        .get(`/orders/${id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      expect(((check.body as Envelope).data as OrderData).status).toBe(
+        'pendiente',
+      );
+    });
+
+    it('acepta cancelReason de exactamente 500 caracteres', async () => {
+      const created = await createOrder(clientAToken, {
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const id = ((created.body as Envelope).data as OrderData).id;
+      const reason = 'a'.repeat(500);
+
+      const res = await request(app.getHttpServer())
+        .patch(`/orders/${id}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'cancelado', cancelReason: reason })
+        .expect(200);
+      expect(((res.body as Envelope).data as OrderData).cancelReason).toBe(
+        reason,
+      );
+    });
+
+    it('GET de un pedido no cancelado devuelve cancelReason: null', async () => {
+      const created = await createOrder(clientAToken, {
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const id = ((created.body as Envelope).data as OrderData).id;
+
+      const res = await request(app.getHttpServer())
+        .get(`/orders/${id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      expect(((res.body as Envelope).data as OrderData).cancelReason).toBe(
+        null,
+      );
+    });
+
     it('400 al cancelar un pedido en_camino sin motivo', async () => {
       const created = await createOrder(clientAToken, {
         addressId,

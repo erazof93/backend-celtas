@@ -483,11 +483,15 @@ celtas-backend/
         `cancelado` (`pendiente`/`confirmado`) el motivo sigue siendo opcional, y si viene se
         guarda igual. Reactivación de cupón/premio ya existente no se ve afectada. Auditado por
         `@tester` (pase independiente, con mutación real y prueba end-to-end contra servidor +
-        Postgres local reales): **LISTO** — 420 unit (23 suites) + 377 e2e (14 suites),
+        Postgres local reales): **LISTO** — 420 unit (23 suites) + 380 e2e (14 suites),
         build/lint limpios, migración verificada 1:1 contra Postgres local, Swagger correcto,
-        dos mutaciones reales (guard de motivo obligatorio, transición `EN_CAMINO→CANCELADO`
-        quitada de `VALID_TRANSITIONS`) rompen exactamente los tests nuevos esperados y ningún
-        otro. Ver detalle en `docs/testing-checklist.md`.
+        tres mutaciones reales (guard de motivo obligatorio, transición `EN_CAMINO→CANCELADO`
+        quitada de `VALID_TRANSITIONS`, `@MaxLength(500)`→`600` del DTO) rompen exactamente los
+        tests esperados y ningún otro. Vuelta de cierre de gaps (contrato de `celtas-admin`):
+        se agregaron tests e2e explícitos para `cancelReason` > 500 caracteres (400 del DTO),
+        exactamente 500 caracteres (acepta, límite inclusive) y `GET` de pedido no cancelado
+        (`cancelReason: null`) — antes eran riesgos de bajo impacto sin cobertura automatizada.
+        Ver detalle en `docs/testing-checklist.md`.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)
