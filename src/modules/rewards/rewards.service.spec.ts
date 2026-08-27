@@ -6,6 +6,7 @@ import { MenuItem } from '../menu/entities/menu-item.entity';
 import { Order, OrderStatus } from '../orders/entities/order.entity';
 import { SettingsService } from '../settings/settings.service';
 import { User } from '../users/entities/user.entity';
+import { limaWallClockDate } from '../../common/utils/lima-time.util';
 import { RewardMilestone } from './entities/reward-milestone.entity';
 import { RewardRedemption } from './entities/reward-redemption.entity';
 import { StarPromotion } from './entities/star-promotion.entity';
@@ -263,8 +264,12 @@ describe('RewardsService', () => {
     });
 
     it('devuelve promocionActiva solo si la fecha de hoy cae dentro de su rango', async () => {
-      const today = new Date();
-      const iso = today.toISOString().slice(0, 10);
+      // "Hoy" según la hora de pared de Lima (UTC-5), igual que el servicio real
+      // (RewardsService usa limaWallClockDate). Con toISOString() esto fallaba de
+      // forma determinística entre las 00:00 y las 04:59 UTC (7pm–11:59pm en Lima),
+      // cuando la fecha UTC ya avanzó un día y la de Lima todavía no.
+      const { year, month, day } = limaWallClockDate();
+      const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       rewardMilestonesRepo.find.mockResolvedValue([]);
       dataSource.manager.find.mockImplementation((entity: unknown) => {
         if (entity === Order) return Promise.resolve([]);
