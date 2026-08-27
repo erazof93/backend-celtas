@@ -36,7 +36,7 @@ import { Order, OrderStatus } from './entities/order.entity';
 const VALID_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.PENDIENTE]: [OrderStatus.CONFIRMADO, OrderStatus.CANCELADO],
   [OrderStatus.CONFIRMADO]: [OrderStatus.EN_CAMINO, OrderStatus.CANCELADO],
-  [OrderStatus.EN_CAMINO]: [OrderStatus.ENTREGADO],
+  [OrderStatus.EN_CAMINO]: [OrderStatus.ENTREGADO, OrderStatus.CANCELADO],
   [OrderStatus.ENTREGADO]: [],
   [OrderStatus.CANCELADO]: [],
 };
@@ -250,9 +250,10 @@ export class OrdersService {
 
   /**
    * Actualiza el estado de un pedido (admin). Valida la transición (no saltar de
-   * pendiente a entregado; cancelado solo desde pendiente/confirmado). Al pasar a
-   * `entregado` suma el total al `user.totalSpent` dentro de la misma transacción;
-   * al pasar a `cancelado` reactiva el cupón que el pedido hubiera canjeado.
+   * pendiente a entregado; cancelado también permitido desde en_camino, con motivo
+   * obligatorio en ese caso). Al pasar a `entregado` suma el total al
+   * `user.totalSpent` dentro de la misma transacción; al pasar a `cancelado`
+   * reactiva el cupón que el pedido hubiera canjeado.
    */
   async updateStatus(id: string, dto: UpdateOrderStatusDto): Promise<Order> {
     return this.dataSource
@@ -275,9 +276,22 @@ export class OrdersService {
           );
         }
 
+        if (
+          dto.status === OrderStatus.CANCELADO &&
+          order.status === OrderStatus.EN_CAMINO &&
+          !dto.cancelReason?.trim()
+        ) {
+          throw new BadRequestException(
+            'Debes indicar un motivo para cancelar un pedido que ya está en camino',
+          );
+        }
+
         order.status = dto.status;
 
         if (dto.status === OrderStatus.CANCELADO) {
+          if (dto.cancelReason?.trim()) {
+            order.cancelReason = dto.cancelReason.trim();
+          }
           // Si el pedido canjeó un cupón y se cancela, el cliente nunca usó el
           // descuento: se reactiva el cupón dentro de la misma transacción
           // (mismo patrón que totalSpent al entregar). No se toca expiresAt.

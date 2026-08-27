@@ -88,6 +88,14 @@ export class Order {
   @Column({ type: 'timestamptz', nullable: true })
   deliveredAt: Date | null;
 
+  /**
+   * Motivo de cancelación. Obligatorio (validado en el service) solo cuando la
+   * transición es `en_camino` → `cancelado`; en pendiente/confirmado sigue siendo
+   * opcional. Nullable: la mayoría de pedidos nunca se cancelan.
+   */
+  @Column({ type: 'text', nullable: true })
+  cancelReason: string | null;
+
   @OneToMany(() => OrderItem, (item) => item.order, { cascade: true })
   items: OrderItem[];
 

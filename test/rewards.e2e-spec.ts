@@ -899,8 +899,9 @@ describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => 
       ]).expect(201);
       await deliverOrder(((created.body as Envelope).data as OrderData).id);
       const progress = await getProgress(token);
-      const rewardId = progress.premiosDisponibles.find((p) => !p.esEspecial)!
-        .id;
+      const rewardId = progress.premiosDisponibles.find(
+        (p) => !p.esEspecial,
+      )!.id;
 
       const redeemed = await createOrder(token, [
         {

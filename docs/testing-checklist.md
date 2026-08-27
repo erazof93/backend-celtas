@@ -245,6 +245,7 @@ verde. Sin bloqueantes restantes.
 - [ ] Un cliente solo puede ver sus propios pedidos; admin puede ver todos
 - [x] `GET /orders?userId=X` (admin) filtra solo los pedidos de ese usuario; userId inexistente → lista vacía (200); userId malformado → 400; combinado con `status`; sin el param el comportamiento previo (paginación + status) queda intacto
 - [x] `POST /orders/estimate-delivery-fee` (cliente autenticado) calcula `deliveryFee`/`isFarOrder`/`distanceMeters` de una dirección propia sin crear un pedido; 404 si la dirección no existe o pertenece a otro usuario; ver sección dedicada más abajo
+- [x] Cancelar un pedido `en_camino` exige `cancelReason` (400 sin motivo/motivo vacío); en el resto de transiciones a `cancelado` sigue siendo opcional; ver sección dedicada "Cancelar un pedido `en_camino`..." más abajo
 
 ## Links de Google Maps/Waze en el mensaje de WhatsApp (`OrdersService`)
 
@@ -559,6 +560,120 @@ ajena") que confirman que la cobertura nueva es real y que el refactor `resolveD
 son gaps de cobertura ya conocidos de la feature base (límite exacto de tramo/radio de aviso), que
 ahora también aplican a este endpoint por compartir el mismo cálculo — vale la pena cerrarlos para
 ambos endpoints juntos en una vuelta futura.
+
+## Cancelar un pedido `en_camino`, con motivo obligatorio solo en ese caso (`OrdersService`)
+
+> Feature nueva: `VALID_TRANSITIONS[OrderStatus.EN_CAMINO]` ahora es `[ENTREGADO, CANCELADO]`
+> (antes solo `ENTREGADO`). Columna nueva `Order.cancelReason` (`text`, nullable). En
+> `updateStatus()`: si `dto.status === CANCELADO && order.status === EN_CAMINO &&
+> !dto.cancelReason?.trim()` → 400 con mensaje explícito. Si viene `cancelReason` (trim no
+> vacío) en CUALQUIER transición a `cancelado` (no solo desde `en_camino`), se guarda; no es
+> obligatorio para `pendiente`/`confirmado` → `cancelado`. Migración
+> `AddCancelReasonToOrders1787841923730`.
+>
+> **Auditado por `@tester` (pase independiente, con mutación real y prueba end-to-end contra
+> servidor `pnpm run start:dev` + Postgres local `celtas-db` reales) — veredicto "LISTO".**
+
+- [x] `pnpm run build` compila sin errores (confirmado de forma independiente)
+- [x] `pnpm run lint` limpio, exit 0 (confirmado de forma independiente, sin cambios más allá del
+      reformateo cosmético preexistente y ajeno en `test/rewards.e2e-spec.ts`, ver nota abajo)
+- [x] `pnpm test`: 420/420 en verde (23 suites) — confirmado de forma independiente, incluye los
+      7 casos nuevos de `describe('updateStatus')` en `orders.service.spec.ts`: cancelar
+      `en_camino` con motivo (200, `cancelReason` guardado, cupón/premio reactivados),
+      `en_camino` sin motivo (400), `en_camino` con motivo solo espacios (400), `pendiente`→
+      `cancelado` sin motivo (sigue igual), `confirmado`→`cancelado` sin motivo (sigue igual),
+      motivo guardado aunque no sea obligatorio (`pendiente`→`cancelado` con motivo),
+      `en_camino`→`entregado` sigue funcionando (la transición nueva a `cancelado` no la rompe)
+- [x] `pnpm run test:e2e`: 377/377 en verde (14 suites) contra Postgres local real — confirmado
+      de forma independiente, incluye los 2 casos nuevos de `describe('PATCH
+      /orders/:id/status')` en `test/orders.e2e-spec.ts`: 400 al cancelar `en_camino` sin motivo
+      (+ verifica con un `GET` posterior que el pedido queda en `en_camino`, no a medias — no es
+      solo el código de status, es el estado real persistido), 200 al cancelar `en_camino` con
+      motivo (verifica `cancelReason` exacto en la respuesta) + confirma en el mismo test que
+      OTRO pedido puede seguir la transición `en_camino`→`entregado` sin romperse
+- [x] Migración `AddCancelReasonToOrders1787841923730`: verificada de forma independiente con
+      `docker exec celtas-db psql` contra Postgres local real — `\d orders` muestra
+      `cancelReason` como `text`, nullable, coincide exactamente con la entidad;
+      `SELECT name FROM migrations ORDER BY id DESC` la confirma como la última registrada
+- [x] **Verificado con mutación real por `@tester`**: se envolvió la condición del 400 por motivo
+      faltante en `if (false && ...)` (deshabilitada) — rompió **exactamente** 2/90 tests de
+      `orders.service.spec.ts` (`lanza 400 al cancelar desde en_camino sin motivo`, `lanza 400 al
+      cancelar desde en_camino con motivo vacío/solo espacios`) y **exactamente** 1/57 test e2e
+      de `orders.e2e-spec.ts` (`400 al cancelar un pedido en_camino sin motivo`, que pasó a
+      recibir `200` en vez de `400`), ningún otro. Mutación revertida, `diff` byte a byte contra
+      el backup confirma el archivo idéntico al estado previo, suite completa vuelve a 420/420 y
+      377/377
+- [x] **Verificado con mutación real por `@tester`**: se quitó `OrderStatus.CANCELADO` de
+      `VALID_TRANSITIONS[OrderStatus.EN_CAMINO]` (dejando solo `[ENTREGADO]`) — rompió
+      **exactamente** 1/90 test unitario (`permite cancelar desde en_camino con motivo...`, ahora
+      lanza `BadRequestException` de transición inválida en vez de resolver 200) y **exactamente**
+      1/57 test e2e (`200 al cancelar un pedido en_camino con motivo...`, que pasó a recibir `400`
+      en vez de `200`), ningún otro — los 2 tests que esperan 400 por motivo faltante siguen en
+      verde porque el guard de transición corta primero con el mismo tipo de excepción, solo con
+      mensaje distinto (no invalida la cobertura, solo confirma que ambos guards son
+      independientes y se solapan en el tipo de error, no en el mensaje). Mutación revertida,
+      `diff` byte a byte contra el backup confirma el archivo idéntico al estado previo, suite
+      completa vuelve a 420/420 y 377/377
+- [x] Contrato del DTO verificado con `curl`/Node `http` real contra el servidor y Postgres local
+      reales (token real de un admin y un cliente registrados en esta sesión, store_location y
+      horario forzados temporalmente "siempre abierto" para poder crear el pedido real, y
+      restaurados al finalizar): `status` faltante → 400 (mensaje de enum); `cancelReason`
+      numérico (`12345`) → 400 (`cancelReason debe ser texto`); `cancelReason` de 501 caracteres
+      → 400 (`El motivo no puede superar los 500 caracteres`); ciclo real `pendiente→confirmado→
+      en_camino` seguido de `cancelado` sin motivo → 400 con el mensaje exacto de negocio, y un
+      `GET` posterior confirma que el pedido real en Postgres sigue en `en_camino` (no quedó a
+      medias); `cancelado` con motivo real → 200 con `cancelReason` persistido correctamente,
+      incluyendo acentos/eñes (`"dirección (ñ, á, é)"` verificado byte a byte con un cliente HTTP
+      Node puro, sin pasar por el shell — la corrupción de tildes vista en un intento previo con
+      `curl` desde Git Bash en Windows fue un artefacto de encoding del propio shell al construir
+      el payload, no un bug del backend, confirmado repitiendo la misma prueba sin shell de por
+      medio)
+- [x] Seguridad: `PATCH /orders/:id/status` devuelve 401 sin token y 403 con rol `cliente`
+      (verificado en vivo); `password` no aparece en ninguna respuesta de `POST /auth/register`
+      ni `POST /auth/login` usadas para generar los tokens de prueba de esta auditoría
+- [x] Swagger: confirmado contra `/docs-json` real (servidor levantado) que `@ApiOperation`/
+      `@ApiResponse` del `PATCH /orders/:id/status` documentan la transición nueva y el 400 por
+      motivo faltante con el texto correcto; `UpdateOrderStatusDto` documenta `cancelReason` como
+      `string` opcional con `example`/`description` acordes
+- [x] Barrido de código completo (`grep` sobre todo `src/`) confirmando que ningún otro archivo
+      lee `VALID_TRANSITIONS` ni asume por su cuenta que `en_camino` solo puede ir a `entregado`
+      — la única fuente de verdad es la constante en `orders.service.ts`; los demás matches de
+      `EN_CAMINO`/`en_camino` en el proyecto son el enum, el `ApiQuery` de filtros, mensajes de
+      Swagger/DTO y los tests, ninguno con lógica de transición propia
+- [x] `test/rewards.e2e-spec.ts` aparece modificado en el diff de esta sesión, pero es un
+      reformateo cosmético de ESLint/Prettier (rompe una llamada encadenada en dos líneas) sin
+      cambio funcional — confirmado con `git diff` línea por línea, mismo patrón ya documentado
+      en auditorías previas de este proyecto (`--fix` siempre reformatea ese archivo aunque no se
+      lo toque a propósito)
+
+⚠️ Riesgos / casos borde no cubiertos (bajo riesgo, no bloqueantes):
+- No hay test (unitario ni e2e) de cancelar un pedido `entregado` con motivo — ya está cubierto
+  implícitamente porque `VALID_TRANSITIONS[ENTREGADO] = []` (cualquier transición desde
+  `entregado` es 400 por transición inválida antes de llegar al chequeo de motivo), pero no hay
+  un test explícito que lo ejercite nombrando ese caso puntual.
+- No hay test de cancelar un pedido ya `cancelado` (doble cancelación) — mismo caso que arriba,
+  cubierto implícitamente por `VALID_TRANSITIONS[CANCELADO] = []`, sin un test dedicado.
+- El límite exacto de `cancelReason` (exactamente 500 caracteres, debe aceptar) no tiene test
+  explícito — solo se probó 501 (rechaza) en esta auditoría; mismo patrón de gap ya visto y
+  documentado en otras features de este checklist (ej. `comment` de `OrderItem`, que si cerró
+  ese caso límite).
+- El mensaje del 400 de motivo faltante y el mensaje del 400 de transición inválida son ambos
+  `BadRequestException` (mismo `statusCode`), y la segunda mutación de arriba lo confirma: un test
+  que solo verifique `toBeInstanceOf(BadRequestException)` sin revisar el mensaje no distinguiría
+  entre ambos guards si algún día se rompe uno de los dos. Los tests actuales sí verifican el
+  mensaje exacto en los casos e2e (vía `res.body.message`), pero no en todos los unitarios.
+
+**Veredicto: LISTO.** Todo lo crítico del checklist pasa: build/lint limpios (confirmados de forma
+independiente), 420/420 unit y 377/377 e2e (confirmados de forma independiente, no solo el conteo
+reportado por la sesión principal), migración verificada 1:1 contra Postgres local real, dos
+mutaciones reales en los puntos más frágiles (guard de motivo obligatorio, transición
+`EN_CAMINO→CANCELADO` en `VALID_TRANSITIONS`) que rompen exactamente los tests nuevos esperados y
+ningún otro, contrato del DTO validado en vivo (incluyendo unicode), seguridad confirmada
+(401/403/sin password), Swagger correcto, y barrido completo de código confirmando que
+`VALID_TRANSITIONS` es la única fuente de verdad para las transiciones. Sin bloqueantes. Los ⚠️ de
+arriba son gaps de cobertura de bajo riesgo (casos ya cubiertos implícitamente por la tabla de
+transiciones, pero sin un test dedicado que los nombre) — vale la pena cerrarlos en una vuelta
+futura si se sigue tocando este flujo.
 
 ## Comentario libre por ítem (`OrderItem.comment`)
 

@@ -61,6 +61,7 @@ interface OrderData {
     comment: string | null;
   }[];
   user?: { phone: string | null; fullName: string };
+  cancelReason?: string | null;
 }
 
 describe('Orders (e2e)', () => {
@@ -1049,6 +1050,98 @@ describe('Orders (e2e)', () => {
         .expect(200);
       expect(((res.body as Envelope).data as OrderData).status).toBe(
         'cancelado',
+      );
+    });
+
+    it('400 al cancelar un pedido en_camino sin motivo', async () => {
+      const created = await createOrder(clientAToken, {
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const enCaminoId = ((created.body as Envelope).data as OrderData).id;
+      await request(app.getHttpServer())
+        .patch(`/orders/${enCaminoId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'confirmado' })
+        .expect(200);
+      await request(app.getHttpServer())
+        .patch(`/orders/${enCaminoId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'en_camino' })
+        .expect(200);
+
+      const res = await request(app.getHttpServer())
+        .patch(`/orders/${enCaminoId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'cancelado' })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+
+      // El pedido sigue en_camino, no quedó a medio cancelar.
+      const check = await request(app.getHttpServer())
+        .get(`/orders/${enCaminoId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      expect(((check.body as Envelope).data as OrderData).status).toBe(
+        'en_camino',
+      );
+    });
+
+    it('200 al cancelar un pedido en_camino con motivo, guarda cancelReason y no rompe en_camino → entregado en otro pedido', async () => {
+      const created = await createOrder(clientAToken, {
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const enCaminoId = ((created.body as Envelope).data as OrderData).id;
+      await request(app.getHttpServer())
+        .patch(`/orders/${enCaminoId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'confirmado' })
+        .expect(200);
+      await request(app.getHttpServer())
+        .patch(`/orders/${enCaminoId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'en_camino' })
+        .expect(200);
+
+      const res = await request(app.getHttpServer())
+        .patch(`/orders/${enCaminoId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          status: 'cancelado',
+          cancelReason: 'El cliente ya no se encuentra en la dirección',
+        })
+        .expect(200);
+      const cancelled = (res.body as Envelope).data as OrderData;
+      expect(cancelled.status).toBe('cancelado');
+      expect(cancelled.cancelReason).toBe(
+        'El cliente ya no se encuentra en la dirección',
+      );
+
+      // La transición en_camino → entregado de OTRO pedido (creado antes en esta
+      // suite) no se ve afectada por haber habilitado en_camino → cancelado.
+      const anotherOrder = await createOrder(clientAToken, {
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const anotherId = ((anotherOrder.body as Envelope).data as OrderData).id;
+      await request(app.getHttpServer())
+        .patch(`/orders/${anotherId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'confirmado' })
+        .expect(200);
+      await request(app.getHttpServer())
+        .patch(`/orders/${anotherId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'en_camino' })
+        .expect(200);
+      const delivered = await request(app.getHttpServer())
+        .patch(`/orders/${anotherId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'entregado' })
+        .expect(200);
+      expect(((delivered.body as Envelope).data as OrderData).status).toBe(
+        'entregado',
       );
     });
   });

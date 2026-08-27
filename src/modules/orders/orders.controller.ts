@@ -161,13 +161,14 @@ export class OrdersController {
   @ApiOperation({
     summary: 'Actualizar el estado de un pedido (solo admin)',
     description:
-      'Valida transiciones (pendiente→confirmado→en_camino→entregado; cancelado solo desde pendiente/confirmado). Al pasar a "entregado" suma el total a user.totalSpent en una transacción.',
+      'Valida transiciones (pendiente→confirmado→en_camino→entregado; cancelado desde pendiente/confirmado/en_camino). Al pasar a "entregado" suma el total a user.totalSpent en una transacción. Al cancelar un pedido "en_camino" es obligatorio enviar cancelReason; en el resto de transiciones a "cancelado" es opcional.',
   })
   @ApiParam({ name: 'id', description: 'UUID del pedido' })
   @ApiResponse({ status: 200, description: 'Pedido con el estado actualizado' })
   @ApiResponse({
     status: 400,
-    description: 'Transición de estado inválida',
+    description:
+      'Transición de estado inválida, o falta cancelReason al cancelar un pedido en_camino',
   })
   @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
   @ApiResponse({ status: 403, description: 'Requiere rol admin' })

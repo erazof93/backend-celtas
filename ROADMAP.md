@@ -475,6 +475,19 @@ celtas-backend/
         coordenadas"): **LISTO** — 353 unit (20 suites) + 296 e2e (12 suites), build limpio,
         Swagger correcto, refactor `resolveDelivery`→`computeDelivery` confirmado sin regresión en
         `POST /orders`. Ver detalle en `docs/testing-checklist.md`.
+  - [x] **Cancelar un pedido `en_camino`, con motivo obligatorio solo en ese caso.**
+        `VALID_TRANSITIONS[EN_CAMINO]` ahora también permite `CANCELADO` (antes solo
+        `ENTREGADO`). Columna nueva `Order.cancelReason` (`text`, nullable). En
+        `updateStatus()`: si la transición es `en_camino → cancelado` y `cancelReason` viene
+        vacío/solo espacios, 400 con mensaje explícito; en el resto de transiciones a
+        `cancelado` (`pendiente`/`confirmado`) el motivo sigue siendo opcional, y si viene se
+        guarda igual. Reactivación de cupón/premio ya existente no se ve afectada. Auditado por
+        `@tester` (pase independiente, con mutación real y prueba end-to-end contra servidor +
+        Postgres local reales): **LISTO** — 420 unit (23 suites) + 377 e2e (14 suites),
+        build/lint limpios, migración verificada 1:1 contra Postgres local, Swagger correcto,
+        dos mutaciones reales (guard de motivo obligatorio, transición `EN_CAMINO→CANCELADO`
+        quitada de `VALID_TRANSITIONS`) rompen exactamente los tests nuevos esperados y ningún
+        otro. Ver detalle en `docs/testing-checklist.md`.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)

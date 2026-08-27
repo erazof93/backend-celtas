@@ -1388,5 +1388,103 @@ describe('OrdersService', () => {
 
       expect(result.status).toBe(OrderStatus.CONFIRMADO);
     });
+
+    it('permite cancelar desde en_camino con motivo (200, motivo guardado, cupón/premio reactivado)', async () => {
+      const user = { id: userId, totalSpent: 0 } as User;
+      const order = seedOrder({ status: OrderStatus.EN_CAMINO });
+      const manager = setupTransaction(order, user);
+
+      const result = await service.updateStatus('one-1', {
+        status: OrderStatus.CANCELADO,
+        cancelReason: 'El cliente ya no se encuentra en la dirección',
+      });
+
+      expect(result.status).toBe(OrderStatus.CANCELADO);
+      expect(result.cancelReason).toBe(
+        'El cliente ya no se encuentra en la dirección',
+      );
+      expect(couponsService.reactivateForCancelledOrder).toHaveBeenCalledWith(
+        manager,
+        order.id,
+      );
+      expect(rewardsService.reactivateForCancelledOrder).toHaveBeenCalledWith(
+        manager,
+        order.id,
+      );
+    });
+
+    it('lanza 400 al cancelar desde en_camino sin motivo', async () => {
+      const user = { id: userId, totalSpent: 0 } as User;
+      const order = seedOrder({ status: OrderStatus.EN_CAMINO });
+      setupTransaction(order, user);
+
+      await expect(
+        service.updateStatus('one-1', { status: OrderStatus.CANCELADO }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('lanza 400 al cancelar desde en_camino con motivo vacío/solo espacios', async () => {
+      const user = { id: userId, totalSpent: 0 } as User;
+      const order = seedOrder({ status: OrderStatus.EN_CAMINO });
+      setupTransaction(order, user);
+
+      await expect(
+        service.updateStatus('one-1', {
+          status: OrderStatus.CANCELADO,
+          cancelReason: '   ',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('cancelar desde pendiente sin motivo sigue funcionando igual que antes', async () => {
+      const user = { id: userId, totalSpent: 0 } as User;
+      const order = seedOrder({ status: OrderStatus.PENDIENTE });
+      setupTransaction(order, user);
+
+      const result = await service.updateStatus('one-1', {
+        status: OrderStatus.CANCELADO,
+      });
+
+      expect(result.status).toBe(OrderStatus.CANCELADO);
+      expect(result.cancelReason).toBeUndefined();
+    });
+
+    it('cancelar desde confirmado sin motivo sigue funcionando igual que antes', async () => {
+      const user = { id: userId, totalSpent: 0 } as User;
+      const order = seedOrder({ status: OrderStatus.CONFIRMADO });
+      setupTransaction(order, user);
+
+      const result = await service.updateStatus('one-1', {
+        status: OrderStatus.CANCELADO,
+      });
+
+      expect(result.status).toBe(OrderStatus.CANCELADO);
+    });
+
+    it('guarda el motivo si viene, aunque la transición sea pendiente→cancelado (no es obligatorio ahí)', async () => {
+      const user = { id: userId, totalSpent: 0 } as User;
+      const order = seedOrder({ status: OrderStatus.PENDIENTE });
+      setupTransaction(order, user);
+
+      const result = await service.updateStatus('one-1', {
+        status: OrderStatus.CANCELADO,
+        cancelReason: 'El cliente se arrepintió',
+      });
+
+      expect(result.cancelReason).toBe('El cliente se arrepintió');
+    });
+
+    it('en_camino→entregado sigue funcionando (la nueva transición a cancelado no la rompe)', async () => {
+      const user = { id: userId, totalSpent: 100 } as User;
+      const order = seedOrder({ status: OrderStatus.EN_CAMINO, total: 59.7 });
+      setupTransaction(order, user);
+
+      const result = await service.updateStatus('one-1', {
+        status: OrderStatus.ENTREGADO,
+      });
+
+      expect(result.status).toBe(OrderStatus.ENTREGADO);
+      expect(user.totalSpent).toBe(159.7);
+    });
   });
 });
