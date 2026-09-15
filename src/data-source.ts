@@ -2,7 +2,9 @@ import 'dotenv/config';
 import 'reflect-metadata';
 import { DataSource } from 'typeorm';
 import { Banner } from './modules/banners/entities/banner.entity';
+import { Beverage } from './modules/beverages/entities/beverage.entity';
 import { Coupon } from './modules/coupons/entities/coupon.entity';
+import { ExtraPortion } from './modules/extra-portions/entities/extra-portion.entity';
 import { Category } from './modules/menu/entities/category.entity';
 import { MenuItem } from './modules/menu/entities/menu-item.entity';
 import { MarketingNotification } from './modules/notifications/entities/marketing-notification.entity';
@@ -57,6 +59,8 @@ export const AppDataSource = new DataSource({
     Order,
     OrderItem,
     Sauce,
+    Beverage,
+    ExtraPortion,
     Coupon,
     Banner,
     Setting,

@@ -10,6 +10,8 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { Beverage } from '../../beverages/entities/beverage.entity';
+import { ExtraPortion } from '../../extra-portions/entities/extra-portion.entity';
 import { Sauce } from '../../sauces/entities/sauce.entity';
 import { Category } from './category.entity';
 
@@ -93,6 +95,78 @@ export class MenuItem {
     inverseJoinColumn: { name: 'sauceId', referencedColumnName: 'id' },
   })
   sauces: Sauce[];
+
+  /**
+   * Bebidas que este producto ofrece, del catálogo global de `beverages`. Vacío =
+   * el producto no ofrece selector de bebidas — la app no muestra la sección.
+   * Relación en vivo (a diferencia de `OrderItem.selectedBeverages`, que es
+   * snapshot con nombre y precio): editar el catálogo actualiza de inmediato qué
+   * ofrece cada producto. Mismo patrón que `sauces`, con precio.
+   */
+  @ManyToMany(() => Beverage, (beverage) => beverage.menuItems)
+  @JoinTable({
+    name: 'menu_item_beverages',
+    joinColumn: { name: 'menuItemId', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'beverageId', referencedColumnName: 'id' },
+  })
+  beverages: Beverage[];
+
+  /**
+   * Si el grupo de bebidas es obligatorio: la app debe forzar al cliente a elegir
+   * al menos una antes de agregar el producto al carrito. Sin efecto si
+   * `beverages` está vacío (el producto no ofrece ninguna).
+   */
+  @Column({ name: 'beverage_group_required', type: 'boolean', default: false })
+  beverageGroupRequired: boolean;
+
+  /**
+   * Máximo de bebidas que el cliente puede elegir para este producto (ej. 1 =
+   * selector de opción única, como un combo con una sola bebida incluida).
+   * Default 1: la mayoría de productos con bebida ofrecen una sola a elegir.
+   */
+  @Column({
+    name: 'beverage_group_max_selectable',
+    type: 'int',
+    default: 1,
+  })
+  beverageGroupMaxSelectable: number;
+
+  /**
+   * Porciones extras que este producto ofrece, del catálogo global de
+   * `extra_portions`. Vacío = el producto no ofrece selector de porciones extras.
+   * Relación en vivo (a diferencia de `OrderItem.selectedExtraPortions`, que es
+   * snapshot con nombre y precio). Mismo patrón que `sauces`/`beverages`.
+   */
+  @ManyToMany(() => ExtraPortion, (extraPortion) => extraPortion.menuItems)
+  @JoinTable({
+    name: 'menu_item_extra_portions',
+    joinColumn: { name: 'menuItemId', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'extraPortionId', referencedColumnName: 'id' },
+  })
+  extraPortions: ExtraPortion[];
+
+  /**
+   * Si el grupo de porciones extras es obligatorio. Sin efecto si
+   * `extraPortions` está vacío.
+   */
+  @Column({
+    name: 'extra_portions_group_required',
+    type: 'boolean',
+    default: false,
+  })
+  extraPortionsGroupRequired: boolean;
+
+  /**
+   * Máximo de porciones extras que el cliente puede elegir para este producto.
+   * Default 1 (mismo criterio que `beverageGroupMaxSelectable`); un producto que
+   * admite varias extras a la vez (ej. hasta 3 toppings) lo configura el admin.
+   */
+  @Column({
+    name: 'extra_portions_group_max_selectable',
+    type: 'int',
+    default: 1,
+  })
+  extraPortionsGroupMaxSelectable: number;
 
   @CreateDateColumn()
   createdAt: Date;

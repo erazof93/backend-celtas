@@ -2054,3 +2054,119 @@ con un script de regresión que muestra el viejo cálculo cayendo en el mes actu
 mes anterior. `tsc` (14 errores preexistentes, ninguno en rewards e2e), `eslint` (2 errores
 preexistentes ajenos), `pnpm run test:e2e` 347/347, `git diff --stat` solo el archivo de test.
 Sin bloqueantes.
+
+---
+
+## Bebidas y Porciones Extras (catálogo `Beverage`/`ExtraPortion` + selección con precio en Orders)
+
+> Feature calcada del patrón `Sauce`, con una diferencia clave: bebidas y porciones extras SÍ
+> tienen precio y afectan el `subtotal`/`total` del pedido (las salsas no). Dos módulos nuevos
+> (`beverages`, `extra-portions`), 4 columnas de config de grupo en `MenuItem`
+> (`beverageGroupRequired`/`Max`, `extraPortionsGroupRequired`/`Max`), snapshot con precio en
+> `OrderItem.selectedBeverages`/`selectedExtraPortions` (`jsonb`, a diferencia de `selectedSauces`
+> que es `text[]`), y un método nuevo `OrdersService.resolveSelectedPriced` que reemplaza
+> `resolveSelectedSauces` para el caso con precio. Migración `AddBeveragesAndExtraPortions` generada
+> pero **NO ejecutada** contra la BD local al momento de esta auditoría.
+>
+> **Auditado por `@tester`; el hallazgo de regla de negocio (`maxSelectable`/`required` sin validar)
+> se corrigió después en la misma sesión, y la migración se ejecutó contra el Postgres local con
+> confirmación del usuario. Veredicto final: LISTO.**
+
+- [x] `pnpm run build`: limpio, sin errores.
+- [x] `pnpm run lint`: limpio, sin errores nuevos.
+- [x] `pnpm run test`: 464/464 en verde (25/25 suites), incluye los 14 tests nuevos de
+      `beverages.service.spec.ts`, 14 de `extra-portions.service.spec.ts`, la cobertura nueva de
+      `menu.service.spec.ts` (`beverageIds`/`extraPortionIds`, embedding en `findPublicMenu`), y
+      **9 tests nuevos agregados en esta auditoría** a `orders.service.spec.ts` (antes de esta
+      sesión, el cálculo de dinero con bebidas/extras tenía cobertura CERO — confirmado con
+      `grep beverageIds|selectedBeverages|resolveSelectedPriced orders.service.spec.ts` sin
+      resultados antes del cambio).
+- [x] **Mutación real confirmando que los tests nuevos son genuinos**: se revirtió temporalmente
+      `subtotal = round2((unitPrice + extrasUnitPrice) * quantity)` a
+      `subtotal = round2(unitPrice * quantity)` (el cálculo viejo, sin bebidas/extras) → 4 de los 9
+      tests nuevos fallaron inmediatamente con el valor viejo (ej. `Expected: 59.8, Received: 49.8`
+      y el caso de reward: `Expected: 5, Received: 0`). Se restauró el código original
+      (`git diff --stat src/modules/orders/orders.service.ts` después de restaurar: el archivo
+      queda idéntico al estado que trajo la sesión principal, sin cambios de producción).
+- [x] **Cálculo de `resolveSelectedPriced`/`buildItems` correcto en los casos ejercitados**:
+      cantidad > 1 (precio se multiplica por `quantity`, documentado y verificado: "cada bebida
+      elegida suma su precio una vez por unidad"), múltiples bebidas + extras combinadas en el
+      mismo ítem, ids que el producto no ofrece (400), combinado con `rewardRedemptionId`
+      (`unitPrice` forzado a 0 mientras `extrasUnitPrice` SÍ se cobra — regla de negocio razonable:
+      "el premio cubre el producto base, no lo que el cliente agregó encima" — confirmada con test
+      + mutación).
+- [x] **Guard explícito en `menu.service.ts` (`updateItem`/`createItem`)**: usa
+      `itemsRepository.merge(item, rest)` + asignación aparte de `sauces`/`beverages`/
+      `extraPortions` SOLO si `sauceIds`/`beverageIds`/`extraPortionIds !== undefined` — mismo
+      patrón "guard explícito" que ya corrigió el bug de clase de `Object.assign` (ver comentarios
+      en el propio archivo, líneas 267-269 y 271-274). No se encontró el mismo bug de clase acá.
+- [x] **FK/cascada de `menu_item_beverages`/`menu_item_extra_portions`**: coherente con el patrón
+      ya usado en `menu_item_sauces` (`AddSaucesCatalog1786846925971`) — `menuItemId` con
+      `ON DELETE CASCADE ON UPDATE CASCADE`, `beverageId`/`extraPortionId` con
+      `ON DELETE NO ACTION ON UPDATE NO ACTION`, mismo orden de PK/índices/constraints en `up`/`down`.
+- [x] **Resuelto — migración ejecutada contra la BD local real.** Al momento de la auditoría de
+      `@tester`, `migration:show` confirmaba `AddBeveragesAndExtraPortions1789446319830` sin aplicar
+      contra `celtas-db` (Postgres 17 local) y `pnpm run test:e2e -- menu.e2e-spec.ts` fallaba 16/26
+      con errores reales de Postgres (`relation "menu_item_beverages" does not exist`, columnas
+      `beverage_group_required`/`extra_portions_group_required` inexistentes). Tras confirmación
+      explícita del usuario, se corrió `migration:run` (éxito) y se re-verificó: `menu.e2e-spec.ts`
+      26/26 verde, `test:e2e` completo 380/380 verde (14/14 suites).
+- [x] **Corregido tras el hallazgo de `@tester`** — `beverageGroupRequired`/`beverageGroupMaxSelectable`
+      y `extraPortionsGroupRequired`/`extraPortionsGroupMaxSelectable` ahora SÍ se validan en el
+      backend al crear el pedido: `OrdersService.validateGroupSelection` (nuevo método privado,
+      llamado en `buildItems` justo después de `resolveSelectedPriced` para bebidas y para porciones
+      extras) lanza 400 si `selected.length > groupMaxSelectable`, o si `groupRequired=true` y
+      `selected` es `null`/`[]`. Sin efecto si el producto no ofrece nada de esa categoría (`offered`
+      vacío/ausente). 7 tests nuevos en `orders.service.spec.ts` (describe
+      `'create — validación de OptionGroup (...)'`): required + omitido → 400, required + `[]`
+      explícito → 400, required sin catálogo ofrecido → sin efecto (no lanza), maxSelectable excedido
+      (bebidas y porciones extras) → 400, maxSelectable justo en el límite → no lanza. Suite completo
+      tras el fix: 471/471 verde (25/25 suites).
+- [x] **Contrato de DTOs**: `CreateBeverageDto`/`CreateExtraPortionDto` (`name` `@IsNotEmpty`,
+      `price` `@IsNumber({maxDecimalPlaces:2}) @Min(0.01)`, `active`/`sortOrder` opcionales) y
+      `CreateOrderItemDto.beverageIds`/`extraPortionIds` (`@IsArray`, `@IsUUID('4', {each:true})`,
+      `@IsOptional`) siguen el mismo patrón que `sauceIds`/`CreateSauceDto` ya auditado.
+- [x] **Seguridad**: `BeveragesController`/`ExtraPortionsController` con
+      `@UseGuards(JwtAuthGuard, RolesGuard)` + `@Roles(UserRole.ADMIN)` a nivel de clase — igual que
+      `SaucesController`. Sin endpoint público propio (se exponen embebidos en `GET /menu`, mismo
+      criterio que sauces). Ninguna de las dos entidades tiene campos sensibles.
+- [x] **Swagger**: ambos controllers documentados con `@ApiTags`, `@ApiBearerAuth`,
+      `@ApiOperation`/`@ApiResponse` por endpoint (200/400/401/403/404/409 según corresponda).
+- [x] **`data-source.ts`**: `Beverage`/`ExtraPortion` sí están en el array manual de `entities` del
+      `DataSource` del CLI — confirmado por lectura directa del archivo. El gotcha real (CLI de
+      TypeORM no usa `autoLoadEntities`, a diferencia de `app.module.ts`) ya estaba documentado en
+      un comentario dentro del propio `data-source.ts`; no hizo falta agregar nada nuevo.
+
+⚠️ Riesgos / casos borde no cubiertos (pendientes de una vuelta futura, no bloqueantes):
+- No hay test e2e (solo unit) para el enforcement de `beverageGroupRequired`/`Max` — bloqueado por
+  el mismo pendiente de `migration:run` que el resto de `test:e2e`.
+- No hay test que combine bebidas/extras con `sauceIds` en el mismo ítem a la vez (los tres
+  selectores juntos) — de bajo riesgo porque cada uno se resuelve de forma independiente
+  (`resolveSelectedSauces`/`resolveSelectedPriced` no comparten estado), pero no está ejercitado
+  explícitamente.
+- No hay test para el caso "producto sin `beverages`/`extraPortions` en absoluto (`undefined`) pero
+  el cliente manda `beverageIds` con valores" — el código lo maneja (`offered ?? []` → mapa vacío →
+  400 "no ofrece"), pero no hay un test dedicado a ese caso específico (solo el caso "producto con
+  catálogo pero id ajeno").
+- El default `maxSelectable = 1` (decisión de diseño documentada como inferencia razonable, no
+  pedida explícitamente por el usuario) no se validó contra ningún requisito real del negocio —
+  vale la pena confirmarlo con el dueño del producto antes de asumir que aplica a todos los
+  productos con bebida.
+- No se corrió `test:e2e` completo (solo `menu.e2e-spec.ts` como evidencia) porque ya alcanzó para
+  confirmar el bloqueante de esquema; falta re-correr la suite completa después de `migration:run`.
+
+**Veredicto: LISTO.** La lógica de negocio de
+`resolveSelectedPriced`/`buildItems`/`validateGroupSelection` es correcta y está bien testeada (16
+tests nuevos entre la auditoría y el fix posterior, con mutación real confirmando que los de dinero
+fallan si se revierte el cálculo), el guard explícito en `menu.service.ts` no repite el bug de clase
+de `Object.assign`, la migración es coherente con el patrón de `menu_item_sauces`, y el bloqueante de
+regla de negocio (enforcement de `maxSelectable`/`required`) ya se corrigió.
+
+- [x] **`migration:run` ejecutada contra el Postgres local** (`celtas-db`), con confirmación
+      explícita del usuario antes de correrla. Salida real: `Migration
+      AddBeveragesAndExtraPortions1789446319830 has been executed successfully.`
+- [x] **`pnpm run test:e2e -- menu.e2e-spec.ts` re-corrido post-migración: 26/26 verde** (antes:
+      16/26 fallaban por `relation "menu_item_beverages" does not exist` y columnas
+      `beverage_group_required`/`extra_portions_group_required` inexistentes).
+- [x] **`pnpm run test:e2e` completo: 380/380 verde (14/14 suites)** — sin regresiones en otros
+      módulos (orders, coupons, rewards, etc.) tras aplicar el schema nuevo.

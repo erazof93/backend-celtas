@@ -9,7 +9,9 @@ import { validationSchema } from './config/validation.schema';
 import { AuthModule } from './modules/auth/auth.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { BannersModule } from './modules/banners/banners.module';
+import { BeveragesModule } from './modules/beverages/beverages.module';
 import { CouponsModule } from './modules/coupons/coupons.module';
+import { ExtraPortionsModule } from './modules/extra-portions/extra-portions.module';
 import { MenuModule } from './modules/menu/menu.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrdersModule } from './modules/orders/orders.module';
@@ -57,6 +59,8 @@ import { UsersModule } from './modules/users/users.module';
     AuthModule,
     MenuModule,
     SaucesModule,
+    BeveragesModule,
+    ExtraPortionsModule,
     OrdersModule,
     CouponsModule,
     BannersModule,

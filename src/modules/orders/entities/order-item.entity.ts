@@ -65,6 +65,24 @@ export class OrderItem {
   selectedSauces: string[] | null;
 
   /**
+   * Bebidas elegidas, copiadas al crear el pedido (snapshot de `{ name, price }`,
+   * no solo el nombre como `selectedSauces` — a diferencia de las salsas, una
+   * bebida SÍ suma al `subtotal`, ver `OrdersService.buildItems`). Mismo criterio
+   * tri-state que `selectedSauces`: `null` = producto sin bebidas ofrecidas o el
+   * cliente no llegó al selector; `[]` = "sin bebida" elegido a propósito.
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  selectedBeverages: { name: string; price: number }[] | null;
+
+  /**
+   * Porciones extras elegidas, copiadas al crear el pedido (snapshot de
+   * `{ name, price }`, mismo criterio que `selectedBeverages`: SÍ suman al
+   * `subtotal`).
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  selectedExtraPortions: { name: string; price: number }[] | null;
+
+  /**
    * Comentario libre del cliente para este ítem (ej. "sin cebolla", "bien
    * cocida"), copiado al crear el pedido (snapshot, mismo criterio que
    * `name`/`unitPrice`/`selectedSauces`). Se aplica a las `quantity` unidades
@@ -73,7 +91,13 @@ export class OrderItem {
   @Column({ type: 'varchar', length: 140, nullable: true })
   comment: string | null;
 
-  /** unitPrice * quantity, calculado en el backend. */
+  /**
+   * `(unitPrice + suma de precios de selectedBeverages + suma de precios de
+   * selectedExtraPortions) * quantity`, calculado en el backend. Las
+   * bebidas/porciones extras suman su precio aunque el ítem sea un premio
+   * canjeado (`unitPrice` forzado a 0) — el premio cubre el producto base, no
+   * los extras que el cliente agregó encima.
+   */
   @Column({
     type: 'decimal',
     precision: 10,

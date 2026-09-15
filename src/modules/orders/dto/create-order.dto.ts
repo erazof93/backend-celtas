@@ -40,6 +40,34 @@ export class CreateOrderItemDto {
   sauceIds?: string[];
 
   @ApiPropertyOptional({
+    type: [String],
+    example: ['3fa85f64-5717-4562-b3fc-2c963f66afa6'],
+    description:
+      'UUIDs de las bebidas elegidas para este ítem (deben estar entre las que el producto ofrece; se aplican a las `quantity` unidades del ítem — cada bebida elegida suma su precio una vez por unidad). Mismo tri-state que sauceIds: omitido = no aplica, [] explícito = "sin bebida" elegido a propósito.',
+  })
+  @IsOptional()
+  @IsArray({ message: 'beverageIds debe ser una lista' })
+  @IsUUID('4', {
+    each: true,
+    message: 'Cada beverageId debe ser un UUID válido',
+  })
+  beverageIds?: string[];
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['3fa85f64-5717-4562-b3fc-2c963f66afa6'],
+    description:
+      'UUIDs de las porciones extras elegidas para este ítem (deben estar entre las que el producto ofrece; se aplican a las `quantity` unidades del ítem — cada porción extra elegida suma su precio una vez por unidad). Mismo tri-state que sauceIds.',
+  })
+  @IsOptional()
+  @IsArray({ message: 'extraPortionIds debe ser una lista' })
+  @IsUUID('4', {
+    each: true,
+    message: 'Cada extraPortionId debe ser un UUID válido',
+  })
+  extraPortionIds?: string[];
+
+  @ApiPropertyOptional({
     example: 'Sin cebolla, bien cocida',
     description:
       'Comentario libre opcional para este ítem (se aplica a las `quantity` unidades del ítem, no una nota por unidad individual). Vacío o solo espacios se trata como ausente.',

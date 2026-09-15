@@ -568,7 +568,7 @@ export class OrdersService {
     const ids = items.map((item) => item.menuItemId);
     const menuItems = await this.menuItemsRepository.find({
       where: { id: In(ids) },
-      relations: { sauces: true },
+      relations: { sauces: true, beverages: true, extraPortions: true },
     });
     const byId = new Map(menuItems.map((menuItem) => [menuItem.id, menuItem]));
 
@@ -621,8 +621,47 @@ export class OrdersService {
       }
 
       const selectedSauces = this.resolveSelectedSauces(menuItem, item);
+      const selectedBeverages = this.resolveSelectedPriced(
+        menuItem.beverages,
+        item.beverageIds,
+        menuItem.name,
+        'la bebida seleccionada',
+      );
+      this.validateGroupSelection(
+        menuItem.name,
+        menuItem.beverages,
+        selectedBeverages,
+        menuItem.beverageGroupRequired,
+        menuItem.beverageGroupMaxSelectable,
+        'bebida',
+      );
+      const selectedExtraPortions = this.resolveSelectedPriced(
+        menuItem.extraPortions,
+        item.extraPortionIds,
+        menuItem.name,
+        'la porción extra seleccionada',
+      );
+      this.validateGroupSelection(
+        menuItem.name,
+        menuItem.extraPortions,
+        selectedExtraPortions,
+        menuItem.extraPortionsGroupRequired,
+        menuItem.extraPortionsGroupMaxSelectable,
+        'porción extra',
+      );
       const comment = this.resolveComment(item);
-      const subtotal = this.round2(unitPrice * item.quantity);
+      // Las bebidas/porciones extras suman su precio aunque `unitPrice` sea 0 por
+      // un premio canjeado — el premio cubre el producto base, no lo que el
+      // cliente agregó encima (ver doc de OrderItem.subtotal).
+      const extrasUnitPrice = this.round2(
+        [...(selectedBeverages ?? []), ...(selectedExtraPortions ?? [])].reduce(
+          (sum, selected) => sum + selected.price,
+          0,
+        ),
+      );
+      const subtotal = this.round2(
+        (unitPrice + extrasUnitPrice) * item.quantity,
+      );
       result.push(
         this.orderItemsRepository.create({
           menuItemId: menuItem.id,
@@ -631,6 +670,8 @@ export class OrdersService {
           quantity: item.quantity,
           subtotal,
           selectedSauces,
+          selectedBeverages,
+          selectedExtraPortions,
           comment,
         }),
       );
@@ -673,6 +714,76 @@ export class OrdersService {
   }
 
   /**
+   * Valida `selectedIds` (bebidas o porciones extras) contra lo que el producto
+   * realmente ofrece (400 si el cliente manda un id que no está en su lista) y
+   * devuelve el SNAPSHOT `{ name, price }` a guardar en el OrderItem. Mismo
+   * tri-state que `resolveSelectedSauces`, con precio (a diferencia de las
+   * salsas, bebidas/porciones extras SÍ suman al subtotal — ver `buildItems`).
+   */
+  private resolveSelectedPriced(
+    offered: { id: string; name: string; price: number }[] | undefined,
+    selectedIds: string[] | undefined,
+    menuItemName: string,
+    notOfferedLabel: string,
+  ): { name: string; price: number }[] | null {
+    if (selectedIds === undefined) {
+      return null;
+    }
+    if (selectedIds.length === 0) {
+      return [];
+    }
+    const offeredById = new Map(
+      (offered ?? []).map((option) => [option.id, option]),
+    );
+    const selected: { name: string; price: number }[] = [];
+    for (const id of selectedIds) {
+      const option = offeredById.get(id);
+      if (!option) {
+        throw new BadRequestException(
+          `El producto "${menuItemName}" no ofrece ${notOfferedLabel}`,
+        );
+      }
+      selected.push({ name: option.name, price: option.price });
+    }
+    return selected;
+  }
+
+  /**
+   * Aplica `beverageGroupRequired`/`Max` y `extraPortionsGroupRequired`/`Max` del
+   * producto (config de OptionGroup) contra lo que el cliente eligió. Sin esto,
+   * el backend confiaba en que la app Flutter respetara esos límites — mismo
+   * principio que el resto del proyecto ("el total y los subtotales se calculan
+   * SIEMPRE en el backend, nunca se confía en el frontend"), hallazgo real de
+   * `@tester` en la auditoría de esta feature.
+   *
+   * Sin efecto si el producto no ofrece nada de esta categoría (`offered` vacío
+   * o ausente) — el `groupRequired`/`Max` configurado no importa si no hay nada
+   * para elegir.
+   */
+  private validateGroupSelection(
+    menuItemName: string,
+    offered: { id: string }[] | undefined,
+    selected: { name: string; price: number }[] | null,
+    groupRequired: boolean,
+    groupMaxSelectable: number,
+    itemLabel: string,
+  ): void {
+    if (!offered || offered.length === 0) {
+      return;
+    }
+    if (groupRequired && (selected === null || selected.length === 0)) {
+      throw new BadRequestException(
+        `El producto "${menuItemName}" requiere elegir al menos una ${itemLabel}`,
+      );
+    }
+    if (selected !== null && selected.length > groupMaxSelectable) {
+      throw new BadRequestException(
+        `El producto "${menuItemName}" permite elegir como máximo ${groupMaxSelectable} ${itemLabel}(s)`,
+      );
+    }
+  }
+
+  /**
    * Comentario libre del ítem (texto simple, sin la lógica tri-state de
    * `resolveSelectedSauces`): trimea y devuelve `null` si queda vacío.
    */
@@ -688,6 +799,8 @@ export class OrdersService {
       name: string;
       quantity: number;
       selectedSauces: string[] | null;
+      selectedBeverages: { name: string; price: number }[] | null;
+      selectedExtraPortions: { name: string; price: number }[] | null;
       comment: string | null;
     }[],
     total: number,
@@ -708,8 +821,24 @@ export class OrdersService {
           item.selectedSauces === null
             ? ''
             : ` (Salsas: ${item.selectedSauces.length > 0 ? item.selectedSauces.join(', ') : 'Sin salsas'})`;
+        // Bebidas/porciones extras: a diferencia de las salsas SÍ tienen precio,
+        // así que se listan con su costo para que el dueño pueda verificar el
+        // monto del ítem sin abrir el panel admin (mismo criterio que el
+        // desglose de subtotal/cupón/envío más abajo).
+        const beverages =
+          item.selectedBeverages && item.selectedBeverages.length > 0
+            ? ` (Bebidas: ${item.selectedBeverages
+                .map((b) => `${b.name} +S/${b.price.toFixed(2)}`)
+                .join(', ')})`
+            : '';
+        const extraPortions =
+          item.selectedExtraPortions && item.selectedExtraPortions.length > 0
+            ? ` (Extras: ${item.selectedExtraPortions
+                .map((e) => `${e.name} +S/${e.price.toFixed(2)}`)
+                .join(', ')})`
+            : '';
         const comment = item.comment === null ? '' : ` — Nota: ${item.comment}`;
-        return `  • ${item.quantity}x ${item.name}${sauces}${comment}`;
+        return `  • ${item.quantity}x ${item.name}${sauces}${beverages}${extraPortions}${comment}`;
       })
       .join('\n');
     // Desglose para que el dueño pueda verificar el monto sin abrir el panel admin:

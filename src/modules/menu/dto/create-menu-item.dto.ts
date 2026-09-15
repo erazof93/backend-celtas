@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsArray,
   IsBoolean,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -90,4 +91,72 @@ export class CreateMenuItemDto {
   @IsArray({ message: 'sauceIds debe ser una lista' })
   @IsUUID('4', { each: true, message: 'Cada sauceId debe ser un UUID válido' })
   sauceIds?: string[];
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['3fa85f64-5717-4562-b3fc-2c963f66afa6'],
+    description:
+      'UUIDs de las bebidas del catálogo que este producto ofrece (vacío u omitido = sin selector de bebidas)',
+  })
+  @IsOptional()
+  @IsArray({ message: 'beverageIds debe ser una lista' })
+  @IsUUID('4', {
+    each: true,
+    message: 'Cada beverageId debe ser un UUID válido',
+  })
+  beverageIds?: string[];
+
+  @ApiPropertyOptional({
+    example: false,
+    description:
+      'Si el grupo de bebidas es obligatorio (default false). Sin efecto si beverageIds queda vacío.',
+  })
+  @IsOptional()
+  @IsBoolean({ message: 'beverageGroupRequired debe ser true o false' })
+  beverageGroupRequired?: boolean;
+
+  @ApiPropertyOptional({
+    example: 1,
+    description:
+      'Máximo de bebidas que el cliente puede elegir para este producto (default 1)',
+  })
+  @IsOptional()
+  @IsInt({ message: 'beverageGroupMaxSelectable debe ser un número entero' })
+  @Min(1, { message: 'beverageGroupMaxSelectable debe ser al menos 1' })
+  beverageGroupMaxSelectable?: number;
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['3fa85f64-5717-4562-b3fc-2c963f66afa6'],
+    description:
+      'UUIDs de las porciones extras del catálogo que este producto ofrece (vacío u omitido = sin selector de porciones extras)',
+  })
+  @IsOptional()
+  @IsArray({ message: 'extraPortionIds debe ser una lista' })
+  @IsUUID('4', {
+    each: true,
+    message: 'Cada extraPortionId debe ser un UUID válido',
+  })
+  extraPortionIds?: string[];
+
+  @ApiPropertyOptional({
+    example: false,
+    description:
+      'Si el grupo de porciones extras es obligatorio (default false). Sin efecto si extraPortionIds queda vacío.',
+  })
+  @IsOptional()
+  @IsBoolean({ message: 'extraPortionsGroupRequired debe ser true o false' })
+  extraPortionsGroupRequired?: boolean;
+
+  @ApiPropertyOptional({
+    example: 1,
+    description:
+      'Máximo de porciones extras que el cliente puede elegir para este producto (default 1)',
+  })
+  @IsOptional()
+  @IsInt({
+    message: 'extraPortionsGroupMaxSelectable debe ser un número entero',
+  })
+  @Min(1, { message: 'extraPortionsGroupMaxSelectable debe ser al menos 1' })
+  extraPortionsGroupMaxSelectable?: number;
 }

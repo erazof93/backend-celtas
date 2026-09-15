@@ -2,6 +2,10 @@ import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { QueryFailedError } from 'typeorm';
+import { BeveragesService } from '../beverages/beverages.service';
+import { Beverage } from '../beverages/entities/beverage.entity';
+import { ExtraPortion } from '../extra-portions/entities/extra-portion.entity';
+import { ExtraPortionsService } from '../extra-portions/extra-portions.service';
 import { Sauce } from '../sauces/entities/sauce.entity';
 import { SaucesService } from '../sauces/sauces.service';
 import { Category } from './entities/category.entity';
@@ -50,11 +54,15 @@ describe('MenuService', () => {
     remove: jest.Mock;
   };
   let saucesService: { findByIds: jest.Mock };
+  let beveragesService: { findByIds: jest.Mock };
+  let extraPortionsService: { findByIds: jest.Mock };
 
   const catId = '11111111-1111-1111-1111-111111111111';
   const otherCatId = '22222222-2222-2222-2222-222222222222';
   const sauceId1 = '44444444-4444-4444-4444-444444444444';
   const sauceId2 = '55555555-5555-5555-5555-555555555555';
+  const beverageId1 = '66666666-6666-6666-6666-666666666666';
+  const extraPortionId1 = '77777777-7777-7777-7777-777777777777';
 
   const seedCategory = (overrides: Partial<Category> = {}) =>
     ({
@@ -79,6 +87,12 @@ describe('MenuService', () => {
       categoryId: catId,
       category: null,
       sauces: [],
+      beverages: [],
+      beverageGroupRequired: false,
+      beverageGroupMaxSelectable: 1,
+      extraPortions: [],
+      extraPortionsGroupRequired: false,
+      extraPortionsGroupMaxSelectable: 1,
       ...overrides,
     }) as MenuItem;
 
@@ -90,6 +104,26 @@ describe('MenuService', () => {
       sortOrder: 0,
       ...overrides,
     }) as Sauce;
+
+  const seedBeverage = (overrides: Partial<Beverage> = {}) =>
+    ({
+      id: beverageId1,
+      name: 'Coca-Cola 500ml',
+      price: 5,
+      active: true,
+      sortOrder: 0,
+      ...overrides,
+    }) as Beverage;
+
+  const seedExtraPortion = (overrides: Partial<ExtraPortion> = {}) =>
+    ({
+      id: extraPortionId1,
+      name: 'Papas extra',
+      price: 8,
+      active: true,
+      sortOrder: 0,
+      ...overrides,
+    }) as ExtraPortion;
 
   beforeEach(async () => {
     categoriesRepo = {
@@ -109,12 +143,16 @@ describe('MenuService', () => {
       remove: jest.fn(),
     };
     saucesService = { findByIds: jest.fn() };
+    beveragesService = { findByIds: jest.fn() };
+    extraPortionsService = { findByIds: jest.fn() };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         MenuService,
         { provide: getRepositoryToken(Category), useValue: categoriesRepo },
         { provide: getRepositoryToken(MenuItem), useValue: itemsRepo },
         { provide: SaucesService, useValue: saucesService },
+        { provide: BeveragesService, useValue: beveragesService },
+        { provide: ExtraPortionsService, useValue: extraPortionsService },
       ],
     }).compile();
 
@@ -140,7 +178,9 @@ describe('MenuService', () => {
 
       expect(categoriesRepo.find).toHaveBeenCalledWith({
         where: { active: true },
-        relations: { items: { sauces: true } },
+        relations: {
+          items: { sauces: true, beverages: true, extraPortions: true },
+        },
         order: { sortOrder: 'ASC', name: 'ASC' },
       });
       expect(result).toHaveLength(1);
@@ -149,8 +189,16 @@ describe('MenuService', () => {
       expect(result[0].items[0].id).toBe('i-1');
       // La app no recibe el flag available: se omiten los productos no disponibles.
       expect(result[0].items[0].available).toBeUndefined();
-      // Producto sin salsas asignadas (ej. arroz chaufa): array vacío, no undefined.
+      // Producto sin salsas/bebidas/extras asignadas (ej. arroz chaufa): array
+      // vacío, no undefined.
       expect(result[0].items[0].sauces).toEqual([]);
+      expect(result[0].items[0].beverages).toEqual([]);
+      expect(result[0].items[0].extraPortions).toEqual([]);
+      // El config de grupo viaja siempre, aunque el catálogo esté vacío.
+      expect(result[0].items[0].beverageGroupRequired).toBe(false);
+      expect(result[0].items[0].beverageGroupMaxSelectable).toBe(1);
+      expect(result[0].items[0].extraPortionsGroupRequired).toBe(false);
+      expect(result[0].items[0].extraPortionsGroupMaxSelectable).toBe(1);
     });
 
     it('omite categorías activas sin productos disponibles', async () => {
@@ -177,6 +225,83 @@ describe('MenuService', () => {
         { id: sauceId1, name: 'Mayonesa' },
         { id: sauceId2, name: 'Ketchup' },
       ]);
+    });
+
+    it('expone solo bebidas activas, ordenadas por sortOrder, con precio', async () => {
+      const item = seedItem({
+        beverages: [
+          seedBeverage({
+            id: 'bev-2',
+            name: 'Inca Kola',
+            price: 6,
+            sortOrder: 2,
+          }),
+          seedBeverage({
+            id: beverageId1,
+            name: 'Coca-Cola',
+            price: 5,
+            sortOrder: 1,
+          }),
+          seedBeverage({ id: 'inactiva', name: 'Fanta', active: false }),
+        ],
+      });
+      categoriesRepo.find.mockResolvedValue([seedCategory({ items: [item] })]);
+
+      const result = await service.findPublicMenu();
+
+      expect(result[0].items[0].beverages).toEqual([
+        { id: beverageId1, name: 'Coca-Cola', price: 5 },
+        { id: 'bev-2', name: 'Inca Kola', price: 6 },
+      ]);
+    });
+
+    it('expone solo porciones extras activas, ordenadas por sortOrder, con precio', async () => {
+      const item = seedItem({
+        extraPortions: [
+          seedExtraPortion({
+            id: 'ep-2',
+            name: 'Tocino extra',
+            price: 6,
+            sortOrder: 2,
+          }),
+          seedExtraPortion({
+            id: extraPortionId1,
+            name: 'Papas extra',
+            price: 8,
+            sortOrder: 1,
+          }),
+          seedExtraPortion({
+            id: 'inactiva',
+            name: 'Queso extra',
+            active: false,
+          }),
+        ],
+      });
+      categoriesRepo.find.mockResolvedValue([seedCategory({ items: [item] })]);
+
+      const result = await service.findPublicMenu();
+
+      expect(result[0].items[0].extraPortions).toEqual([
+        { id: extraPortionId1, name: 'Papas extra', price: 8 },
+        { id: 'ep-2', name: 'Tocino extra', price: 6 },
+      ]);
+    });
+
+    it('expone la configuración de grupo tal como está en el producto', async () => {
+      const item = seedItem({
+        beverageGroupRequired: true,
+        beverageGroupMaxSelectable: 2,
+        extraPortionsGroupRequired: true,
+        extraPortionsGroupMaxSelectable: 3,
+      });
+      categoriesRepo.find.mockResolvedValue([seedCategory({ items: [item] })]);
+
+      const result = await service.findPublicMenu();
+
+      expect(result[0].items[0].beverageGroupRequired).toBe(true);
+      expect(result[0].items[0].beverageGroupMaxSelectable).toBe(2);
+      expect(result[0].items[0].extraPortionsGroupRequired).toBe(true);
+      expect(result[0].items[0].extraPortionsGroupMaxSelectable).toBe(3);
     });
   });
 
@@ -401,15 +526,62 @@ describe('MenuService', () => {
       expect(result.sauces).toBeUndefined();
       expect(saucesService.findByIds).not.toHaveBeenCalled();
     });
+
+    it('asigna las bebidas indicadas por beverageIds', async () => {
+      categoriesRepo.findOne.mockResolvedValue(seedCategory());
+      itemsRepo.create.mockImplementation(passthrough);
+      itemsRepo.save.mockImplementation(passthrough);
+      beveragesService.findByIds.mockResolvedValue([
+        seedBeverage({ id: beverageId1 }),
+      ]);
+
+      const result = await service.createItem({
+        name: 'Celta',
+        price: 15,
+        categoryId: catId,
+        beverageIds: [beverageId1],
+      });
+
+      expect(beveragesService.findByIds).toHaveBeenCalledWith([beverageId1]);
+      expect(result.beverages).toEqual([seedBeverage({ id: beverageId1 })]);
+    });
+
+    it('asigna las porciones extras indicadas por extraPortionIds', async () => {
+      categoriesRepo.findOne.mockResolvedValue(seedCategory());
+      itemsRepo.create.mockImplementation(passthrough);
+      itemsRepo.save.mockImplementation(passthrough);
+      extraPortionsService.findByIds.mockResolvedValue([
+        seedExtraPortion({ id: extraPortionId1 }),
+      ]);
+
+      const result = await service.createItem({
+        name: 'Celta',
+        price: 15,
+        categoryId: catId,
+        extraPortionIds: [extraPortionId1],
+      });
+
+      expect(extraPortionsService.findByIds).toHaveBeenCalledWith([
+        extraPortionId1,
+      ]);
+      expect(result.extraPortions).toEqual([
+        seedExtraPortion({ id: extraPortionId1 }),
+      ]);
+    });
   });
 
   describe('findAllItems', () => {
-    it('devuelve productos con su categoría y sus salsas', async () => {
+    it('devuelve productos con su categoría, salsas, bebidas y porciones extras', async () => {
       itemsRepo.find.mockResolvedValue([seedItem()]);
       const result = await service.findAllItems();
       expect(result).toHaveLength(1);
       expect(itemsRepo.find).toHaveBeenCalledWith({
-        relations: { category: true, sauces: true },
+        relations: {
+          category: true,
+          sauces: true,
+          beverages: true,
+          extraPortions: true,
+        },
         order: { createdAt: 'DESC' },
       });
     });
@@ -490,6 +662,43 @@ describe('MenuService', () => {
       expect(result.sauces).toEqual([
         seedSauce({ id: sauceId2, name: 'Ketchup' }),
       ]);
+    });
+
+    it('sin beverageIds/extraPortionIds en el PATCH, deja lo ya asignado intacto', async () => {
+      const existing = seedItem({
+        beverages: [seedBeverage({ id: beverageId1 })],
+        extraPortions: [seedExtraPortion({ id: extraPortionId1 })],
+      });
+      itemsRepo.findOne.mockResolvedValue(existing);
+      itemsRepo.save.mockImplementation(passthrough);
+
+      const result = await service.updateItem('item-1', { price: 30 });
+      expect(result.beverages).toEqual([seedBeverage({ id: beverageId1 })]);
+      expect(result.extraPortions).toEqual([
+        seedExtraPortion({ id: extraPortionId1 }),
+      ]);
+      expect(beveragesService.findByIds).not.toHaveBeenCalled();
+      expect(extraPortionsService.findByIds).not.toHaveBeenCalled();
+    });
+
+    it('con beverageIds/extraPortionIds en el PATCH, reemplaza lo asignado', async () => {
+      const existing = seedItem({
+        beverages: [seedBeverage({ id: beverageId1 })],
+        extraPortions: [seedExtraPortion({ id: extraPortionId1 })],
+      });
+      itemsRepo.findOne.mockResolvedValue(existing);
+      itemsRepo.save.mockImplementation(passthrough);
+      beveragesService.findByIds.mockResolvedValue([]);
+      extraPortionsService.findByIds.mockResolvedValue([]);
+
+      const result = await service.updateItem('item-1', {
+        beverageIds: [],
+        extraPortionIds: [],
+      });
+      expect(beveragesService.findByIds).toHaveBeenCalledWith([]);
+      expect(extraPortionsService.findByIds).toHaveBeenCalledWith([]);
+      expect(result.beverages).toEqual([]);
+      expect(result.extraPortions).toEqual([]);
     });
   });
 

@@ -5,6 +5,8 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { QueryFailedError, Repository } from 'typeorm';
+import { BeveragesService } from '../beverages/beverages.service';
+import { ExtraPortionsService } from '../extra-portions/extra-portions.service';
 import { SaucesService } from '../sauces/sauces.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { CreateMenuItemDto } from './dto/create-menu-item.dto';
@@ -25,6 +27,12 @@ export interface PublicMenuCategory {
     price: number;
     image: string | null;
     sauces: { id: string; name: string }[];
+    beverages: { id: string; name: string; price: number }[];
+    beverageGroupRequired: boolean;
+    beverageGroupMaxSelectable: number;
+    extraPortions: { id: string; name: string; price: number }[];
+    extraPortionsGroupRequired: boolean;
+    extraPortionsGroupMaxSelectable: number;
   }[];
 }
 
@@ -42,17 +50,25 @@ export class MenuService {
     @InjectRepository(MenuItem)
     private readonly itemsRepository: Repository<MenuItem>,
     private readonly saucesService: SaucesService,
+    private readonly beveragesService: BeveragesService,
+    private readonly extraPortionsService: ExtraPortionsService,
   ) {}
 
   /**
    * Menú optimizado para la app: categorías activas, ordenadas por sortOrder, que
    * contienen al menos un producto disponible. Los productos no disponibles se omiten.
-   * Cada producto incluye sus salsas activas (id+name); vacío = sin selector en la app.
+   * Cada producto incluye sus salsas/bebidas/porciones extras activas (id+name, y
+   * precio para bebidas/porciones extras); vacío = sin selector de esa categoría en
+   * la app. `beverageGroupRequired`/`Max` y `extraPortionsGroupRequired`/`Max`
+   * viajan siempre (aunque el array esté vacío) para que la app no tenga que
+   * adivinar el default si el admin no configuró nada.
    */
   async findPublicMenu(): Promise<PublicMenuCategory[]> {
     const categories = await this.categoriesRepository.find({
       where: { active: true },
-      relations: { items: { sauces: true } },
+      relations: {
+        items: { sauces: true, beverages: true, extraPortions: true },
+      },
       order: { sortOrder: 'ASC', name: 'ASC' },
     });
 
@@ -63,25 +79,79 @@ export class MenuService {
         description: category.description,
         items: category.items
           .filter((item) => item.available)
-          .map(({ id, name, description, price, image, sauces }) => ({
-            id,
-            name,
-            description,
-            price,
-            image,
-            // Solo salsas activas: una desactivada sigue asignada al producto (el
-            // admin no pierde la relación) pero deja de ofrecerse en la app.
-            sauces: (sauces ?? [])
-              .filter((sauce) => sauce.active)
-              .sort(
-                (a, b) =>
-                  a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
-              )
-              .map(({ id: sauceId, name: sauceName }) => ({
-                id: sauceId,
-                name: sauceName,
-              })),
-          }))
+          .map(
+            ({
+              id,
+              name,
+              description,
+              price,
+              image,
+              sauces,
+              beverages,
+              beverageGroupRequired,
+              beverageGroupMaxSelectable,
+              extraPortions,
+              extraPortionsGroupRequired,
+              extraPortionsGroupMaxSelectable,
+            }) => ({
+              id,
+              name,
+              description,
+              price,
+              image,
+              // Solo activos: uno desactivado sigue asignado al producto (el admin
+              // no pierde la relación) pero deja de ofrecerse en la app. Mismo
+              // criterio para sauces/beverages/extraPortions.
+              sauces: (sauces ?? [])
+                .filter((sauce) => sauce.active)
+                .sort(
+                  (a, b) =>
+                    a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
+                )
+                .map(({ id: sauceId, name: sauceName }) => ({
+                  id: sauceId,
+                  name: sauceName,
+                })),
+              beverages: (beverages ?? [])
+                .filter((beverage) => beverage.active)
+                .sort(
+                  (a, b) =>
+                    a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
+                )
+                .map(
+                  ({
+                    id: beverageId,
+                    name: beverageName,
+                    price: beveragePrice,
+                  }) => ({
+                    id: beverageId,
+                    name: beverageName,
+                    price: beveragePrice,
+                  }),
+                ),
+              beverageGroupRequired,
+              beverageGroupMaxSelectable,
+              extraPortions: (extraPortions ?? [])
+                .filter((extraPortion) => extraPortion.active)
+                .sort(
+                  (a, b) =>
+                    a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
+                )
+                .map(
+                  ({
+                    id: extraPortionId,
+                    name: extraPortionName,
+                    price: extraPortionPrice,
+                  }) => ({
+                    id: extraPortionId,
+                    name: extraPortionName,
+                    price: extraPortionPrice,
+                  }),
+                ),
+              extraPortionsGroupRequired,
+              extraPortionsGroupMaxSelectable,
+            }),
+          )
           .sort((a, b) => a.name.localeCompare(b.name)),
       }))
       .filter((category) => category.items.length > 0);
@@ -144,12 +214,20 @@ export class MenuService {
 
   async createItem(dto: CreateMenuItemDto): Promise<MenuItem> {
     await this.ensureCategory(dto.categoryId);
-    // sauceIds no es una columna propia de MenuItem (es la relación ManyToMany):
-    // se separa del resto del DTO antes de `create` y se resuelve aparte.
-    const { sauceIds, ...rest } = dto;
+    // sauceIds/beverageIds/extraPortionIds no son columnas propias de MenuItem
+    // (son las relaciones ManyToMany): se separan del resto del DTO antes de
+    // `create` y se resuelven aparte.
+    const { sauceIds, beverageIds, extraPortionIds, ...rest } = dto;
     const item = this.itemsRepository.create(rest);
     if (sauceIds !== undefined) {
       item.sauces = await this.saucesService.findByIds(sauceIds);
+    }
+    if (beverageIds !== undefined) {
+      item.beverages = await this.beveragesService.findByIds(beverageIds);
+    }
+    if (extraPortionIds !== undefined) {
+      item.extraPortions =
+        await this.extraPortionsService.findByIds(extraPortionIds);
     }
     return this.runSaveWithUniqueFallback(
       this.itemsRepository.save(item),
@@ -159,7 +237,12 @@ export class MenuService {
 
   async findAllItems(): Promise<MenuItem[]> {
     return this.itemsRepository.find({
-      relations: { category: true, sauces: true },
+      relations: {
+        category: true,
+        sauces: true,
+        beverages: true,
+        extraPortions: true,
+      },
       order: { createdAt: 'DESC' },
     });
   }
@@ -167,7 +250,12 @@ export class MenuService {
   async updateItem(id: string, dto: UpdateMenuItemDto): Promise<MenuItem> {
     const item = await this.itemsRepository.findOne({
       where: { id },
-      relations: { category: true, sauces: true },
+      relations: {
+        category: true,
+        sauces: true,
+        beverages: true,
+        extraPortions: true,
+      },
     });
     if (!item) {
       throw new NotFoundException('Producto no encontrado');
@@ -175,17 +263,24 @@ export class MenuService {
     if (dto.categoryId !== undefined) {
       await this.ensureCategory(dto.categoryId);
     }
-    const { sauceIds, ...rest } = dto;
+    const { sauceIds, beverageIds, extraPortionIds, ...rest } = dto;
     // merge (no Object.assign): solo aplica los campos definidos del DTO. Con
     // Object.assign, los campos ausentes del PATCH (undefined) pisaban los valores
     // ya cargados de la entidad y la respuesta salía incompleta.
     this.itemsRepository.merge(item, rest);
-    // La relación ManyToMany no la toca `merge` (no es una columna): se actualiza
-    // aparte, y SOLO si el PATCH la incluyó explícitamente — omitirla deja las
-    // salsas ya asignadas intactas (mismo criterio "guard explícito" que el resto
+    // Las relaciones ManyToMany no las toca `merge` (no son columnas): se
+    // actualizan aparte, y SOLO si el PATCH las incluyó explícitamente — omitirlas
+    // deja lo ya asignado intacto (mismo criterio "guard explícito" que el resto
     // del proyecto para campos que `merge` no puede cubrir).
     if (sauceIds !== undefined) {
       item.sauces = await this.saucesService.findByIds(sauceIds);
+    }
+    if (beverageIds !== undefined) {
+      item.beverages = await this.beveragesService.findByIds(beverageIds);
+    }
+    if (extraPortionIds !== undefined) {
+      item.extraPortions =
+        await this.extraPortionsService.findByIds(extraPortionIds);
     }
     return this.runSaveWithUniqueFallback(
       this.itemsRepository.save(item),

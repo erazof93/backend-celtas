@@ -67,9 +67,17 @@ describe('OrdersService', () => {
   const sauceRef = (id: string, name: string) =>
     ({ id, name }) as MenuItem['sauces'][number];
 
+  /** Referencia mínima de una bebida/porción extra ofrecida (id+name+price, con precio). */
+  const pricedRef = (id: string, name: string, price: number) =>
+    ({ id, name, price }) as MenuItem['beverages'][number];
+
   const menuMenuItem = (
-    overrides: Partial<Omit<MenuItem, 'sauces'>> & {
+    overrides: Partial<
+      Omit<MenuItem, 'sauces' | 'beverages' | 'extraPortions'>
+    > & {
       sauces?: { id: string; name: string }[];
+      beverages?: { id: string; name: string; price: number }[];
+      extraPortions?: { id: string; name: string; price: number }[];
     } = {},
   ) =>
     ({
@@ -79,6 +87,12 @@ describe('OrdersService', () => {
       available: true,
       ...overrides,
       sauces: overrides.sauces?.map((s) => sauceRef(s.id, s.name)),
+      beverages: overrides.beverages?.map((b) =>
+        pricedRef(b.id, b.name, b.price),
+      ),
+      extraPortions: overrides.extraPortions?.map((e) =>
+        pricedRef(e.id, e.name, e.price),
+      ),
     }) as MenuItem;
 
   const seedAddress = (overrides: Partial<Address> = {}) =>
@@ -629,6 +643,417 @@ describe('OrdersService', () => {
           couponCode: 'USADO',
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('create — bebidas y porciones extras (SÍ tienen precio y afectan el subtotal)', () => {
+    beforeEach(() => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      orderItemsRepo.create.mockImplementation(passthrough);
+      ordersRepo.create.mockImplementation(passthrough);
+      ordersRepo.save.mockImplementation(passthrough);
+      dataSource.transaction.mockImplementation(
+        (cb: (m: { create: jest.Mock; save: jest.Mock }) => Promise<unknown>) =>
+          cb({
+            create: jest.fn((_entity: unknown, value: unknown) => value),
+            save: jest.fn((_entity: unknown, value: unknown) =>
+              Promise.resolve(value),
+            ),
+          }),
+      );
+    });
+
+    it('suma el precio de la bebida elegida al subtotal, una vez por unidad (quantity > 1)', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          price: 24.9,
+          beverages: [{ id: 'bev-coca', name: 'Coca-Cola 500ml', price: 5 }],
+        }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [
+          {
+            menuItemId,
+            quantity: 2,
+            beverageIds: ['bev-coca'],
+          },
+        ],
+      });
+
+      // (24.9 + 5) * 2 = 59.8, NO (24.9 * 2) + 5 = 54.8
+      expect(result.items[0].subtotal).toBe(59.8);
+      expect(result.total).toBe(59.8);
+      expect(result.items[0].selectedBeverages).toEqual([
+        { name: 'Coca-Cola 500ml', price: 5 },
+      ]);
+    });
+
+    it('suma el precio de la porción extra elegida al subtotal, una vez por unidad', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          price: 24.9,
+          extraPortions: [
+            { id: 'extra-papas', name: 'Porción extra de papas', price: 8 },
+          ],
+        }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 3, extraPortionIds: ['extra-papas'] }],
+      });
+
+      // (24.9 + 8) * 3 = 98.7
+      expect(result.items[0].subtotal).toBe(98.7);
+      expect(result.items[0].selectedExtraPortions).toEqual([
+        { name: 'Porción extra de papas', price: 8 },
+      ]);
+    });
+
+    it('combina múltiples bebidas Y múltiples porciones extras a la vez en el mismo ítem', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          price: 20,
+          beverages: [
+            { id: 'bev-coca', name: 'Coca-Cola 500ml', price: 5 },
+            { id: 'bev-inca', name: 'Inca Kola 500ml', price: 5.5 },
+          ],
+          extraPortions: [
+            { id: 'extra-papas', name: 'Papas extra', price: 8 },
+            { id: 'extra-queso', name: 'Queso extra', price: 3.5 },
+          ],
+        }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [
+          {
+            menuItemId,
+            quantity: 1,
+            beverageIds: ['bev-coca', 'bev-inca'],
+            extraPortionIds: ['extra-papas', 'extra-queso'],
+          },
+        ],
+      });
+
+      // 20 + 5 + 5.5 + 8 + 3.5 = 42
+      expect(result.items[0].subtotal).toBe(42);
+      expect(result.items[0].selectedBeverages).toEqual([
+        { name: 'Coca-Cola 500ml', price: 5 },
+        { name: 'Inca Kola 500ml', price: 5.5 },
+      ]);
+      expect(result.items[0].selectedExtraPortions).toEqual([
+        { name: 'Papas extra', price: 8 },
+        { name: 'Queso extra', price: 3.5 },
+      ]);
+    });
+
+    it('sin beverageIds/extraPortionIds, el snapshot queda null y el subtotal no cambia (no-regresión)', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          price: 24.9,
+          beverages: [{ id: 'bev-coca', name: 'Coca-Cola 500ml', price: 5 }],
+        }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 2 }],
+      });
+
+      expect(result.items[0].selectedBeverages).toBeNull();
+      expect(result.items[0].selectedExtraPortions).toBeNull();
+      expect(result.items[0].subtotal).toBe(49.8); // 24.9 * 2, sin bebida
+    });
+
+    it('con beverageIds: [] explícito, el snapshot queda [] (no null) y el subtotal no suma nada', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          price: 24.9,
+          beverages: [{ id: 'bev-coca', name: 'Coca-Cola 500ml', price: 5 }],
+        }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 2, beverageIds: [] }],
+      });
+
+      expect(result.items[0].selectedBeverages).toEqual([]);
+      expect(result.items[0].selectedBeverages).not.toBeNull();
+      expect(result.items[0].subtotal).toBe(49.8);
+    });
+
+    it('lanza 400 si el beverageId no está entre las bebidas que el producto ofrece', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          beverages: [{ id: 'bev-coca', name: 'Coca-Cola 500ml', price: 5 }],
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [
+            { menuItemId, quantity: 1, beverageIds: ['bev-inexistente'] },
+          ],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('lanza 400 si el extraPortionId no está entre las porciones extras que el producto ofrece', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          extraPortions: [{ id: 'extra-papas', name: 'Papas extra', price: 8 }],
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [
+            {
+              menuItemId,
+              quantity: 1,
+              extraPortionIds: ['extra-inexistente'],
+            },
+          ],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('el mensaje de WhatsApp lista las bebidas/extras elegidos con su precio', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          price: 24.9,
+          beverages: [{ id: 'bev-coca', name: 'Coca-Cola 500ml', price: 5 }],
+          extraPortions: [{ id: 'extra-papas', name: 'Papas extra', price: 8 }],
+        }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [
+          {
+            menuItemId,
+            quantity: 1,
+            beverageIds: ['bev-coca'],
+            extraPortionIds: ['extra-papas'],
+          },
+        ],
+      });
+
+      const message = decodeURIComponent(
+        result.whatsappUrl.replace('https://wa.me/51999999999?text=', ''),
+      );
+      expect(message).toContain('Bebidas: Coca-Cola 500ml +S/5.00');
+      expect(message).toContain('Extras: Papas extra +S/8.00');
+    });
+  });
+
+  describe('create — validación de OptionGroup (beverageGroupRequired/Max, extraPortionsGroupRequired/Max)', () => {
+    beforeEach(() => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      orderItemsRepo.create.mockImplementation(passthrough);
+      ordersRepo.create.mockImplementation(passthrough);
+      ordersRepo.save.mockImplementation(passthrough);
+      dataSource.transaction.mockImplementation(
+        (cb: (m: { create: jest.Mock; save: jest.Mock }) => Promise<unknown>) =>
+          cb({
+            create: jest.fn((_entity: unknown, value: unknown) => value),
+            save: jest.fn((_entity: unknown, value: unknown) =>
+              Promise.resolve(value),
+            ),
+          }),
+      );
+    });
+
+    it('grupo de bebidas obligatorio (required=true) + beverageIds omitido → 400', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          beverages: [{ id: 'bev-coca', name: 'Coca-Cola 500ml', price: 5 }],
+          beverageGroupRequired: true,
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 1 }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('grupo de bebidas obligatorio + beverageIds: [] explícito (tampoco cuenta) → 400', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          beverages: [{ id: 'bev-coca', name: 'Coca-Cola 500ml', price: 5 }],
+          beverageGroupRequired: true,
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 1, beverageIds: [] }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('grupo de bebidas obligatorio, pero el producto no ofrece ninguna bebida → sin efecto, no lanza', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({ beverages: [], beverageGroupRequired: true }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 1 }],
+      });
+
+      expect(result.items[0].selectedBeverages).toBeNull();
+    });
+
+    it('beverageGroupMaxSelectable=1 + 2 beverageIds elegidos → 400', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          beverages: [
+            { id: 'bev-coca', name: 'Coca-Cola 500ml', price: 5 },
+            { id: 'bev-inca', name: 'Inca Kola 500ml', price: 5.5 },
+          ],
+          beverageGroupMaxSelectable: 1,
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [
+            {
+              menuItemId,
+              quantity: 1,
+              beverageIds: ['bev-coca', 'bev-inca'],
+            },
+          ],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('beverageGroupMaxSelectable=2 + 2 beverageIds elegidos (justo en el límite) → no lanza', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          beverages: [
+            { id: 'bev-coca', name: 'Coca-Cola 500ml', price: 5 },
+            { id: 'bev-inca', name: 'Inca Kola 500ml', price: 5.5 },
+          ],
+          beverageGroupMaxSelectable: 2,
+        }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [
+          { menuItemId, quantity: 1, beverageIds: ['bev-coca', 'bev-inca'] },
+        ],
+      });
+
+      expect(result.items[0].selectedBeverages).toHaveLength(2);
+    });
+
+    it('grupo de porciones extras obligatorio + extraPortionIds omitido → 400', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          extraPortions: [{ id: 'extra-papas', name: 'Papas extra', price: 8 }],
+          extraPortionsGroupRequired: true,
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 1 }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('extraPortionsGroupMaxSelectable=1 + 2 extraPortionIds elegidos → 400', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          extraPortions: [
+            { id: 'extra-papas', name: 'Papas extra', price: 8 },
+            { id: 'extra-queso', name: 'Queso extra', price: 3.5 },
+          ],
+          extraPortionsGroupMaxSelectable: 1,
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [
+            {
+              menuItemId,
+              quantity: 1,
+              extraPortionIds: ['extra-papas', 'extra-queso'],
+            },
+          ],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('create — bebidas/extras combinadas con canje de premio (rewardRedemptionId)', () => {
+    const rewardRedemptionId = '55555555-5555-4555-8555-555555555555';
+
+    beforeEach(() => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      orderItemsRepo.create.mockImplementation(passthrough);
+      ordersRepo.create.mockImplementation(passthrough);
+      ordersRepo.save.mockImplementation(passthrough);
+      dataSource.transaction.mockImplementation(
+        (cb: (m: { create: jest.Mock; save: jest.Mock }) => Promise<unknown>) =>
+          cb({
+            create: jest.fn((_entity: unknown, value: unknown) => value),
+            save: jest.fn((_entity: unknown, value: unknown) =>
+              Promise.resolve(value),
+            ),
+          }),
+      );
+    });
+
+    it('el precio de la bebida SÍ se cobra aunque el producto base esté canjeado a 0 (el premio no cubre extras)', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          price: 24.9,
+          redeemableWithStars: true,
+          beverages: [{ id: 'bev-coca', name: 'Coca-Cola 500ml', price: 5 }],
+        }),
+      ]);
+      rewardsService.validateForOrder.mockResolvedValue({
+        id: rewardRedemptionId,
+        usedAt: null,
+      });
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [
+          {
+            menuItemId,
+            quantity: 1,
+            rewardRedemptionId,
+            beverageIds: ['bev-coca'],
+          },
+        ],
+      });
+
+      expect(result.items[0].unitPrice).toBe(0);
+      // unitPrice forzado a 0, pero la bebida SÍ suma: (0 + 5) * 1 = 5, no 0.
+      expect(result.items[0].subtotal).toBe(5);
+      expect(result.items[0].selectedBeverages).toEqual([
+        { name: 'Coca-Cola 500ml', price: 5 },
+      ]);
     });
   });
 

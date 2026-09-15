@@ -248,6 +248,36 @@ celtas-backend/
       veredicto **LISTO** (375/375 e2e × 6 corridas limpias, 413/413 unit, build/lint limpios).
       Detalle en `docs/testing-checklist.md`, sección "Salsas/cremas" → "Pase de `@tester` sobre
       la feature completa".
+- [x] **Opciones separadas por categoría: Bebidas (`Beverage`) + Porciones Extras (`ExtraPortion`).**
+      Dos módulos nuevos (`beverages`, `extra-portions`) calcados 1:1 del patrón de `sauces`, con
+      una diferencia clave: bebidas y porciones extras SÍ tienen `price` y afectan el
+      `subtotal`/`total` del pedido (las salsas no). `MenuItem` gana `beverages`/`extraPortions`
+      (`ManyToMany` + `@JoinTable`, mismo criterio que `sauces`) y 4 columnas de config de
+      OptionGroup: `beverageGroupRequired`/`beverageGroupMaxSelectable`,
+      `extraPortionsGroupRequired`/`extraPortionsGroupMaxSelectable` (default `false`/`1`).
+      `CreateOrderItemDto` acepta `beverageIds`/`extraPortionIds` (mismo tri-state que `sauceIds`:
+      `undefined` = no aplica, `[]` = "sin bebida" elegido a propósito). `OrderItem` snapshotea
+      `selectedBeverages`/`selectedExtraPortions` como `{name, price}[]` (`jsonb`, a diferencia de
+      `selectedSauces` que es solo `text[]` de nombres). `OrdersService.buildItems` suma el precio
+      de las bebidas/extras elegidas al `subtotal` (`(unitPrice + extrasUnitPrice) * quantity`),
+      **incluso en ítems de premio canjeado** (`unitPrice` forzado a 0): el premio cubre el producto
+      base, no lo que el cliente agregó encima. `validateGroupSelection` (nuevo, agregado tras
+      hallazgo de `@tester`) hace cumplir `maxSelectable`/`required` en el backend — nunca confiar
+      en que la app cliente respete esos límites, mismo principio que el resto del proyecto para el
+      cálculo de dinero. `GET /menu` público expone bebidas/extras (con precio) y la config de
+      grupo por producto, mismo criterio que `sauces` (solo activas, ordenadas por `sortOrder`).
+      Mismo gotcha ya conocido de `sauces` reconfirmado: `src/data-source.ts` necesitó las
+      entidades nuevas en su lista manual (el CLI de migraciones no usa `autoLoadEntities`).
+      Migración `AddBeveragesAndExtraPortions` generada como una sola migración combinada (no 3
+      separadas: `migration:generate` diffea código completo vs. BD real, no contra migraciones
+      previas sin ejecutar — generar 3 veces seguidas sin correr nada en el medio habría dejado 2
+      de los 3 archivos vacíos o rotos), revisada a mano, y ejecutada contra Postgres local con
+      confirmación explícita del usuario. Auditado por `@tester`: encontró que `maxSelectable`/
+      `required` no se validaban en el backend (bloqueante de regla de negocio, corregido en la
+      misma sesión) y que la migración no estaba aplicada (bloqueante operativo, resuelto después).
+      Veredicto final **LISTO**: 471/471 unit (25/25 suites), 380/380 e2e (14/14 suites, incluye
+      26/26 de `menu.e2e-spec.ts` re-verificados post-migración), build/lint limpios. Detalle
+      completo en `docs/testing-checklist.md`, sección "Bebidas y Porciones Extras".
 
 ### 4. Módulo Orders
 - [x] Entidad `Order` + `OrderItem`
