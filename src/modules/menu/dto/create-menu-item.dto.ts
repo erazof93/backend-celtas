@@ -93,6 +93,25 @@ export class CreateMenuItemDto {
   sauceIds?: string[];
 
   @ApiPropertyOptional({
+    example: false,
+    description:
+      'Si el grupo de salsas es obligatorio (default false). Sin efecto si sauceIds queda vacío.',
+  })
+  @IsOptional()
+  @IsBoolean({ message: 'sauceGroupRequired debe ser true o false' })
+  sauceGroupRequired?: boolean;
+
+  @ApiPropertyOptional({
+    example: 1,
+    description:
+      'Máximo de salsas que el cliente puede elegir para este producto (default 1)',
+  })
+  @IsOptional()
+  @IsInt({ message: 'sauceGroupMaxSelectable debe ser un número entero' })
+  @Min(1, { message: 'sauceGroupMaxSelectable debe ser al menos 1' })
+  sauceGroupMaxSelectable?: number;
+
+  @ApiPropertyOptional({
     type: [String],
     example: ['3fa85f64-5717-4562-b3fc-2c963f66afa6'],
     description:

@@ -97,6 +97,22 @@ export class MenuItem {
   sauces: Sauce[];
 
   /**
+   * Si el grupo de salsas es obligatorio: la app debe forzar al cliente a elegir
+   * al menos una antes de agregar el producto al carrito. Sin efecto si
+   * `sauces` está vacío (el producto no ofrece ninguna). Mismo patrón que
+   * `beverageGroupRequired`/`extraPortionsGroupRequired`.
+   */
+  @Column({ name: 'sauce_group_required', type: 'boolean', default: false })
+  sauceGroupRequired: boolean;
+
+  /**
+   * Máximo de salsas que el cliente puede elegir para este producto. Default 1
+   * (mismo criterio que `beverageGroupMaxSelectable`/`extraPortionsGroupMaxSelectable`).
+   */
+  @Column({ name: 'sauce_group_max_selectable', type: 'int', default: 1 })
+  sauceGroupMaxSelectable: number;
+
+  /**
    * Bebidas que este producto ofrece, del catálogo global de `beverages`. Vacío =
    * el producto no ofrece selector de bebidas — la app no muestra la sección.
    * Relación en vivo (a diferencia de `OrderItem.selectedBeverages`, que es
