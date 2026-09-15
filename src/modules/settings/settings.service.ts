@@ -52,6 +52,13 @@ export const DELIVERY_ALERT_RADIUS_METERS_KEY = 'delivery_alert_radius_meters';
 export const SOLES_POR_ESTRELLA_KEY = 'soles_por_estrella';
 
 /**
+ * Clave de la versión mínima de la app Flutter requerida para operar (formato
+ * `X.Y.Z+BB`, donde BB es el build number). Debajo de esa versión, la app
+ * debe bloquear el uso y pedir actualizar. Pública: la app la consulta sin auth.
+ */
+export const MIN_APP_VERSION_KEY = 'min_app_version';
+
+/**
  * Whitelist de keys que el endpoint público GET /settings/public puede exponer.
  * NUNCA exponer todo el key-value sin filtrar: solo lo que la app cliente necesita.
  */
@@ -60,6 +67,7 @@ const PUBLIC_KEYS_WHITELIST: ReadonlySet<string> = new Set([
   BUSINESS_HOURS_SCHEDULE_KEY,
   BUSINESS_MANUAL_CLOSED_KEY,
   BUSINESS_MANUAL_CLOSED_REASON_KEY,
+  MIN_APP_VERSION_KEY,
 ]);
 
 /** Horario de un día: `open`/`close` en formato `HH:mm`, hora local de Lima. */
@@ -119,6 +127,9 @@ const DEFAULT_DELIVERY_ALERT_RADIUS_METERS = 2500;
 
 /** Default del programa de estrellas: S/10 gastados → 1 estrella. */
 const DEFAULT_SOLES_POR_ESTRELLA = 10;
+
+/** Versión mínima sembrada por defecto: una versión ya publicada, baseline seguro (no bloquea la última). */
+const DEFAULT_MIN_APP_VERSION = '1.0.1+16';
 
 /**
  * Módulo Settings: configuración clave-valor gestionada desde el panel admin.
@@ -187,6 +198,12 @@ export class SettingsService implements OnModuleInit {
       SOLES_POR_ESTRELLA_KEY,
       String(DEFAULT_SOLES_POR_ESTRELLA),
       'Soles gastados (subtotal sin envío) necesarios para ganar 1 estrella del programa de fidelización',
+    );
+
+    await this.seedIfMissing(
+      MIN_APP_VERSION_KEY,
+      DEFAULT_MIN_APP_VERSION,
+      'Versión mínima de la app Flutter requerida para operar (formato X.Y.Z+BB) — debajo de esta versión, la app debe bloquear el uso y pedir actualizar',
     );
   }
 
