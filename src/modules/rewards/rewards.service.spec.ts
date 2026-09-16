@@ -290,7 +290,7 @@ describe('RewardsService', () => {
       });
     });
 
-    it('lista solo los premios sin usar y sin vencer, ordenados por expiresAt, con esEspecial por premio', async () => {
+    it('lista los premios sin vencer (usados o no), ordenados por expiresAt, con esEspecial por premio, SIN filtrar por usedAt', async () => {
       rewardMilestonesRepo.find.mockResolvedValue([]);
       dataSource.manager.find.mockResolvedValue([]);
       rewardRedemptionsRepo.find.mockResolvedValue([
@@ -298,19 +298,53 @@ describe('RewardsService', () => {
           id: 'r1',
           expiresAt: new Date('2026-09-01T00:00:00.000Z'),
           isSpecial: true,
+          usedAt: null,
         },
       ]);
 
       const result = await service.getProgress(userId);
 
-      expect(rewardRedemptionsRepo.find).toHaveBeenCalledWith(
-        expect.objectContaining({ order: { expiresAt: 'ASC' } }),
-      );
+      // El filtro de la query ya NO incluye `usedAt` — un premio usado no
+      // debe excluirse acá, solo por vencimiento.
+      const queryArg = rewardRedemptionsRepo.find.mock.calls[0][0] as {
+        where: Record<string, unknown>;
+        order: unknown;
+      };
+      expect(queryArg.where).not.toHaveProperty('usedAt');
+      expect(queryArg.order).toEqual({ expiresAt: 'ASC' });
       expect(result.premiosDisponibles).toEqual([
         {
           id: 'r1',
           expiresAt: new Date('2026-09-01T00:00:00.000Z'),
           esEspecial: true,
+          estado: 'pending',
+          usedAt: null,
+        },
+      ]);
+    });
+
+    it('un premio YA reclamado (usedAt != null) sigue apareciendo, con estado "redeemed" y la fecha real de canje — pedido explícito: ya no desaparece de la lista al usarse', async () => {
+      rewardMilestonesRepo.find.mockResolvedValue([]);
+      dataSource.manager.find.mockResolvedValue([]);
+      const usedAt = new Date('2026-08-20T10:00:00.000Z');
+      rewardRedemptionsRepo.find.mockResolvedValue([
+        {
+          id: 'r-redeemed',
+          expiresAt: new Date('2026-09-01T00:00:00.000Z'),
+          isSpecial: false,
+          usedAt,
+        },
+      ]);
+
+      const result = await service.getProgress(userId);
+
+      expect(result.premiosDisponibles).toEqual([
+        {
+          id: 'r-redeemed',
+          expiresAt: new Date('2026-09-01T00:00:00.000Z'),
+          esEspecial: false,
+          estado: 'redeemed',
+          usedAt,
         },
       ]);
     });

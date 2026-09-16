@@ -4,7 +4,6 @@ import {
   And,
   DataSource,
   EntityManager,
-  IsNull,
   LessThan,
   MoreThan,
   MoreThanOrEqual,
@@ -31,10 +30,19 @@ export interface RewardMilestoneProgress {
   esEspecial: boolean;
 }
 
+/** `estado` es derivado de `usedAt` (no una columna propia): 'redeemed' si `usedAt != null`. */
+export type RewardRedemptionEstado = 'pending' | 'redeemed';
+
 export interface RewardsProgress {
   estrellasDelMes: number;
   hitos: RewardMilestoneProgress[];
-  premiosDisponibles: { id: string; expiresAt: Date; esEspecial: boolean }[];
+  premiosDisponibles: {
+    id: string;
+    expiresAt: Date;
+    esEspecial: boolean;
+    estado: RewardRedemptionEstado;
+    usedAt: Date | null;
+  }[];
   promocionActiva: {
     label: string;
     multiplier: number;
@@ -86,13 +94,15 @@ export class RewardsService {
   // ── Cliente ──────────────────────────────────────────────────────────────────
 
   /**
-   * Progreso de cada hito del mes + premios disponibles + promoción vigente
-   * hoy. Se autocorrige en cada lectura: `recalculateForUser` es idempotente
-   * (ver su doc), así que llamarlo acá antes de leer garantiza que
-   * `premiosDisponibles` nunca quede desalineado con `estrellasDelMes` —
-   * cubre el caso en que el disparo automático tras `OrdersService.updateStatus`
-   * (best-effort, con catch silencioso) haya fallado o no se haya ejecutado
-   * todavía para el mes en curso.
+   * Progreso de cada hito del mes + premios (disponibles Y ya reclamados,
+   * pese al nombre histórico del campo `premiosDisponibles` — ver abajo) +
+   * promoción vigente hoy. Se autocorrige en cada lectura:
+   * `recalculateForUser` es idempotente (ver su doc), así que llamarlo acá
+   * antes de leer garantiza que `premiosDisponibles` nunca quede
+   * desalineado con `estrellasDelMes` — cubre el caso en que el disparo
+   * automático tras `OrdersService.updateStatus` (best-effort, con catch
+   * silencioso) haya fallado o no se haya ejecutado todavía para el mes en
+   * curso.
    */
   async getProgress(userId: string): Promise<RewardsProgress> {
     await this.recalculateForUser(userId);
@@ -112,8 +122,13 @@ export class RewardsService {
     );
 
     const now = new Date();
+    // Ya NO filtra `usedAt: IsNull()`: un premio reclamado sigue
+    // devolviéndose (con `estado: 'redeemed'` + `usedAt`) hasta que vence,
+    // en vez de desaparecer de la lista apenas se usa — el cliente lo
+    // muestra marcado como reclamado en vez de solo quitarlo sin explicar
+    // por qué.
     const disponibles = await this.rewardRedemptionsRepository.find({
-      where: { userId, usedAt: IsNull(), expiresAt: MoreThan(now) },
+      where: { userId, expiresAt: MoreThan(now) },
       order: { expiresAt: 'ASC' },
     });
 
@@ -134,6 +149,8 @@ export class RewardsService {
         id: r.id,
         expiresAt: r.expiresAt,
         esEspecial: r.isSpecial,
+        estado: r.usedAt ? 'redeemed' : 'pending',
+        usedAt: r.usedAt,
       })),
       promocionActiva: activePromo
         ? {

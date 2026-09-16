@@ -25,7 +25,7 @@ export class RewardsController {
   @ApiOperation({
     summary: 'Progreso del programa de estrellas (cliente)',
     description:
-      'Estrellas hacia el próximo premio (recalculadas en caliente, no persistidas), premios disponibles sin usar/sin vencer, y la promoción de estrellas dobles vigente hoy, si hay alguna.',
+      'Estrellas hacia el próximo premio (recalculadas en caliente, no persistidas), premios sin vencer (ya reclamados o no, distinguibles por "estado": "pending"/"redeemed" y "usedAt"), y la promoción de estrellas dobles vigente hoy, si hay alguna.',
   })
   @ApiResponse({
     status: 200,
