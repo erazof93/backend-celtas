@@ -186,12 +186,13 @@ export class OrdersService {
     return savedOrder;
   }
 
-  /** Lista los pedidos del usuario autenticado (más recientes primero). */
-  async findMyOrders(userId: string): Promise<Order[]> {
+  /** Lista los pedidos del usuario autenticado (más recientes primero, máx. `limit`). */
+  async findMyOrders(userId: string, limit: number = 20): Promise<Order[]> {
     return this.ordersRepository.find({
       where: { userId },
       relations: { items: true },
       order: { createdAt: 'DESC' },
+      take: limit,
     });
   }
 

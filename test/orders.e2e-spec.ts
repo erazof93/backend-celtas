@@ -741,6 +741,41 @@ describe('Orders (e2e)', () => {
       expect(data.every((o) => o.userId === clientAId)).toBe(true);
     });
 
+    it('GET /orders/me?limit=20 devuelve como máximo 20 pedidos', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/orders/me')
+        .query({ limit: 20 })
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as OrderData[];
+      expect(data.length).toBeLessThanOrEqual(20);
+    });
+
+    it('GET /orders/me respeta un límite custom menor a la cantidad real de pedidos', async () => {
+      // Un segundo pedido asegura que el cliente tiene al menos 2 en total.
+      await createOrder(clientAToken, {
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+
+      const res = await request(app.getHttpServer())
+        .get('/orders/me')
+        .query({ limit: 1 })
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(200);
+      const data = (res.body as Envelope).data as OrderData[];
+      expect(data).toHaveLength(1);
+    });
+
+    it('GET /orders/me?limit=0 rechaza con 400', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/orders/me')
+        .query({ limit: 0 })
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
     it('GET /orders/:id: el cliente ve su propio pedido', async () => {
       const res = await request(app.getHttpServer())
         .get(`/orders/${orderId}`)

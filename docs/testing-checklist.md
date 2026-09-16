@@ -983,6 +983,82 @@ aislada; (2) gaps menores de contrato en el DTO de salsas; (3) flaky de infra pr
       mantenga su propio estado independiente); `sauceIds: []` en un producto que no ofrece
       ninguna salsa (`menuItem.sauces` vacío/`undefined`).
 
+## Paginación por límite en `GET /orders/me` (`QueryMyOrdersDto`)
+
+> Feature puntual: `GET /orders/me` (listado de "mis pedidos" del cliente autenticado) ahora acepta
+> un query param opcional `limit` (default 20, máx. 100) vía `QueryMyOrdersDto` (mismo patrón que
+> `QueryOrdersDto` de `GET /orders` admin: `@IsOptional() @Type(() => Number) @IsInt() @Min(1)
+> @Max(100)`). Antes `findMyOrders(userId)` no tenía límite (traía TODOS los pedidos del usuario sin
+> paginar). `OrdersService.findMyOrders(userId, limit = 20)` agrega `take: limit` al `find()`.
+>
+> **Auditado por `@tester` (pase independiente, con mutación real y verificación en vivo contra
+> servidor `pnpm run start:dev` + Postgres local `celtas-db` reales) — veredicto "LISTO".**
+
+- [x] `pnpm run build` compila sin errores (confirmado de forma independiente)
+- [x] `pnpm run test`: 472/472 en verde (25 suites) — confirmado de forma independiente (incluye
+      `orders.service.spec.ts` 107/107 aislado, con los 2 tests nuevos de `describe('findMyOrders')`:
+      límite default 20 y límite custom 5, ambos verificando `ordersRepo.find` llamado con `take`
+      correcto)
+- [x] `pnpm run test:e2e`: 383/383 en verde (14 suites) contra Postgres local real — confirmado de
+      forma independiente (incluye `orders.e2e-spec.ts` 63/63 aislado, con los 3 tests nuevos:
+      `limit=20` devuelve como máximo 20, límite custom `1` menor a la cantidad real de pedidos se
+      respeta, `limit=0` rechaza con 400)
+- [x] `QueryMyOrdersDto` sigue exactamente el mismo patrón ya auditado de `QueryOrdersDto` (`GET
+      /orders` admin): `@IsOptional()`, `@Type(() => Number)` (coerción explícita, necesaria porque
+      los query params SIEMPRE llegan como string), `@IsInt()`/`@Min(1)`/`@Max(100)` con mensajes en
+      español, `default 20` vía valor por defecto en la propiedad de la clase — sin `@Validate`
+      inline, sin ningún patrón nuevo que auditar
+- [x] **Verificado con mutación real por `@tester`**: se quitó `take: limit` de
+      `OrdersService.findMyOrders` — rompió **exactamente** 2/107 tests unitarios (los dos nuevos de
+      `describe('findMyOrders')`) y **exactamente** 1/63 test e2e (`GET /orders/me respeta un límite
+      custom menor a la cantidad real de pedidos`, que pasó de devolver 1 pedido a devolver los 14
+      reales del cliente de prueba), ningún otro test se vio afectado. Mutación revertida, `git diff
+      --stat` confirma el archivo idéntico al estado previo, suites completas vuelven a 472/472 y
+      383/383
+- [x] Contrato del DTO verificado en vivo (`curl` real contra el servidor y Postgres local reales,
+      usuario registrado en esta sesión): `limit=0` → 400 `"El límite mínimo es 1"`; `limit=101` →
+      400 `"El límite máximo es 100"`; `limit=1.5` → 400 `"El límite debe ser un número entero"`;
+      `limit=abc` → 400 (los tres mensajes combinados, NaN falla los tres validadores); sin `limit`
+      → 200 con el default aplicado sin error; sin token → 401
+- [x] Sin efecto colateral en el resto de `orders`: `GET /orders` (admin, `QueryOrdersDto`), `GET
+      /orders/:id`, `POST /orders`, `POST /orders/estimate-delivery-fee` y `PATCH
+      /orders/:id/status` no se tocaron — confirmado leyendo el diff completo (`git diff --stat`
+      muestra solo `orders.controller.ts` +14/-2, `orders.service.ts` +3/-2 en la firma y el `take`,
+      y los dos archivos de test) y con la suite completa de `orders.service.spec.ts`/
+      `orders.e2e-spec.ts` en verde
+- [x] Seguridad: `GET /orders/me` sigue devolviendo 401 sin token (verificado en vivo); `password`
+      no aparece en la respuesta de `POST /auth/register` usada para generar el token de prueba
+- [x] Swagger: confirmado contra `/docs-json` real (servidor levantado) — `GET /orders/me` documenta
+      el parámetro `limit` (`in: query`, `required: false`, `schema.default: 20`, `schema.example:
+      20`, descripción con el máximo)
+
+⚠️ Riesgos / casos borde no cubiertos (bajo riesgo, no bloqueantes):
+- No hay test explícito (unitario ni e2e) de `limit=101` ni `limit` no numérico (`abc`) — se
+  verificaron en vivo con `curl` en esta auditoría (ambos 400 correctos, ver arriba), pero no quedó
+  como test de regresión automatizado en `orders.e2e-spec.ts`. Vale la pena agregarlos en una vuelta
+  futura, sobre todo `limit=101` (el límite superior `@Max(100)` no tiene ningún test de regresión
+  hoy, a diferencia del límite inferior `@Min(1)` que sí lo tiene con `limit=0`).
+- El cambio de default (antes `findMyOrders(userId)` no tenía límite, ahora trae como máximo 20) es
+  un cambio de comportamiento real para cualquier cliente con más de 20 pedidos históricos — es el
+  comportamiento esperado de esta feature (paginación por límite), pero no hay ningún test que
+  documente explícitamente "antes traía N pedidos sin límite, ahora trae máximo 20" como
+  no-regresión intencional (a diferencia de otras features de este proyecto que sí dejan un test de
+  "comportamiento previo intacto").
+- No es paginación real (sin `skip`/`page`/cursor): un cliente con más de 100 pedidos históricos
+  nunca puede ver los pedidos más viejos que el límite máximo permite traer de una sola vez vía este
+  endpoint. Coherente con el pedido original ("paginación por límite", no paginación completa), pero
+  vale la pena que quede explícito para cuando `celtas-app` construya el historial de pedidos.
+
+**Veredicto: LISTO.** Todo lo crítico pasa: build limpio, 472/472 unit y 383/383 e2e (confirmados de
+forma independiente, no solo el conteo reportado por la sesión principal), DTO sigue al pie de la
+letra el patrón ya auditado de `QueryOrdersDto` (sin patrones nuevos que revisar), mutación real que
+rompe exactamente los 2 tests unitarios y el 1 test e2e nuevos y ningún otro (confirma que la
+cobertura es real, no cosmética), contrato de validación verificado en vivo en los 4 extremos
+(0, 101, 1.5, abc), sin efecto colateral en el resto de `orders`, seguridad y Swagger correctos. Sin
+bloqueantes. Los ⚠️ de arriba son gaps de cobertura de bajo riesgo (falta test de regresión para
+`limit=101`/no-numérico, y aclarar explícitamente que no es paginación completa), no bloquean el
+veredicto.
+
 ## Coupons
 
 - [x] El cron no genera cupones duplicados para el mismo ciclo de gasto

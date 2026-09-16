@@ -1435,15 +1435,27 @@ describe('OrdersService', () => {
   });
 
   describe('findMyOrders', () => {
-    it('busca los pedidos del usuario con sus items', async () => {
+    it('busca los pedidos del usuario con sus items, con el límite default (20)', async () => {
       ordersRepo.find.mockResolvedValue([seedOrder()]);
       const result = await service.findMyOrders(userId);
       expect(ordersRepo.find).toHaveBeenCalledWith({
         where: { userId },
         relations: { items: true },
         order: { createdAt: 'DESC' },
+        take: 20,
       });
       expect(result).toHaveLength(1);
+    });
+
+    it('respeta un límite custom', async () => {
+      ordersRepo.find.mockResolvedValue([seedOrder()]);
+      await service.findMyOrders(userId, 5);
+      expect(ordersRepo.find).toHaveBeenCalledWith({
+        where: { userId },
+        relations: { items: true },
+        order: { createdAt: 'DESC' },
+        take: 5,
+      });
     });
   });
 

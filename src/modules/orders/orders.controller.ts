@@ -25,6 +25,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from '../users/entities/user.entity';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { EstimateDeliveryFeeDto } from './dto/estimate-delivery-fee.dto';
+import { QueryMyOrdersDto } from './dto/query-my-orders.dto';
 import { QueryOrdersDto } from './dto/query-orders.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrdersService } from './orders.service';
@@ -92,10 +93,19 @@ export class OrdersController {
   @Get('me')
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Listar mis pedidos (cliente)' })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    example: 20,
+    description: 'Cantidad máxima de pedidos a devolver (default 20, máx 100)',
+  })
   @ApiResponse({ status: 200, description: 'Lista de pedidos del usuario' })
   @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
-  listMine(@Req() req: AuthenticatedRequest) {
-    return this.ordersService.findMyOrders(req.user.userId);
+  listMine(
+    @Req() req: AuthenticatedRequest,
+    @Query() query: QueryMyOrdersDto,
+  ) {
+    return this.ordersService.findMyOrders(req.user.userId, query.limit);
   }
 
   @Get()

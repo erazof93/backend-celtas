@@ -522,6 +522,17 @@ celtas-backend/
         exactamente 500 caracteres (acepta, límite inclusive) y `GET` de pedido no cancelado
         (`cancelReason: null`) — antes eran riesgos de bajo impacto sin cobertura automatizada.
         Ver detalle en `docs/testing-checklist.md`.
+  - [x] **Paginación por límite en `GET /orders/me`.** Query param opcional `limit` (default 20,
+        máx. 100) vía `QueryMyOrdersDto`, mismo patrón que `QueryOrdersDto` (`GET /orders` admin).
+        `OrdersService.findMyOrders(userId, limit = 20)` agrega `take: limit`. Auditado por
+        `@tester` (pase independiente, con mutación real y verificación en vivo contra servidor +
+        Postgres local reales): **LISTO** — 472 unit (25 suites) + 383 e2e (14 suites), build
+        limpio, mutación (`take: limit` quitado) rompe exactamente los 2 tests unitarios y el 1 e2e
+        nuevos y ningún otro, contrato del DTO verificado en vivo en los 4 extremos (0, 101, 1.5,
+        abc), sin efecto colateral en el resto de `orders`, Swagger correcto. Riesgos anotados, no
+        bloqueantes: falta test de regresión automatizado para `limit=101`/no-numérico (solo
+        verificado en vivo), y no es paginación completa (sin `skip`/cursor) — queda para cuando
+        `celtas-app` construya el historial de pedidos. Ver detalle en `docs/testing-checklist.md`.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)
