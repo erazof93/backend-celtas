@@ -753,6 +753,19 @@ celtas-backend/
   ningún otro lugar que dependa de la relación vieja `available AND redeemableWithStars`. Detalle en
   `docs/testing-checklist.md`, sección "Rewards — `available` desacoplado del catálogo/canje de
   premios (productos EXCLUSIVOS)".
+- [x] **Fix: `GET /rewards/progress` se autocorrige (bug de producción, 12 estrellas sin el premio
+  del hito 12)**: `recalculateForUser` (única función que genera `RewardRedemption`) solo se
+  disparaba desde `OrdersService.updateStatus()` en un `try/catch` best-effort sin cron de respaldo
+  (a diferencia de `CouponsService`). `getProgress()` ahora llama `recalculateForUser` como primera
+  línea, apoyándose en su idempotencia ya probada. Auditado por `@tester` (pase independiente, con
+  mutación real confirmando que el test e2e nuevo falla exactamente sin el fix, y un gap de
+  cobertura unitaria cerrado en la propia auditoría) — veredicto **LISTO**: build/lint limpios,
+  `tsc` mismo baseline de 14 errores preexistentes, 473 unit (472 + 1 test nuevo de `@tester`) +
+  384 e2e confirmados de forma independiente, barrido completo del repo confirma que no hay otro
+  punto de generación de premios que necesite el mismo criterio, riesgo de lock/rendimiento
+  evaluado como aceptable para la escala del proyecto. Detalle en `docs/testing-checklist.md`,
+  sección "Rewards — `GET /rewards/progress` se autocorrige llamando a `recalculateForUser` en cada
+  lectura".
 
 ---
 

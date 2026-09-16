@@ -314,6 +314,45 @@ describe('RewardsService', () => {
         },
       ]);
     });
+
+    it('se autocorrige llamando a recalculateForUser antes de leer: otorga el premio pendiente aunque nadie lo haya disparado antes (regresión del bug de 12 estrellas sin premio)', async () => {
+      // Mismo escenario que el bug reportado: las estrellas ya alcanzan el
+      // hito (calculadas en vivo por `monthlyStats`), pero el
+      // `RewardRedemption` correspondiente todavía no existe porque el
+      // disparo automático de `OrdersService.updateStatus` nunca corrió. Si
+      // `getProgress` no llamara a `recalculateForUser` primero, este test
+      // fallaría: `manager.save` nunca se invocaría y `dataSource.transaction`
+      // tampoco.
+      rewardMilestonesRepo.find.mockResolvedValue([
+        seedMilestone({ id: 'milestone-5', starsRequired: 5 }),
+      ]);
+      // `getProgress` lee directo con `this.dataSource.manager` (fuera de la
+      // transacción) para calcular `estrellasDelMes`/`promocionActiva`.
+      dataSource.manager.find.mockImplementation((entity: unknown) => {
+        if (entity === Order) return Promise.resolve([seedOrder()]); // S/50 → 5 estrellas
+        if (entity === StarPromotion) return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
+      // `recalculateForUser` corre en su propia transacción con su propio
+      // manager (mismo cálculo, sin premio otorgado todavía).
+      const manager = setupTransaction({
+        user: { id: userId } as User,
+        orders: [seedOrder()],
+        promotions: [],
+        alreadyGranted: [],
+      });
+      rewardRedemptionsRepo.find.mockResolvedValue([]);
+
+      await service.getProgress(userId);
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(manager.save).toHaveBeenCalledWith(
+        RewardRedemption,
+        expect.arrayContaining([
+          expect.objectContaining({ userId, milestoneStars: 5 }),
+        ]),
+      );
+    });
   });
 
   describe('recalculateForUser', () => {

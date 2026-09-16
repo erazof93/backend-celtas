@@ -2133,6 +2133,118 @@ Sin bloqueantes.
 
 ---
 
+## Rewards — `GET /rewards/progress` se autocorrige llamando a `recalculateForUser` en cada lectura (bug: 12 estrellas visibles sin el premio del hito 12)
+
+> Fix mínimo de un bug reportado en producción: `recalculateForUser` (única función que genera
+> `RewardRedemption`) solo se disparaba desde `OrdersService.updateStatus()` al pasar a
+> `entregado`, dentro de un `try/catch` best-effort que solo loguea (mismo patrón que
+> `CouponsService.checkAndGenerateForUser`, pero a diferencia de cupones, Rewards NO tiene ningún
+> `@Cron` de respaldo). Si ese disparo fallaba o no llegaba a ejecutarse, el cliente veía sus
+> estrellas correctas (calculadas en vivo por `monthlyStats`) pero sin el `RewardRedemption`
+> correspondiente, y nada volvía a intentarlo ese mes. Fix: `RewardsService.getProgress()` ahora
+> llama `await this.recalculateForUser(userId)` como primera línea — apoyándose en que
+> `recalculateForUser` ya era naturalmente idempotente (documentado y cubierto por los tests de "no
+> regeneración" ya existentes) — así cada lectura se autocorrige sola. No se tocó el
+> `try/catch` de `orders.service.ts` (sigue intencional). Diff de producción: 1 archivo,
+> `src/modules/rewards/rewards.service.ts`, +11/-1 (una línea de código + docstring ampliado).
+>
+> **Auditado por `@tester` (pase independiente, con mutación real sobre el punto exacto del fix,
+> Docker/Postgres local real) — veredicto "LISTO", con 1 gap de cobertura unitaria cerrado durante
+> la propia auditoría.**
+
+- [x] `pnpm run build` compila sin errores (confirmado de forma independiente)
+- [x] `pnpm run lint` limpio, exit 0 (confirmado de forma independiente, sin tocar ningún archivo
+      más allá de los ya modificados por la sesión principal)
+- [x] `npx tsc --noEmit`: exactamente 14 errores (`grep -c "error TS"`), los mismos 14 preexistentes
+      y ajenos de siempre (`validation.schema.spec`, `auth.service*.spec`, `banners.service.spec`,
+      `menu.service.spec`, `addresses.service.spec`, `users.service.spec`, `auth.e2e-spec` x4,
+      `coupons.e2e-spec`, `users.e2e-spec`) — ninguno nuevo, ninguno en `rewards.service.ts` ni en
+      el spec nuevo
+- [x] `pnpm run test`: 473/473 en verde (25/25 suites) — 472 preexistentes + 1 test unitario nuevo
+      agregado por `@tester` (ver hallazgo cerrado más abajo)
+- [x] `pnpm run test:e2e`: 384/384 en verde (14/14 suites) contra Postgres local real (`celtas-db`
+      vía Docker), incluye el test e2e nuevo de la sesión principal
+      (`test/rewards.e2e-spec.ts`, describe "GET /rewards/progress se autocorrige..."). Ambos
+      conteos confirmados de forma independiente, no solo el reportado por la sesión principal
+- [x] **Mutación real, punto 1 (el fix en sí)**: se comentó `await this.recalculateForUser(userId)`
+      en `getProgress()` → el test e2e nuevo falló exactamente como se esperaba —
+      `premiosDisponibles` con longitud 2 en vez de 3 (`Received array` sin el hito 12), confirmando
+      que el bug reproducido es real y que el test no pasaría "por otra vía" sin el fix. Mutación
+      revertida, `git diff --stat src/modules/rewards/rewards.service.ts` confirma el archivo
+      idéntico al estado que trajo la sesión principal (+11/-1, sin cambios extra), suite e2e
+      completa vuelve a 384/384
+- [x] **Hallazgo cerrado durante la propia auditoría (no bloqueante, gap de cobertura unitaria)**:
+      con la misma mutación de arriba, la suite UNITARIA (`rewards.service.spec.ts`) seguía en verde
+      27/27 — ningún test unitario existente asertaba que `getProgress` invoca
+      `recalculateForUser`/`dataSource.transaction` (los tests de `getProgress` stubean
+      `dataSource.manager.find` directo, sin pasar por `setupTransaction`, así que la ausencia del
+      fix era invisible a nivel unitario; solo el e2e contra Postgres real lo detectaba). Se agregó
+      un test nuevo en `describe('getProgress')` ("se autocorrige llamando a recalculateForUser
+      antes de leer...") que usa el helper `setupTransaction` ya existente en el archivo y asegura
+      `dataSource.transaction` llamado 1 vez y `manager.save` invocado con el `RewardRedemption` del
+      hito pendiente. Verificado con la misma mutación: el test nuevo falla solo (27 pasan, 1 falla,
+      `Expected number of calls: 1, Received: 0`), y con el fix restaurado pasa (28/28). Este test
+      es responsabilidad de `@tester` (archivo `*.spec.ts`), no de la sesión principal — dentro de
+      las reglas del rol
+- [x] **Evaluación de lock/rendimiento (punto 2 del pedido)**: `recalculateForUser` abre una
+      transacción con `pessimistic_write` sobre la fila `User` en CADA llamada, y ahora `getProgress`
+      la dispara en cada `GET /rewards/progress`. Analizado: (a) el lock es de UN solo recurso (la
+      fila `User`) por transacción — no hay posibilidad de deadlock clásico (se necesitan ≥2
+      recursos bloqueados en orden cruzado); solo serializa llamadas concurrentes AL MISMO usuario
+      (ej. el cliente refrescando `GET /rewards/progress` justo cuando un admin marca su pedido como
+      `entregado`), que es el comportamiento correcto y deseado, no un bug; (b) las consultas dentro
+      de la transacción son acotadas (pedidos `entregado` del mes actual de un usuario, con
+      `relations.items` — nunca crece sin límite entre meses porque el filtro es por mes calendario);
+      (c) mismo patrón ya usado y aceptado en el proyecto para `CouponsService.checkAndGenerateForUser`,
+      con la diferencia de que ahí se dispara solo tras cada entrega y en el cron diario, nunca desde
+      un GET. Para la escala real del proyecto (dark kitchen pequeña, Render free tier, tráfico bajo)
+      el riesgo de contención es bajo: el peor caso es "el cliente espera unos ms extra si refresca
+      justo cuando su propio pedido pasa a entregado", nunca afecta a otros usuarios. Se documenta
+      como observación de diseño (⚠️ abajo), no como bloqueante
+- [x] **Barrido de otros puntos de generación de premios (punto 4 del pedido)**: `grep -rn
+      "RewardRedemption\|recalculateForUser" src/` confirma que `recalculateForUser` es la ÚNICA
+      función que crea filas `RewardRedemption` (el resto de referencias son `reactivateForCancelledOrder`/
+      `validateForOrder`/`markUsed`, que operan sobre premios ya existentes, nunca los generan), y que
+      su único llamador productivo además de `getProgress` (el fix) es
+      `OrdersService.updateStatus()` (best-effort, sin cron de respaldo, documentado arriba). No
+      existe ningún otro lugar del código que debería recibir el mismo criterio de autocorrección —
+      el fix en `getProgress` ya cubre el único punto de lectura pública del programa de estrellas
+- [x] Ningún efecto colateral en el resto de la suite de Rewards: las 47 pruebas de
+      `rewards.e2e-spec.ts` (incluida toda la cobertura previa: hitos, promociones, canje, catálogo
+      exclusivo, expiración, no-regeneración, corte de mes) siguen en verde tras el fix — confirmado
+      corriendo el archivo completo de forma aislada
+- [x] Seguridad/Swagger: no aplica ningún chequeo nuevo — no se tocó ningún DTO, endpoint ni campo
+      de respuesta; `GET /rewards/progress` sigue protegido por `JwtAuthGuard` sin cambios y
+      `password` no viaja en ningún payload de este módulo (sin cambios de esta auditoría)
+
+⚠️ Riesgos / casos borde no cubiertos (bajo riesgo, no bloqueantes):
+- `getProgress` ahora abre una transacción de escritura (BEGIN/COMMIT + lock de fila) en CADA
+  lectura, incluso cuando no hay nada nuevo que otorgar (el caso común). Es un costo de I/O extra
+  por request que antes no existía (antes `getProgress` era 100% de solo lectura). Aceptable hoy
+  por el volumen de tráfico esperado, pero si la app llega a hacer polling agresivo de este
+  endpoint (pull-to-refresh repetido, por ejemplo) valdría la pena medir el impacto real en
+  conexiones de Postgres, especialmente si en el futuro se usa un plan con límite de conexiones más
+  estricto que el actual de Supabase free tier.
+- No hay ningún test (unitario ni e2e) del escenario de concurrencia real "dos requests simultáneas
+  a `recalculateForUser` para el mismo usuario" con un cliente de BD real disputando el lock (los
+  tests existentes de idempotencia llaman la función de forma secuencial, nunca en paralelo con
+  `Promise.all`) — el código está diseñado para ese caso (lock pesimista + `grantedThresholds` leído
+  dentro de la misma transacción), pero no hay evidencia automatizada de que dos llamadas
+  concurrentes de verdad no dupliquen un premio.
+
+**Veredicto: LISTO.** El fix es mínimo (1 línea + docstring), resuelve el bug reportado
+verificablemente (mutación real que rompe el test e2e nuevo exactamente como se esperaba, no por
+otra vía), se apoya en idempotencia ya probada de `recalculateForUser`, y no introduce ningún otro
+punto de generación de premios que necesite el mismo tratamiento (barrido completo confirmado). Se
+cerró en esta misma auditoría el único gap real encontrado (cobertura unitaria: la suite de
+`rewards.service.spec.ts` no detectaba la ausencia del fix; ahora sí, con un test nuevo verificado
+con mutación en ambos sentidos). Build, lint, `tsc` (mismo baseline de 14 errores preexistentes),
+473/473 unit y 384/384 e2e confirmados de forma independiente. El riesgo de lock/rendimiento
+analizado es aceptable para la escala actual del proyecto y queda documentado como observación de
+diseño, no como bloqueante. Sin hallazgos bloqueantes.
+
+---
+
 ## Bebidas y Porciones Extras (catálogo `Beverage`/`ExtraPortion` + selección con precio en Orders)
 
 > Feature calcada del patrón `Sauce`, con una diferencia clave: bebidas y porciones extras SÍ

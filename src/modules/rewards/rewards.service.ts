@@ -85,8 +85,18 @@ export class RewardsService {
 
   // ── Cliente ──────────────────────────────────────────────────────────────────
 
-  /** Progreso de cada hito del mes + premios disponibles + promoción vigente hoy. */
+  /**
+   * Progreso de cada hito del mes + premios disponibles + promoción vigente
+   * hoy. Se autocorrige en cada lectura: `recalculateForUser` es idempotente
+   * (ver su doc), así que llamarlo acá antes de leer garantiza que
+   * `premiosDisponibles` nunca quede desalineado con `estrellasDelMes` —
+   * cubre el caso en que el disparo automático tras `OrdersService.updateStatus`
+   * (best-effort, con catch silencioso) haya fallado o no se haya ejecutado
+   * todavía para el mes en curso.
+   */
   async getProgress(userId: string): Promise<RewardsProgress> {
+    await this.recalculateForUser(userId);
+
     const solesPorEstrella = await this.settingsService.getSolesPorEstrella();
     const milestones = await this.rewardMilestonesRepository.find({
       order: { starsRequired: 'ASC' },

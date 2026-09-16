@@ -1137,6 +1137,75 @@ describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => 
     });
   });
 
+  describe('GET /rewards/progress se autocorrige si recalculateForUser no se disparó (bug reportado: 12 estrellas visibles sin el premio del hito 12)', () => {
+    it('3 pedidos entregados = 12 estrellas: el último se marca entregado sin pasar por OrdersService.updateStatus (simula el disparo best-effort fallando) y GET /rewards/progress igual debe devolver el premio del hito 12', async () => {
+      const temp = await request(app.getHttpServer())
+        .post('/reward-milestones')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ starsRequired: 12 })
+        .expect(201);
+      const milestone12Id = (
+        (temp.body as Envelope).data as RewardMilestoneData
+      ).id;
+
+      const { token, userId } = await register('autocorreccion-12');
+
+      // Dos pedidos de S/40 (itemSmallId x8) entregados por el flujo normal
+      // (dispara recalculateForUser tras cada uno, como en producción).
+      const first = await createOrder(token, [
+        { menuItemId: itemSmallId, quantity: 8 },
+      ]).expect(201);
+      await deliverOrder(((first.body as Envelope).data as OrderData).id);
+
+      const second = await createOrder(token, [
+        { menuItemId: itemSmallId, quantity: 8 },
+      ]).expect(201);
+      await deliverOrder(((second.body as Envelope).data as OrderData).id);
+
+      let progress = await getProgress(token);
+      expect(progress.estrellasDelMes).toBe(8); // 80 / 10, todavía no llega a 12
+
+      // Tercer pedido: se lleva a "entregado" escribiendo directo en la BD
+      // (mismo patrón que el resto del archivo para simular estados sin pasar
+      // por el service), es decir SIN pasar por
+      // OrdersService.updateStatus → nunca dispara recalculateForUser. Esto
+      // reproduce el bug reportado: las estrellas ya suman 12 (se calculan en
+      // vivo con monthlyStats), pero el RewardRedemption del hito 12 nunca se
+      // generó porque el disparo automático no ocurrió.
+      const third = await createOrder(token, [
+        { menuItemId: itemSmallId, quantity: 8 },
+      ]).expect(201);
+      const thirdOrderId = ((third.body as Envelope).data as OrderData).id;
+      await ordersRepo.update(thirdOrderId, {
+        status: OrderStatus.ENTREGADO,
+        deliveredAt: new Date(),
+      });
+
+      // Sin llamar a recalculateForUser explícitamente: GET /rewards/progress
+      // debe autocorregirse solo y devolver estrellas y premios consistentes.
+      progress = await getProgress(token);
+      expect(progress.estrellasDelMes).toBe(12);
+      const hito12 = progress.hitos.find((h) => h.estrellasRequeridas === 12);
+      expect(hito12!.alcanzado).toBe(true);
+      // Hitos 5, 8 y 12 alcanzados (15 no); ninguno especial.
+      expect(progress.premiosDisponibles).toHaveLength(3);
+      expect(progress.premiosDisponibles.every((p) => !p.esEspecial)).toBe(
+        true,
+      );
+
+      const granted = await rewardRedemptionsRepo.find({
+        where: { userId, milestoneStars: 12 },
+      });
+      expect(granted).toHaveLength(1);
+      expect(granted[0].usedAt).toBeNull();
+
+      await request(app.getHttpServer())
+        .delete(`/reward-milestones/${milestone12Id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+    });
+  });
+
   describe('StarPromotions — CRUD admin y validación de solapamiento', () => {
     // Año derivado de `suffix` (no un fijo "año actual + 5"): un valor fijo
     // colisiona con cualquier promoción activa que haya quedado de una corrida
