@@ -907,7 +907,7 @@ describe('OrdersService', () => {
     });
   });
 
-  describe('create — validación de OptionGroup (beverageGroupRequired/Max, extraPortionsGroupRequired/Max)', () => {
+  describe('create — validación de OptionGroup (sauceGroupRequired/Max, beverageGroupRequired/Max, extraPortionsGroupRequired/Max)', () => {
     beforeEach(() => {
       addressesRepo.findOne.mockResolvedValue(seedAddress());
       orderItemsRepo.create.mockImplementation(passthrough);
@@ -1054,6 +1054,97 @@ describe('OrdersService', () => {
           ],
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('grupo de salsas obligatorio (required=true) + sauceIds omitido → 400', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          sauces: [{ id: 'sauce-mayo', name: 'Mayonesa' }],
+          sauceGroupRequired: true,
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 1 }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('grupo de salsas obligatorio + sauceIds: [] explícito (tampoco cuenta) → 400', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          sauces: [{ id: 'sauce-mayo', name: 'Mayonesa' }],
+          sauceGroupRequired: true,
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 1, sauceIds: [] }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('grupo de salsas obligatorio, pero el producto no ofrece ninguna salsa → sin efecto, no lanza', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({ sauces: [], sauceGroupRequired: true }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 1 }],
+      });
+
+      expect(result.items[0].selectedSauces).toBeNull();
+    });
+
+    it('sauceGroupMaxSelectable=1 + 2 sauceIds elegidos → 400', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          sauces: [
+            { id: 'sauce-mayo', name: 'Mayonesa' },
+            { id: 'sauce-ketchup', name: 'Ketchup' },
+          ],
+          sauceGroupMaxSelectable: 1,
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [
+            {
+              menuItemId,
+              quantity: 1,
+              sauceIds: ['sauce-mayo', 'sauce-ketchup'],
+            },
+          ],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('sauceGroupMaxSelectable=2 + 2 sauceIds elegidos (justo en el límite) → no lanza', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          sauces: [
+            { id: 'sauce-mayo', name: 'Mayonesa' },
+            { id: 'sauce-ketchup', name: 'Ketchup' },
+          ],
+          sauceGroupMaxSelectable: 2,
+        }),
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [
+          { menuItemId, quantity: 1, sauceIds: ['sauce-mayo', 'sauce-ketchup'] },
+        ],
+      });
+
+      expect(result.items[0].selectedSauces).toEqual(['Mayonesa', 'Ketchup']);
     });
   });
 

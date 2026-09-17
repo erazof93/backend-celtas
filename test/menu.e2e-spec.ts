@@ -41,7 +41,14 @@ interface Envelope {
 interface PublicMenuCategory {
   id: string;
   name: string;
-  items: { id: string; name: string; price: number; available?: boolean }[];
+  items: {
+    id: string;
+    name: string;
+    price: number;
+    available?: boolean;
+    sauceGroupRequired: boolean;
+    sauceGroupMaxSelectable: number;
+  }[];
 }
 
 describe('Menu (e2e)', () => {
@@ -261,6 +268,9 @@ describe('Menu (e2e)', () => {
       expect(burgers?.items).toHaveLength(1);
       expect(burgers?.items[0].price).toBe(24.9);
       expect(burgers?.items[0].available).toBeUndefined();
+      // El config de grupo de salsas viaja siempre, con sus defaults de columna.
+      expect(burgers?.items[0].sauceGroupRequired).toBe(false);
+      expect(burgers?.items[0].sauceGroupMaxSelectable).toBe(1);
     });
 
     it('un producto no disponible no aparece en el menú público', async () => {

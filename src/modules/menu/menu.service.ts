@@ -27,6 +27,8 @@ export interface PublicMenuCategory {
     price: number;
     image: string | null;
     sauces: { id: string; name: string }[];
+    sauceGroupRequired: boolean;
+    sauceGroupMaxSelectable: number;
     beverages: { id: string; name: string; price: number }[];
     beverageGroupRequired: boolean;
     beverageGroupMaxSelectable: number;
@@ -59,9 +61,9 @@ export class MenuService {
    * contienen al menos un producto disponible. Los productos no disponibles se omiten.
    * Cada producto incluye sus salsas/bebidas/porciones extras activas (id+name, y
    * precio para bebidas/porciones extras); vacío = sin selector de esa categoría en
-   * la app. `beverageGroupRequired`/`Max` y `extraPortionsGroupRequired`/`Max`
-   * viajan siempre (aunque el array esté vacío) para que la app no tenga que
-   * adivinar el default si el admin no configuró nada.
+   * la app. `sauceGroupRequired`/`Max`, `beverageGroupRequired`/`Max` y
+   * `extraPortionsGroupRequired`/`Max` viajan siempre (aunque el array esté vacío)
+   * para que la app no tenga que adivinar el default si el admin no configuró nada.
    */
   async findPublicMenu(): Promise<PublicMenuCategory[]> {
     const categories = await this.categoriesRepository.find({
@@ -87,6 +89,8 @@ export class MenuService {
               price,
               image,
               sauces,
+              sauceGroupRequired,
+              sauceGroupMaxSelectable,
               beverages,
               beverageGroupRequired,
               beverageGroupMaxSelectable,
@@ -112,6 +116,8 @@ export class MenuService {
                   id: sauceId,
                   name: sauceName,
                 })),
+              sauceGroupRequired,
+              sauceGroupMaxSelectable,
               beverages: (beverages ?? [])
                 .filter((beverage) => beverage.active)
                 .sort(

@@ -237,6 +237,51 @@ verde. Sin bloqueantes restantes.
 - [ ] CRUD de admin rechaza acceso sin rol `admin`
 - [ ] Precio se valida como número positivo
 
+## `GET /menu` — `sauceGroupRequired`/`sauceGroupMaxSelectable` faltantes en la respuesta pública
+
+> Auditoría de un fix puntual: `MenuService.findPublicMenu()` nunca incluía `sauceGroupRequired`/
+> `sauceGroupMaxSelectable` en la interfaz `PublicMenuCategory`, la desestructuración del `.map()`
+> ni el objeto de retorno — bug de omisión puro (la columna, la entidad y los DTOs admin ya
+> existían y funcionaban). Se corrigió agregando ambos campos en los tres puntos, en el mismo
+> orden/estilo que `beverageGroupRequired`/`Max` y `extraPortionsGroupRequired`/`Max`.
+
+- [x] `git diff` de `menu.service.ts` revisado: cambio correcto, completo y consistente con el
+      patrón existente (interfaz, destructuring, objeto de retorno, comentario del método
+      actualizado)
+- [x] `pnpm run build` compila sin errores
+- [x] `pnpm run test -- menu.service.spec orders.service.spec`: 153/153 en verde (previo al barrido)
+- [x] `pnpm run test:e2e -- menu.e2e-spec orders.e2e-spec`: 89/89 en verde (previo al barrido)
+- [x] **Cobertura de regresión agregada**: `seedItem` en `menu.service.spec.ts` ahora incluye
+      `sauceGroupRequired`/`sauceGroupMaxSelectable` por defecto; el test "consulta solo categorías
+      activas..." y "expone la configuración de grupo tal como está en el producto" ahora también
+      afirman ambos campos. `test/menu.e2e-spec.ts` ("GET /menu devuelve la categoría con el
+      producto disponible") ahora afirma `sauceGroupRequired`/`sauceGroupMaxSelectable` sobre el
+      body real (y se extendió el tipo local `PublicMenuCategory` del spec)
+- [x] **Bug de la misma clase en `OrdersService` — corregido**: se agregó la llamada a
+      `validateGroupSelection(menuItem.name, menuItem.sauces, selectedSauces?.map(name => ({name})) ?? null,
+      menuItem.sauceGroupRequired, menuItem.sauceGroupMaxSelectable, 'salsa')` en `buildItems`
+      (`orders.service.ts`, justo después de `resolveSelectedSauces`), y se relajó el tipo del
+      parámetro `selected` de `validateGroupSelection` a `{ name: string }[] | null` (ya no exige
+      `price`, que las salsas no tienen) sin tocar las llamadas existentes de bebidas/extras.
+      5 tests nuevos en `orders.service.spec.ts` (`describe` renombrado a incluir
+      `sauceGroupRequired/Max`): requerido+omitido → 400, requerido+`[]` explícito → 400,
+      requerido sin salsas ofrecidas → sin efecto, `max` excedido → 400, `max` en el límite → OK
+- [x] Reverificado tras el barrido: `pnpm run build` OK; `pnpm run test -- menu.service.spec
+      orders.service.spec` → 158/158 en verde; `pnpm run test:e2e -- menu.e2e-spec` → 26/26;
+      `pnpm run test:e2e -- orders.e2e-spec` → 63/63
+- [x] DTOs admin (`CreateMenuItemDto`/`UpdateMenuItemDto`) y la entidad `MenuItem` ya tenían
+      `sauceGroupRequired`/`sauceGroupMaxSelectable` correctamente decorados/validados desde
+      antes — no había omisión en el CRUD de admin
+- [ ] Swagger de `GET /menu`: no tiene gap nuevo por este fix — el endpoint ya no declaraba
+      schema/`type` tipado en `@ApiResponse` (solo descripción genérica) desde antes, mismo criterio
+      que el resto de endpoints de este controller; no bloqueante para este fix puntual pero queda
+      como deuda pre-existente (no se tocó en este barrido)
+
+**Veredicto: LISTO** (en working tree local — pendiente de commit/push/deploy a Render, que no se
+hizo en esta sesión). El fix original (`menu.service.ts`), el bug de la misma clase en
+`orders.service.ts`, y la cobertura de regresión para ambos quedaron aplicados y verificados con
+build + unit + e2e en verde.
+
 ## Orders
 
 - [ ] El pedido se crea siempre en estado `pendiente`

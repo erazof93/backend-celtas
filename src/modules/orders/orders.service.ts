@@ -622,6 +622,16 @@ export class OrdersService {
       }
 
       const selectedSauces = this.resolveSelectedSauces(menuItem, item);
+      this.validateGroupSelection(
+        menuItem.name,
+        menuItem.sauces,
+        selectedSauces === null
+          ? null
+          : selectedSauces.map((name) => ({ name })),
+        menuItem.sauceGroupRequired,
+        menuItem.sauceGroupMaxSelectable,
+        'salsa',
+      );
       const offeredBeverages = this.resolveBeveragePrices(menuItem);
       const selectedBeverages = this.resolveSelectedPriced(
         offeredBeverages,
@@ -769,8 +779,9 @@ export class OrdersService {
   }
 
   /**
-   * Aplica `beverageGroupRequired`/`Max` y `extraPortionsGroupRequired`/`Max` del
-   * producto (config de OptionGroup) contra lo que el cliente eligió. Sin esto,
+   * Aplica `sauceGroupRequired`/`Max`, `beverageGroupRequired`/`Max` y
+   * `extraPortionsGroupRequired`/`Max` del producto (config de OptionGroup)
+   * contra lo que el cliente eligió. Sin esto,
    * el backend confiaba en que la app Flutter respetara esos límites — mismo
    * principio que el resto del proyecto ("el total y los subtotales se calculan
    * SIEMPRE en el backend, nunca se confía en el frontend"), hallazgo real de
@@ -783,7 +794,7 @@ export class OrdersService {
   private validateGroupSelection(
     menuItemName: string,
     offered: { id: string }[] | undefined,
-    selected: { name: string; price: number }[] | null,
+    selected: { name: string }[] | null,
     groupRequired: boolean,
     groupMaxSelectable: number,
     itemLabel: string,

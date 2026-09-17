@@ -87,6 +87,8 @@ describe('MenuService', () => {
       categoryId: catId,
       category: null,
       sauces: [],
+      sauceGroupRequired: false,
+      sauceGroupMaxSelectable: 1,
       beverages: [],
       beverageGroupRequired: false,
       beverageGroupMaxSelectable: 1,
@@ -195,6 +197,8 @@ describe('MenuService', () => {
       expect(result[0].items[0].beverages).toEqual([]);
       expect(result[0].items[0].extraPortions).toEqual([]);
       // El config de grupo viaja siempre, aunque el catálogo esté vacío.
+      expect(result[0].items[0].sauceGroupRequired).toBe(false);
+      expect(result[0].items[0].sauceGroupMaxSelectable).toBe(1);
       expect(result[0].items[0].beverageGroupRequired).toBe(false);
       expect(result[0].items[0].beverageGroupMaxSelectable).toBe(1);
       expect(result[0].items[0].extraPortionsGroupRequired).toBe(false);
@@ -326,6 +330,8 @@ describe('MenuService', () => {
 
     it('expone la configuración de grupo tal como está en el producto', async () => {
       const item = seedItem({
+        sauceGroupRequired: true,
+        sauceGroupMaxSelectable: 4,
         beverageGroupRequired: true,
         beverageGroupMaxSelectable: 2,
         extraPortionsGroupRequired: true,
@@ -335,6 +341,8 @@ describe('MenuService', () => {
 
       const result = await service.findPublicMenu();
 
+      expect(result[0].items[0].sauceGroupRequired).toBe(true);
+      expect(result[0].items[0].sauceGroupMaxSelectable).toBe(4);
       expect(result[0].items[0].beverageGroupRequired).toBe(true);
       expect(result[0].items[0].beverageGroupMaxSelectable).toBe(2);
       expect(result[0].items[0].extraPortionsGroupRequired).toBe(true);
