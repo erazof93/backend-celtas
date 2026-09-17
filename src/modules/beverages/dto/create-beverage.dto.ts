@@ -1,11 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsArray,
   IsBoolean,
   IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   Min,
 } from 'class-validator';
 
@@ -46,4 +48,18 @@ export class CreateBeverageDto {
   @IsInt({ message: 'sortOrder debe ser un número entero' })
   @Min(0, { message: 'sortOrder no puede ser negativo' })
   sortOrder?: number;
+
+  @ApiPropertyOptional({
+    example: ['b3f1c2a0-1234-4a5b-8c9d-abcdef123456'],
+    description:
+      'IDs de productos (combos) en los que esta bebida va gratis. Vacío u omitido = nunca es gratis',
+    type: [String],
+  })
+  @IsOptional()
+  @IsArray({ message: 'includeFreeTo debe ser un arreglo' })
+  @IsUUID('4', {
+    each: true,
+    message: 'Cada elemento de includeFreeTo debe ser un UUID válido',
+  })
+  includeFreeTo?: string[];
 }

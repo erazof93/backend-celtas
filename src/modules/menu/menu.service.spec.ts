@@ -255,6 +255,43 @@ describe('MenuService', () => {
       ]);
     });
 
+    it('muestra precio 0 para una bebida gratis en este combo (includeFreeTo), sin afectar su precio en otros productos', async () => {
+      const comboItem = seedItem({
+        id: 'combo-xyz-id',
+        beverages: [
+          seedBeverage({
+            id: beverageId1,
+            name: 'Coca-Cola 1.5L',
+            price: 8,
+            includeFreeTo: ['combo-xyz-id'],
+          }),
+        ],
+      });
+      const regularItem = seedItem({
+        id: 'i-suelto',
+        beverages: [
+          seedBeverage({
+            id: beverageId1,
+            name: 'Coca-Cola 1.5L',
+            price: 8,
+            includeFreeTo: ['combo-xyz-id'],
+          }),
+        ],
+      });
+      categoriesRepo.find.mockResolvedValue([
+        seedCategory({ items: [comboItem, regularItem] }),
+      ]);
+
+      const result = await service.findPublicMenu();
+
+      expect(result[0].items[0].beverages).toEqual([
+        { id: beverageId1, name: 'Coca-Cola 1.5L', price: 0 },
+      ]);
+      expect(result[0].items[1].beverages).toEqual([
+        { id: beverageId1, name: 'Coca-Cola 1.5L', price: 8 },
+      ]);
+    });
+
     it('expone solo porciones extras activas, ordenadas por sortOrder, con precio', async () => {
       const item = seedItem({
         extraPortions: [

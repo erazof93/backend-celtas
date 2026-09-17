@@ -622,15 +622,16 @@ export class OrdersService {
       }
 
       const selectedSauces = this.resolveSelectedSauces(menuItem, item);
+      const offeredBeverages = this.resolveBeveragePrices(menuItem);
       const selectedBeverages = this.resolveSelectedPriced(
-        menuItem.beverages,
+        offeredBeverages,
         item.beverageIds,
         menuItem.name,
         'la bebida seleccionada',
       );
       this.validateGroupSelection(
         menuItem.name,
-        menuItem.beverages,
+        offeredBeverages,
         selectedBeverages,
         menuItem.beverageGroupRequired,
         menuItem.beverageGroupMaxSelectable,
@@ -721,6 +722,24 @@ export class OrdersService {
    * tri-state que `resolveSelectedSauces`, con precio (a diferencia de las
    * salsas, bebidas/porciones extras SÍ suman al subtotal — ver `buildItems`).
    */
+  /**
+   * Precio efectivo de cada bebida ofrecida por el producto: 0 si el producto
+   * está en `beverage.includeFreeTo` (combo con bebida gratis incluida), su
+   * `price` normal en caso contrario. Nunca modifica la entidad `Beverage` ni
+   * su catálogo compartido — el precio 0 aplica solo a este `menuItem`. Mismo
+   * criterio que `GET /menu` (`MenuService.findPublicMenu`): lo que se muestra
+   * al cliente y lo que se cobra en `POST /orders` siempre deben coincidir.
+   */
+  private resolveBeveragePrices(
+    menuItem: MenuItem,
+  ): { id: string; name: string; price: number }[] {
+    return (menuItem.beverages ?? []).map((beverage) => ({
+      id: beverage.id,
+      name: beverage.name,
+      price: beverage.includeFreeTo?.includes(menuItem.id) ? 0 : beverage.price,
+    }));
+  }
+
   private resolveSelectedPriced(
     offered: { id: string; name: string; price: number }[] | undefined,
     selectedIds: string[] | undefined,

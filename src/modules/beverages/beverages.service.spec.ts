@@ -95,6 +95,20 @@ describe('BeveragesService', () => {
       expect(beveragesRepo.save).not.toHaveBeenCalled();
     });
 
+    it('guarda includeFreeTo cuando se manda (combo con bebida gratis)', async () => {
+      const comboId = '33333333-3333-3333-3333-333333333333';
+      const dto = {
+        name: 'Coca-Cola 1.5L',
+        price: 8,
+        includeFreeTo: [comboId],
+      };
+      beveragesRepo.create.mockImplementation(passthrough);
+      beveragesRepo.save.mockImplementation(passthrough);
+      const result = await service.create(dto);
+      expect(beveragesRepo.save).toHaveBeenCalledWith(dto);
+      expect(result.includeFreeTo).toEqual([comboId]);
+    });
+
     it('convierte una violación UNIQUE de la BD (23505) en 409 (fallback de concurrencia)', async () => {
       beveragesRepo.findOne.mockResolvedValue(null);
       beveragesRepo.create.mockImplementation(passthrough);
@@ -134,6 +148,20 @@ describe('BeveragesService', () => {
         service.update(beverageId, { name: 'X' }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(beveragesRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('actualiza includeFreeTo sin pisar el resto de campos ya cargados', async () => {
+      const comboId = '33333333-3333-3333-3333-333333333333';
+      const existing = seedBeverage({ includeFreeTo: null });
+      beveragesRepo.findOne.mockResolvedValue(existing);
+      beveragesRepo.save.mockImplementation(passthrough);
+
+      const result = await service.update(beverageId, {
+        includeFreeTo: [comboId],
+      });
+      expect(result.includeFreeTo).toEqual([comboId]);
+      expect(result.name).toBe(existing.name);
+      expect(result.price).toBe(existing.price);
     });
 
     it('lanza 409 si se renombra a un nombre ya usado por otra bebida', async () => {

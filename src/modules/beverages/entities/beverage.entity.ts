@@ -49,6 +49,19 @@ export class Beverage {
   @Column({ name: 'sort_order', type: 'int', default: 0 })
   sortOrder: number;
 
+  /**
+   * IDs de `MenuItem` (combos) en los que esta bebida va gratis (precio 0) al
+   * elegirla, sin afectar su `price` normal fuera de esos combos. `null`/vacío =
+   * nunca es gratis. `OrdersService.buildItems` y `MenuService.findPublicMenu`
+   * son quienes aplican el precio 0 para el combo correspondiente — esta columna
+   * solo guarda la configuración, no altera `price` ni el catálogo compartido.
+   * No es una FK real (mismo criterio que otros arrays de UUID sueltos del
+   * proyecto): si un combo se borra, el id queda huérfano acá sin romper nada,
+   * simplemente deja de matchear.
+   */
+  @Column({ type: 'uuid', array: true, nullable: true })
+  includeFreeTo?: string[] | null;
+
   @ManyToMany(() => MenuItem, (menuItem) => menuItem.beverages)
   menuItems: MenuItem[];
 

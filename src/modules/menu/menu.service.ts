@@ -123,10 +123,16 @@ export class MenuService {
                     id: beverageId,
                     name: beverageName,
                     price: beveragePrice,
+                    includeFreeTo,
                   }) => ({
                     id: beverageId,
                     name: beverageName,
-                    price: beveragePrice,
+                    // 0 si este producto es un combo con esta bebida incluida
+                    // gratis (`includeFreeTo`), mismo criterio de precio que
+                    // `OrdersService.resolveBeveragePrices` — lo que la app
+                    // muestra en el menú y lo que se cobra en `POST /orders`
+                    // siempre deben coincidir.
+                    price: includeFreeTo?.includes(id) ? 0 : beveragePrice,
                   }),
                 ),
               beverageGroupRequired,

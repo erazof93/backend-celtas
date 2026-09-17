@@ -751,6 +751,59 @@ describe('OrdersService', () => {
       ]);
     });
 
+    it('bebida gratis en el combo (includeFreeTo con este menuItemId): precio 0 en el subtotal', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        {
+          ...menuMenuItem({ price: 24.9 }),
+          beverages: [
+            {
+              id: 'bev-coca',
+              name: 'Coca-Cola 1.5L',
+              price: 8,
+              includeFreeTo: [menuItemId],
+            },
+          ],
+        },
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 2, beverageIds: ['bev-coca'] }],
+      });
+
+      // (24.9 + 0) * 2 = 49.8, no (24.9 + 8) * 2 — el combo la incluye gratis.
+      expect(result.items[0].subtotal).toBe(49.8);
+      expect(result.items[0].selectedBeverages).toEqual([
+        { name: 'Coca-Cola 1.5L', price: 0 },
+      ]);
+    });
+
+    it('la misma bebida SÍ cobra su precio normal en un producto que no está en su includeFreeTo', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        {
+          ...menuMenuItem({ price: 24.9 }),
+          beverages: [
+            {
+              id: 'bev-coca',
+              name: 'Coca-Cola 1.5L',
+              price: 8,
+              includeFreeTo: ['otro-combo-id'],
+            },
+          ],
+        },
+      ]);
+
+      const result = await service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 1, beverageIds: ['bev-coca'] }],
+      });
+
+      expect(result.items[0].subtotal).toBe(32.9);
+      expect(result.items[0].selectedBeverages).toEqual([
+        { name: 'Coca-Cola 1.5L', price: 8 },
+      ]);
+    });
+
     it('sin beverageIds/extraPortionIds, el snapshot queda null y el subtotal no cambia (no-regresión)', async () => {
       menuItemsRepo.find.mockResolvedValue([
         menuMenuItem({
