@@ -27,6 +27,9 @@ export class MarketingNotification {
   @Column({ type: 'text' })
   body: string;
 
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  link: string | null;
+
   @Column({ type: 'uuid', nullable: true })
   adminId: string | null;
 

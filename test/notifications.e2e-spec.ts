@@ -198,7 +198,38 @@ describe('Notifications (e2e)', () => {
       expect(broadcastMock).toHaveBeenCalledWith(expect.any(String), {
         title: 'A pocos días del día del padre y Celtas lo sabe',
         body: 'Promos especiales',
+        link: undefined,
       });
+    });
+
+    it('acepta un link opcional y lo reenvía al service', async () => {
+      broadcastMock.mockResolvedValue({ sent: 2, total: 2 });
+      await request(app.getHttpServer())
+        .post('/notifications/broadcast')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          title: 'Promo',
+          body: 'Aprovecha',
+          link: 'https://celtas.com/promos/dia-del-padre',
+        })
+        .expect(201);
+      expect(broadcastMock).toHaveBeenCalledWith(expect.any(String), {
+        title: 'Promo',
+        body: 'Aprovecha',
+        link: 'https://celtas.com/promos/dia-del-padre',
+      });
+    });
+
+    it('rechaza un link de más de 500 caracteres (400)', async () => {
+      await request(app.getHttpServer())
+        .post('/notifications/broadcast')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          title: 'Título',
+          body: 'Cuerpo',
+          link: 'https://celtas.com/'.padEnd(501, 'a'),
+        })
+        .expect(400);
     });
 
     it('rechaza con rol cliente (403)', async () => {

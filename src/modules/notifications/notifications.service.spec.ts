@@ -256,6 +256,42 @@ describe('NotificationsService', () => {
       expect(multicastMock).not.toHaveBeenCalled();
     });
 
+    it('con link → viaja en data.link para que la app navegue al tocar la notificación', async () => {
+      usersRepo.find.mockResolvedValue([makeUser({ id: 'u1', fcmToken: 'token-a' })]);
+      multicastMock.mockResolvedValue({
+        successCount: 1,
+        failureCount: 0,
+        responses: [{ success: true }],
+      });
+
+      await service.broadcastPushNotification({
+        title: 'Promo',
+        body: 'Aprovecha',
+        link: 'https://celtas.com/promos/dia-del-padre',
+      });
+
+      expect(multicastMock).toHaveBeenCalledWith({
+        tokens: ['token-a'],
+        notification: { title: 'Promo', body: 'Aprovecha' },
+        data: { link: 'https://celtas.com/promos/dia-del-padre' },
+      });
+    });
+
+    it('sin link → data sigue siendo undefined (no manda data.link vacío)', async () => {
+      usersRepo.find.mockResolvedValue([makeUser({ id: 'u1', fcmToken: 'token-a' })]);
+      multicastMock.mockResolvedValue({
+        successCount: 1,
+        failureCount: 0,
+        responses: [{ success: true }],
+      });
+
+      await service.broadcastPushNotification({ title: 'Promo', body: 'Aprovecha' });
+
+      expect(multicastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ data: undefined }),
+      );
+    });
+
     it('divide en lotes de máximo 500 tokens por llamada a FCM', async () => {
       const users = Array.from({ length: 750 }, (_, i) =>
         makeUser({ id: `u${i}`, fcmToken: `token-${i}` }),
@@ -406,11 +442,40 @@ describe('NotificationsService', () => {
       expect(marketingNotificationsRepo.create).toHaveBeenCalledWith({
         title: 'A pocos días del día del padre y Celtas lo sabe',
         body: 'Promos especiales',
+        link: null,
         adminId: 'admin-1',
         sentCount: 2,
         totalCount: 2,
       });
       expect(marketingNotificationsRepo.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('con link → se guarda en el historial y viaja en el push', async () => {
+      usersRepo.find.mockResolvedValue([
+        makeUser({ id: 'u1', fcmToken: 'token-a' }),
+      ]);
+      multicastMock.mockResolvedValue({
+        successCount: 1,
+        failureCount: 0,
+        responses: [{ success: true }],
+      });
+
+      await service.sendMarketingBroadcast('admin-1', {
+        title: 'Promo',
+        body: 'Aprovecha',
+        link: 'https://celtas.com/promos/dia-del-padre',
+      });
+
+      expect(marketingNotificationsRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          link: 'https://celtas.com/promos/dia-del-padre',
+        }),
+      );
+      expect(multicastMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { link: 'https://celtas.com/promos/dia-del-padre' },
+        }),
+      );
     });
 
     it('guarda el historial también cuando no hay usuarios con token (0/0)', async () => {

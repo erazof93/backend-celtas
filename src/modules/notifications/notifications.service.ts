@@ -25,6 +25,7 @@ export interface PushNotificationPayload {
   title: string;
   body: string;
   data?: Record<string, string>;
+  link?: string;
 }
 
 /**
@@ -150,6 +151,11 @@ export class NotificationsService {
       return { sent: 0, total: 0 };
     }
 
+    const data: Record<string, string> = { ...payload.data };
+    if (payload.link) {
+      data.link = payload.link;
+    }
+
     let sent = 0;
     const staleUserIds: string[] = [];
     for (let i = 0; i < entries.length; i += MULTICAST_BATCH_SIZE) {
@@ -159,7 +165,7 @@ export class NotificationsService {
           {
             tokens: batch.map((entry) => entry.token),
             notification: { title: payload.title, body: payload.body },
-            data: payload.data,
+            data: Object.keys(data).length > 0 ? data : undefined,
           },
         );
         sent += response.successCount;
@@ -217,6 +223,7 @@ export class NotificationsService {
       this.marketingNotificationsRepository.create({
         title: payload.title,
         body: payload.body,
+        link: payload.link ?? null,
         adminId,
         sentCount: sent,
         totalCount: total,

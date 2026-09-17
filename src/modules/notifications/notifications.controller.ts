@@ -72,6 +72,7 @@ export class NotificationsController {
     return this.notificationsService.sendMarketingBroadcast(req.user.userId, {
       title: dto.title,
       body: dto.body,
+      link: dto.link,
     });
   }
 
