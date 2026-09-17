@@ -4,6 +4,7 @@ import {
   And,
   DataSource,
   EntityManager,
+  IsNull,
   LessThan,
   MoreThan,
   MoreThanOrEqual,
@@ -103,6 +104,12 @@ export class RewardsService {
    * automático tras `OrdersService.updateStatus` (best-effort, con catch
    * silencioso) haya fallado o no se haya ejecutado todavía para el mes en
    * curso.
+   *
+   * Los premios `estado: 'redeemed'` solo se listan si se reclamaron
+   * (`usedAt`) dentro del mes calendario actual (hora de Lima): el
+   * historial de reclamados se "limpia" cada mes en esta vista. Los
+   * `estado: 'pending'` NO tienen ese límite — siguen la regla de 15 días
+   * de vigencia sin importar el mes en que se ganaron.
    */
   async getProgress(userId: string): Promise<RewardsProgress> {
     await this.recalculateForUser(userId);
@@ -122,13 +129,26 @@ export class RewardsService {
     );
 
     const now = new Date();
-    // Ya NO filtra `usedAt: IsNull()`: un premio reclamado sigue
-    // devolviéndose (con `estado: 'redeemed'` + `usedAt`) hasta que vence,
-    // en vez de desaparecer de la lista apenas se usa — el cliente lo
-    // muestra marcado como reclamado en vez de solo quitarlo sin explicar
-    // por qué.
+    // `pending` (sin usar) sigue la regla de 15 días de vigencia sin
+    // restricción de mes — el cliente conserva su premio disponible hasta
+    // que lo usa o vence, sin importar cuándo lo ganó. `redeemed` (ya
+    // reclamado) además exige que `usedAt` caiga dentro del mes calendario
+    // actual (hora de Lima, mismo rango [start, end) que `estrellasDelMes`):
+    // pedido explícito del dueño del negocio para que el historial de
+    // reclamados "empiece de cero" cada mes en la vista del cliente. Es un
+    // filtro de PRESENTACIÓN — el registro sigue intacto en la BD y
+    // `validateForOrder` no depende de esto (un pending de un mes anterior
+    // sigue siendo canjeable hasta sus 15 días, aunque el cliente ya no vea
+    // premios reclamados de meses pasados acá).
     const disponibles = await this.rewardRedemptionsRepository.find({
-      where: { userId, expiresAt: MoreThan(now) },
+      where: [
+        { userId, usedAt: IsNull(), expiresAt: MoreThan(now) },
+        {
+          userId,
+          usedAt: And(MoreThanOrEqual(start), LessThan(end)),
+          expiresAt: MoreThan(now),
+        },
+      ],
       order: { expiresAt: 'ASC' },
     });
 

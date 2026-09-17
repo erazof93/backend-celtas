@@ -1206,6 +1206,101 @@ describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => 
     });
   });
 
+  describe('El historial de "reclamados" se limpia cada mes (pedido de negocio): "redeemed" solo se muestra si usedAt cae en el mes calendario actual; "pending" no tiene esa restricción', () => {
+    it('un premio reclamado ESTE mes se muestra (estado "redeemed"); llevado a usedAt del mes pasado, desaparece de la lista aunque sus 15 días de vigencia no hayan pasado', async () => {
+      const { token } = await register('reclamado-limpieza-mes');
+      const created = await createOrder(token, [
+        { menuItemId: itemMediumId, quantity: 1 }, // 50 → hito 5
+      ]).expect(201);
+      await deliverOrder(((created.body as Envelope).data as OrderData).id);
+
+      let progress = await getProgress(token);
+      const rewardId = progress.premiosDisponibles.find(
+        (p) => !p.esEspecial,
+      )!.id;
+
+      // Canjea el premio (usedAt = ahora, dentro del mes actual).
+      await createOrder(token, [
+        {
+          menuItemId: itemRedeemableId,
+          quantity: 1,
+          rewardRedemptionId: rewardId,
+        },
+      ]).expect(201);
+
+      progress = await getProgress(token);
+      const redeemedNow = progress.premiosDisponibles.find(
+        (p) => p.id === rewardId,
+      );
+      expect(redeemedNow).toBeDefined();
+
+      // Retrocede usedAt al mes PASADO (mismo criterio que "El excedente no
+      // se arrastra al mes siguiente": no hay forma de hacerlo vía la API).
+      const { year, month } = limaWallClockDate();
+      const lastMonthNumber = month === 1 ? 12 : month - 1;
+      const lastMonthYear = month === 1 ? year - 1 : year;
+      const lastMonth = limaWallClockToUtc(
+        lastMonthYear,
+        lastMonthNumber,
+        15,
+        12,
+        0,
+      );
+      await rewardRedemptionsRepo.update(rewardId, { usedAt: lastMonth });
+
+      progress = await getProgress(token);
+      expect(progress.premiosDisponibles.some((p) => p.id === rewardId)).toBe(
+        false,
+      );
+
+      // El registro sigue intacto en la BD — es un filtro de presentación,
+      // no un borrado ni una invalidación real.
+      const stillThere = await rewardRedemptionsRepo.findOne({
+        where: { id: rewardId },
+      });
+      expect(stillThere).not.toBeNull();
+      expect(stillThere!.usedAt).not.toBeNull();
+    });
+
+    it('un premio PENDIENTE (sin usar) "ganado" el mes pasado sigue mostrándose: sin restricción de mes, solo por expiresAt (15 días)', async () => {
+      const { token } = await register('pendiente-mes-pasado');
+      const created = await createOrder(token, [
+        { menuItemId: itemMediumId, quantity: 1 }, // 50 → hito 5
+      ]).expect(201);
+      await deliverOrder(((created.body as Envelope).data as OrderData).id);
+
+      let progress = await getProgress(token);
+      const rewardId = progress.premiosDisponibles.find(
+        (p) => !p.esEspecial,
+      )!.id;
+
+      // Retrocede earnedAt/createdAt al mes PASADO, sin tocar expiresAt (que
+      // sigue siendo ~15 días desde el momento real en que se generó, así
+      // que no vence). Prueba que "pending" no depende del mes en que se
+      // ganó, a diferencia de "redeemed".
+      const { year, month } = limaWallClockDate();
+      const lastMonthNumber = month === 1 ? 12 : month - 1;
+      const lastMonthYear = month === 1 ? year - 1 : year;
+      const lastMonth = limaWallClockToUtc(
+        lastMonthYear,
+        lastMonthNumber,
+        15,
+        12,
+        0,
+      );
+      await rewardRedemptionsRepo.update(rewardId, {
+        earnedAt: lastMonth,
+        createdAt: lastMonth,
+      });
+
+      progress = await getProgress(token);
+      const stillPending = progress.premiosDisponibles.find(
+        (p) => p.id === rewardId,
+      );
+      expect(stillPending).toBeDefined();
+    });
+  });
+
   describe('StarPromotions — CRUD admin y validación de solapamiento', () => {
     // Año derivado de `suffix` (no un fijo "año actual + 5"): un valor fijo
     // colisiona con cualquier promoción activa que haya quedado de una corrida

@@ -1,12 +1,15 @@
 import { BadRequestException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm';
+import { And, DataSource, IsNull, LessThan, MoreThanOrEqual } from 'typeorm';
 import { MenuItem } from '../menu/entities/menu-item.entity';
 import { Order, OrderStatus } from '../orders/entities/order.entity';
 import { SettingsService } from '../settings/settings.service';
 import { User } from '../users/entities/user.entity';
-import { limaWallClockDate } from '../../common/utils/lima-time.util';
+import {
+  limaWallClockDate,
+  limaWallClockToUtc,
+} from '../../common/utils/lima-time.util';
 import { RewardMilestone } from './entities/reward-milestone.entity';
 import { RewardRedemption } from './entities/reward-redemption.entity';
 import { StarPromotion } from './entities/star-promotion.entity';
@@ -290,7 +293,7 @@ describe('RewardsService', () => {
       });
     });
 
-    it('lista los premios sin vencer (usados o no), ordenados por expiresAt, con esEspecial por premio, SIN filtrar por usedAt', async () => {
+    it('lista los premios sin vencer (usados o no), ordenados por expiresAt, con esEspecial por premio', async () => {
       rewardMilestonesRepo.find.mockResolvedValue([]);
       dataSource.manager.find.mockResolvedValue([]);
       rewardRedemptionsRepo.find.mockResolvedValue([
@@ -304,14 +307,13 @@ describe('RewardsService', () => {
 
       const result = await service.getProgress(userId);
 
-      // El filtro de la query ya NO incluye `usedAt` — un premio usado no
-      // debe excluirse acá, solo por vencimiento.
-      const queryArg = rewardRedemptionsRepo.find.mock.calls[0][0] as {
-        where: Record<string, unknown>;
-        order: unknown;
-      };
-      expect(queryArg.where).not.toHaveProperty('usedAt');
-      expect(queryArg.order).toEqual({ expiresAt: 'ASC' });
+      const findMock = rewardRedemptionsRepo.find as jest.Mock<
+        unknown,
+        [{ order: unknown }]
+      >;
+      expect(findMock.mock.calls[0][0].order).toEqual({
+        expiresAt: 'ASC',
+      });
       expect(result.premiosDisponibles).toEqual([
         {
           id: 'r1',
@@ -321,6 +323,36 @@ describe('RewardsService', () => {
           usedAt: null,
         },
       ]);
+    });
+
+    it('la query a la BD pide "pending" sin restricción de mes, y "redeemed" solo con usedAt dentro del mes calendario actual (Lima) — pedido de negocio: el historial de reclamados se limpia cada mes', async () => {
+      rewardMilestonesRepo.find.mockResolvedValue([]);
+      dataSource.manager.find.mockResolvedValue([]);
+      rewardRedemptionsRepo.find.mockResolvedValue([]);
+
+      await service.getProgress(userId);
+
+      const { year, month } = limaWallClockDate();
+      const nextMonth = month === 12 ? 1 : month + 1;
+      const nextYear = month === 12 ? year + 1 : year;
+      const start = limaWallClockToUtc(year, month, 1, 0, 0);
+      const end = limaWallClockToUtc(nextYear, nextMonth, 1, 0, 0);
+
+      const findMock = rewardRedemptionsRepo.find as jest.Mock<
+        unknown,
+        [{ where: Record<string, unknown>[] }]
+      >;
+      const queryArg = findMock.mock.calls[0][0];
+      expect(queryArg.where).toHaveLength(2);
+      expect(queryArg.where[0]).toEqual(
+        expect.objectContaining({ userId, usedAt: IsNull() }),
+      );
+      expect(queryArg.where[1]).toEqual(
+        expect.objectContaining({
+          userId,
+          usedAt: And(MoreThanOrEqual(start), LessThan(end)),
+        }),
+      );
     });
 
     it('un premio YA reclamado (usedAt != null) sigue apareciendo, con estado "redeemed" y la fecha real de canje — pedido explícito: ya no desaparece de la lista al usarse', async () => {
