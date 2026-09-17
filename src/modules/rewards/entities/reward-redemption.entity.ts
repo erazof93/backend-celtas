@@ -14,9 +14,11 @@ import { User } from '../../users/entities/user.entity';
 
 /**
  * Un premio ganado del programa de estrellas: un ítem gratis del catálogo de
- * canje (`MenuItem.redeemableWithStars = true`), con 15 días de vigencia desde
- * que se gana. `menuItemId` queda `null` hasta que se usa (el premio no es
- * para un producto específico de antemano, el cliente elige al canjear).
+ * canje (`MenuItem.redeemableWithStars = true`), vigente hasta el último
+ * instante (23:59:59.999 hora de Lima) del mes calendario en que se gana
+ * (ver `RewardsService.getEndOfMonthInLima`) — no un plazo fijo de días.
+ * `menuItemId` queda `null` hasta que se usa (el premio no es para un
+ * producto específico de antemano, el cliente elige al canjear).
  */
 @Entity('reward_redemptions')
 export class RewardRedemption {

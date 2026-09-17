@@ -556,12 +556,17 @@ describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => 
         multiplier: 2,
       });
 
-      const expectedExpiry = Date.now() + 15 * 24 * 60 * 60 * 1000;
+      // Vigencia: fin del mes calendario actual (Lima), no un plazo fijo de
+      // días (ver `RewardsService.getEndOfMonthInLima`).
+      const { year, month } = limaWallClockDate();
+      const nextMonth = month === 12 ? 1 : month + 1;
+      const nextYear = month === 12 ? year + 1 : year;
+      const expectedExpiry =
+        limaWallClockToUtc(nextYear, nextMonth, 1, 0, 0).getTime() - 1;
       const actualExpiry = new Date(
         progress.premiosDisponibles[0].expiresAt,
       ).getTime();
-      expect(actualExpiry).toBeGreaterThan(expectedExpiry - 60_000);
-      expect(actualExpiry).toBeLessThan(expectedExpiry + 60_000);
+      expect(actualExpiry).toBe(expectedExpiry);
     });
 
     it('desactiva la promoción para no interferir con el resto de la suite', async () => {
@@ -1262,8 +1267,8 @@ describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => 
       expect(stillThere!.usedAt).not.toBeNull();
     });
 
-    it('un premio PENDIENTE (sin usar) "ganado" el mes pasado sigue mostrándose: sin restricción de mes, solo por expiresAt (15 días)', async () => {
-      const { token } = await register('pendiente-mes-pasado');
+    it('un premio PENDIENTE (sin usar) cuyo expiresAt (fin del mes en que se ganó) ya pasó no se muestra — la vigencia es por mes calendario, no un plazo fijo de días', async () => {
+      const { token } = await register('pendiente-vencido-fin-de-mes');
       const created = await createOrder(token, [
         { menuItemId: itemMediumId, quantity: 1 }, // 50 → hito 5
       ]).expect(201);
@@ -1274,30 +1279,40 @@ describe('Rewards — programa de estrellas con hitos irregulares (e2e)', () => 
         (p) => !p.esEspecial,
       )!.id;
 
-      // Retrocede earnedAt/createdAt al mes PASADO, sin tocar expiresAt (que
-      // sigue siendo ~15 días desde el momento real en que se generó, así
-      // que no vence). Prueba que "pending" no depende del mes en que se
-      // ganó, a diferencia de "redeemed".
+      // Simula que el premio se ganó el mes PASADO: su `expiresAt` real
+      // hubiera sido el fin de ESE mes (ya pasado hoy), no un plazo fijo de
+      // días desde ahora (mismo criterio que el resto del archivo para
+      // simular estados sin pasar por el service).
       const { year, month } = limaWallClockDate();
       const lastMonthNumber = month === 1 ? 12 : month - 1;
       const lastMonthYear = month === 1 ? year - 1 : year;
-      const lastMonth = limaWallClockToUtc(
+      const earnedLastMonth = limaWallClockToUtc(
         lastMonthYear,
         lastMonthNumber,
         15,
         12,
         0,
       );
+      const endOfLastMonth = new Date(
+        limaWallClockToUtc(year, month, 1, 0, 0).getTime() - 1,
+      );
       await rewardRedemptionsRepo.update(rewardId, {
-        earnedAt: lastMonth,
-        createdAt: lastMonth,
+        earnedAt: earnedLastMonth,
+        expiresAt: endOfLastMonth,
       });
 
       progress = await getProgress(token);
-      const stillPending = progress.premiosDisponibles.find(
-        (p) => p.id === rewardId,
+      expect(progress.premiosDisponibles.some((p) => p.id === rewardId)).toBe(
+        false,
       );
-      expect(stillPending).toBeDefined();
+
+      // El registro sigue intacto en la BD — es un vencimiento real (ya no
+      // se puede canjear), no un borrado.
+      const stillThere = await rewardRedemptionsRepo.findOne({
+        where: { id: rewardId },
+      });
+      expect(stillThere).not.toBeNull();
+      expect(stillThere!.usedAt).toBeNull();
     });
   });
 

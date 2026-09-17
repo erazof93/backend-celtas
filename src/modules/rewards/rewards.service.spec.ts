@@ -558,6 +558,78 @@ describe('RewardsService', () => {
 
       expect(manager.save).not.toHaveBeenCalled();
     });
+
+    describe('vigencia (expiresAt) de un premio PENDING: fin del mes calendario de Lima en que se gana, ya NO +15 días', () => {
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      const expectedEndOfMonth = (year: number, month: number): Date => {
+        const nextMonth = month === 12 ? 1 : month + 1;
+        const nextYear = month === 12 ? year + 1 : year;
+        return new Date(
+          limaWallClockToUtc(nextYear, nextMonth, 1, 0, 0).getTime() - 1,
+        );
+      };
+
+      it('ganado el 10 de septiembre → expiresAt = 30 de septiembre 23:59:59.999 (Lima)', async () => {
+        jest.useFakeTimers({ advanceTimers: false });
+        // 15:00 UTC = 10:00 Lima (UTC-5) del mismo día: sin ambigüedad de día.
+        jest.setSystemTime(new Date('2026-09-10T15:00:00.000Z'));
+        rewardMilestonesRepo.find.mockResolvedValue([
+          seedMilestone({ starsRequired: 10 }),
+        ]);
+        const manager = setupTransaction({
+          user: { id: userId } as User,
+          orders: [seedOrder({ items: [{ subtotal: 100 }] as never })],
+        });
+
+        await service.recalculateForUser(userId);
+
+        const saved = manager.save.mock.calls[0][1] as { expiresAt: Date }[];
+        expect(saved[0].expiresAt.getTime()).toBe(
+          expectedEndOfMonth(2026, 9).getTime(),
+        );
+      });
+
+      it('ganado el 25 de septiembre → expiresAt = 30 de septiembre 23:59:59.999 (Lima), igual que el del día 10', async () => {
+        jest.useFakeTimers({ advanceTimers: false });
+        jest.setSystemTime(new Date('2026-09-25T15:00:00.000Z'));
+        rewardMilestonesRepo.find.mockResolvedValue([
+          seedMilestone({ starsRequired: 10 }),
+        ]);
+        const manager = setupTransaction({
+          user: { id: userId } as User,
+          orders: [seedOrder({ items: [{ subtotal: 100 }] as never })],
+        });
+
+        await service.recalculateForUser(userId);
+
+        const saved = manager.save.mock.calls[0][1] as { expiresAt: Date }[];
+        expect(saved[0].expiresAt.getTime()).toBe(
+          expectedEndOfMonth(2026, 9).getTime(),
+        );
+      });
+
+      it('ganado el 10 de octubre → expiresAt = 31 de octubre 23:59:59.999 (Lima)', async () => {
+        jest.useFakeTimers({ advanceTimers: false });
+        jest.setSystemTime(new Date('2026-10-10T15:00:00.000Z'));
+        rewardMilestonesRepo.find.mockResolvedValue([
+          seedMilestone({ starsRequired: 10 }),
+        ]);
+        const manager = setupTransaction({
+          user: { id: userId } as User,
+          orders: [seedOrder({ items: [{ subtotal: 100 }] as never })],
+        });
+
+        await service.recalculateForUser(userId);
+
+        const saved = manager.save.mock.calls[0][1] as { expiresAt: Date }[];
+        expect(saved[0].expiresAt.getTime()).toBe(
+          expectedEndOfMonth(2026, 10).getTime(),
+        );
+      });
+    });
   });
 
   describe('validateForOrder', () => {

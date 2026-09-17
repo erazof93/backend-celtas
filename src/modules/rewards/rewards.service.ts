@@ -22,9 +22,6 @@ import { RewardMilestone } from './entities/reward-milestone.entity';
 import { RewardRedemption } from './entities/reward-redemption.entity';
 import { StarPromotion } from './entities/star-promotion.entity';
 
-/** Vigencia de un premio recién ganado: 15 días desde `earnedAt`. */
-const REWARD_EXPIRATION_DAYS = 15;
-
 export interface RewardMilestoneProgress {
   estrellasRequeridas: number;
   alcanzado: boolean;
@@ -108,8 +105,11 @@ export class RewardsService {
    * Los premios `estado: 'redeemed'` solo se listan si se reclamaron
    * (`usedAt`) dentro del mes calendario actual (hora de Lima): el
    * historial de reclamados se "limpia" cada mes en esta vista. Los
-   * `estado: 'pending'` NO tienen ese límite — siguen la regla de 15 días
-   * de vigencia sin importar el mes en que se ganaron.
+   * `estado: 'pending'` no tienen ese filtro EXPLÍCITO de mes, pero en la
+   * práctica nunca sobreviven a un cambio de mes de todos modos: `expiresAt`
+   * ya es el último instante del mes calendario en que se ganaron (ver
+   * `getEndOfMonthInLima`), así que un pendiente "vence" solo por el paso
+   * del reloj, sin necesidad de un filtro de mes aparte.
    */
   async getProgress(userId: string): Promise<RewardsProgress> {
     await this.recalculateForUser(userId);
@@ -129,17 +129,14 @@ export class RewardsService {
     );
 
     const now = new Date();
-    // `pending` (sin usar) sigue la regla de 15 días de vigencia sin
-    // restricción de mes — el cliente conserva su premio disponible hasta
-    // que lo usa o vence, sin importar cuándo lo ganó. `redeemed` (ya
-    // reclamado) además exige que `usedAt` caiga dentro del mes calendario
-    // actual (hora de Lima, mismo rango [start, end) que `estrellasDelMes`):
+    // `pending` (sin usar): sin filtro de mes explícito, solo `expiresAt`.
+    // Ya no hace falta uno — `expiresAt` es fin del mes en que se ganó, así
+    // que nunca sobrevive al cambio de mes. `redeemed` (ya reclamado)
+    // además exige que `usedAt` caiga dentro del mes calendario actual
+    // (hora de Lima, mismo rango [start, end) que `estrellasDelMes`):
     // pedido explícito del dueño del negocio para que el historial de
     // reclamados "empiece de cero" cada mes en la vista del cliente. Es un
-    // filtro de PRESENTACIÓN — el registro sigue intacto en la BD y
-    // `validateForOrder` no depende de esto (un pending de un mes anterior
-    // sigue siendo canjeable hasta sus 15 días, aunque el cliente ya no vea
-    // premios reclamados de meses pasados acá).
+    // filtro de PRESENTACIÓN — el registro sigue intacto en la BD.
     const disponibles = await this.rewardRedemptionsRepository.find({
       where: [
         { userId, usedAt: IsNull(), expiresAt: MoreThan(now) },
@@ -254,7 +251,7 @@ export class RewardsService {
       if (toGrant.length === 0) return;
 
       const now = new Date();
-      const expiresAt = this.addDays(now, REWARD_EXPIRATION_DAYS);
+      const expiresAt = this.getEndOfMonthInLima(now);
       const rewards = toGrant.map((m) =>
         manager.create(RewardRedemption, {
           userId,
@@ -429,10 +426,18 @@ export class RewardsService {
     return { start, end };
   }
 
-  private addDays(date: Date, days: number): Date {
-    const result = new Date(date);
-    result.setDate(result.getDate() + days);
-    return result;
+  /**
+   * Último instante (23:59:59.999) del mes calendario de Lima que contiene
+   * `date`, como `Date` UTC correcto. Reutiliza `currentMonthRangeInLima`
+   * (mismo cálculo ya auditado que usa `estrellasDelMes`) en vez de
+   * reconstruir el límite de mes con `Date` local / `toLocaleString`: ese
+   * enfoque calcula sobre la zona horaria del SERVIDOR (Render corre en
+   * UTC, no en hora de Lima) — la clase de bug que motivó crear
+   * `lima-time.util.ts` en este proyecto.
+   */
+  private getEndOfMonthInLima(date: Date): Date {
+    const { end } = this.currentMonthRangeInLima(date);
+    return new Date(end.getTime() - 1);
   }
 
   private round2(value: number): number {
