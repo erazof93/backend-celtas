@@ -29,12 +29,15 @@ export interface PublicMenuCategory {
     sauces: { id: string; name: string }[];
     sauceGroupRequired: boolean;
     sauceGroupMaxSelectable: number;
+    sauceAllowWithout: boolean;
     beverages: { id: string; name: string; price: number }[];
     beverageGroupRequired: boolean;
     beverageGroupMaxSelectable: number;
+    beverageAllowWithout: boolean;
     extraPortions: { id: string; name: string; price: number }[];
     extraPortionsGroupRequired: boolean;
     extraPortionsGroupMaxSelectable: number;
+    extraPortionsAllowWithout: boolean;
   }[];
 }
 
@@ -64,6 +67,9 @@ export class MenuService {
    * la app. `sauceGroupRequired`/`Max`, `beverageGroupRequired`/`Max` y
    * `extraPortionsGroupRequired`/`Max` viajan siempre (aunque el array esté vacío)
    * para que la app no tenga que adivinar el default si el admin no configuró nada.
+   * Mismo criterio para `sauceAllowWithout`/`beverageAllowWithout`/
+   * `extraPortionsAllowWithout` (default true): si la app debe ofrecer la opción
+   * explícita "Sin X" para ese grupo, independiente de si el grupo es obligatorio.
    */
   async findPublicMenu(): Promise<PublicMenuCategory[]> {
     const categories = await this.categoriesRepository.find({
@@ -91,12 +97,15 @@ export class MenuService {
               sauces,
               sauceGroupRequired,
               sauceGroupMaxSelectable,
+              sauceAllowWithout,
               beverages,
               beverageGroupRequired,
               beverageGroupMaxSelectable,
+              beverageAllowWithout,
               extraPortions,
               extraPortionsGroupRequired,
               extraPortionsGroupMaxSelectable,
+              extraPortionsAllowWithout,
             }) => ({
               id,
               name,
@@ -118,6 +127,7 @@ export class MenuService {
                 })),
               sauceGroupRequired,
               sauceGroupMaxSelectable,
+              sauceAllowWithout,
               beverages: (beverages ?? [])
                 .filter((beverage) => beverage.active)
                 .sort(
@@ -143,6 +153,7 @@ export class MenuService {
                 ),
               beverageGroupRequired,
               beverageGroupMaxSelectable,
+              beverageAllowWithout,
               extraPortions: (extraPortions ?? [])
                 .filter((extraPortion) => extraPortion.active)
                 .sort(
@@ -162,6 +173,7 @@ export class MenuService {
                 ),
               extraPortionsGroupRequired,
               extraPortionsGroupMaxSelectable,
+              extraPortionsAllowWithout,
             }),
           )
           .sort((a, b) => a.name.localeCompare(b.name)),

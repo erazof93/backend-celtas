@@ -178,4 +178,31 @@ export class CreateMenuItemDto {
   })
   @Min(1, { message: 'extraPortionsGroupMaxSelectable debe ser al menos 1' })
   extraPortionsGroupMaxSelectable?: number;
+
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      'Si la app debe ofrecer la opción explícita "Sin salsas" para este producto (default true)',
+  })
+  @IsOptional()
+  @IsBoolean({ message: 'sauceAllowWithout debe ser true o false' })
+  sauceAllowWithout?: boolean;
+
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      'Si la app debe ofrecer la opción explícita "Sin bebida" para este producto (default true)',
+  })
+  @IsOptional()
+  @IsBoolean({ message: 'beverageAllowWithout debe ser true o false' })
+  beverageAllowWithout?: boolean;
+
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      'Si la app debe ofrecer la opción explícita "Sin porciones extras" para este producto (default true)',
+  })
+  @IsOptional()
+  @IsBoolean({ message: 'extraPortionsAllowWithout debe ser true o false' })
+  extraPortionsAllowWithout?: boolean;
 }

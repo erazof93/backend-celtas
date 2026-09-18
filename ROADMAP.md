@@ -641,6 +641,17 @@ celtas-backend/
   porque el archivo nunca se había commiteado (estaba `??` sin trackear en ambas sesiones), pero
   la garantía estructural de eslint/prettier sobre template literals más la comparación visual
   del SQL final son suficientes. Sin bloqueantes restantes.
+- **Enhancement posterior — `link` opcional en `POST /notifications/broadcast`**: `BroadcastNotificationDto`
+  gana `link?: string` (deep link/URL para que la app navegue al tocar la notificación), persistido
+  también en el historial `MarketingNotification` (migración `AddLinkToMarketingNotification`).
+  Auditado por `@tester` de forma independiente (build, 491/491 unit, 388/388 e2e, migración
+  verificada contra Postgres local real, dos mutaciones reales confirmando la cobertura, prueba
+  end-to-end real contra servidor + BD, Swagger correcto) — **veredicto LISTO**. Ver detalle completo
+  en `docs/testing-checklist.md`, sección "`link` opcional en notificaciones masivas de marketing".
+  Quedan 3 observaciones no bloqueantes documentadas ahí: `sendPushNotification` individual no
+  soporta `link` (fuera de alcance a propósito), `celtas-admin/src/types/api.d.ts` desactualizado
+  (necesita `link` en `BroadcastNotificationInput`/`MarketingBroadcast`), y gap de cobertura en
+  `link: ''` (string vacío explícito).
 
 ### 8. Panel Admin (endpoints) — ✅ COMPLETO
 - [x] Guard de rol `admin` para todos los endpoints de gestión

@@ -101,10 +101,7 @@ export class OrdersController {
   })
   @ApiResponse({ status: 200, description: 'Lista de pedidos del usuario' })
   @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
-  listMine(
-    @Req() req: AuthenticatedRequest,
-    @Query() query: QueryMyOrdersDto,
-  ) {
+  listMine(@Req() req: AuthenticatedRequest, @Query() query: QueryMyOrdersDto) {
     return this.ordersService.findMyOrders(req.user.userId, query.limit);
   }
 

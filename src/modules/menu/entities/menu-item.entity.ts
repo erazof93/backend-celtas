@@ -184,6 +184,35 @@ export class MenuItem {
   })
   extraPortionsGroupMaxSelectable: number;
 
+  /**
+   * Si la app debe ofrecer la opción explícita "Sin salsas" para este producto
+   * (default true). Independiente de `sauceGroupRequired`: ese controla si el
+   * cliente está obligado a elegir al menos una; este controla si "ninguna" es
+   * una opción visible/elegible. Sin efecto si `sauces` está vacío.
+   */
+  @Column({ name: 'sauce_allow_without', type: 'boolean', default: true })
+  sauceAllowWithout: boolean;
+
+  /**
+   * Si la app debe ofrecer la opción explícita "Sin bebida" para este producto
+   * (default true). Mismo criterio que `sauceAllowWithout`, independiente de
+   * `beverageGroupRequired`.
+   */
+  @Column({ name: 'beverage_allow_without', type: 'boolean', default: true })
+  beverageAllowWithout: boolean;
+
+  /**
+   * Si la app debe ofrecer la opción explícita "Sin porciones extras" para
+   * este producto (default true). Mismo criterio que `sauceAllowWithout`,
+   * independiente de `extraPortionsGroupRequired`.
+   */
+  @Column({
+    name: 'extra_portions_allow_without',
+    type: 'boolean',
+    default: true,
+  })
+  extraPortionsAllowWithout: boolean;
+
   @CreateDateColumn()
   createdAt: Date;
 

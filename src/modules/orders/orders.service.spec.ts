@@ -1140,7 +1140,11 @@ describe('OrdersService', () => {
       const result = await service.create(userId, {
         addressId,
         items: [
-          { menuItemId, quantity: 1, sauceIds: ['sauce-mayo', 'sauce-ketchup'] },
+          {
+            menuItemId,
+            quantity: 1,
+            sauceIds: ['sauce-mayo', 'sauce-ketchup'],
+          },
         ],
       });
 

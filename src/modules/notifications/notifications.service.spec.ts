@@ -257,7 +257,9 @@ describe('NotificationsService', () => {
     });
 
     it('con link → viaja en data.link para que la app navegue al tocar la notificación', async () => {
-      usersRepo.find.mockResolvedValue([makeUser({ id: 'u1', fcmToken: 'token-a' })]);
+      usersRepo.find.mockResolvedValue([
+        makeUser({ id: 'u1', fcmToken: 'token-a' }),
+      ]);
       multicastMock.mockResolvedValue({
         successCount: 1,
         failureCount: 0,
@@ -278,14 +280,19 @@ describe('NotificationsService', () => {
     });
 
     it('sin link → data sigue siendo undefined (no manda data.link vacío)', async () => {
-      usersRepo.find.mockResolvedValue([makeUser({ id: 'u1', fcmToken: 'token-a' })]);
+      usersRepo.find.mockResolvedValue([
+        makeUser({ id: 'u1', fcmToken: 'token-a' }),
+      ]);
       multicastMock.mockResolvedValue({
         successCount: 1,
         failureCount: 0,
         responses: [{ success: true }],
       });
 
-      await service.broadcastPushNotification({ title: 'Promo', body: 'Aprovecha' });
+      await service.broadcastPushNotification({
+        title: 'Promo',
+        body: 'Aprovecha',
+      });
 
       expect(multicastMock).toHaveBeenCalledWith(
         expect.objectContaining({ data: undefined }),

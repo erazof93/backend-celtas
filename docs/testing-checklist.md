@@ -1298,6 +1298,99 @@ arriba, ninguno bloqueante.
       mockeado) + verificación manual por SQL directo (hecha en esta auditoría). No bloqueante,
       pero si se agrega un e2e con DB real en el futuro, seguir el patrón de `coupons.e2e-spec.ts`.
 
+### `link` opcional en notificaciones masivas de marketing (`POST /notifications/broadcast`)
+
+> Feature nueva: `BroadcastNotificationDto` gana `link?: string` (`@IsOptional`, `@IsString`,
+> `@MaxLength(500)`, mismo patrón que `cancelReason` en `UpdateOrderStatusDto`) para que la app
+> Flutter navegue a un deep link/URL al tocar la notificación. `broadcastPushNotification` arma
+> `data: Record<string,string>` (FCM `data` payload solo acepta valores string) UNA VEZ antes del
+> loop de batches y pasa `undefined` si queda vacío (no manda `data: {}` a FCM).
+> `sendMarketingBroadcast` ahora persiste `link` en `MarketingNotification` (antes no se guardaba
+> en el historial). Migración `AddLinkToMarketingNotification`: columna `varchar(500)` nullable,
+> sin default. `sendPushNotification` (envío individual, no masivo) NO se tocó — fuera de alcance
+> a propósito, el pedido fue específico para broadcast masivo.
+>
+> **Auditado por `@tester` (pase independiente, con mutación real y prueba end-to-end contra el
+> servidor `pnpm run start:dev` + Postgres local `celtas-db` reales) — veredicto "LISTO".**
+
+- [x] `pnpm run build` compila sin errores (confirmado de forma independiente)
+- [x] `pnpm test`: 491/491 en verde (25 suites) — confirmado de forma independiente, incluye los 3
+      tests nuevos de `notifications.service.spec.ts`: `broadcastPushNotification` con link → `data:
+      { link }` viaja a `sendEachForMulticast`; sin link → `data: undefined` (no manda `data.link`
+      vacío); `sendMarketingBroadcast` con link → se guarda en el historial Y viaja en el push
+- [x] `pnpm run test:e2e`: 388/388 en verde (14 suites) — confirmado de forma independiente, incluye
+      2 tests nuevos en `test/notifications.e2e-spec.ts`: link opcional se reenvía del controller al
+      service; link de más de 500 caracteres → 400
+- [x] Diff revisado línea por línea (`git show 9c97272`): consistente con el patrón existente del
+      proyecto (`cancelReason`), sin tocar el cálculo/flujo de nada más; `data` se arma una sola vez
+      antes del loop de batches (no se recalcula en cada iteración, correcto para performance/lectura)
+- [x] Contrato de FCM respetado: `data` sigue siendo `Record<string,string>` en todo momento — no se
+      introdujo ningún valor no-string en el payload de `data`
+- [x] Migración `AddLinkToMarketingNotification1789655754465`: verificada de forma independiente con
+      `docker exec celtas-db psql` contra Postgres local real — `\d marketing_notifications` muestra
+      `link character varying(500)`, nullable, sin default, coincide 1:1 con la entidad; `SELECT name
+      FROM migrations ORDER BY id DESC` la confirma registrada. `down()` hace `DROP COLUMN "link"`
+      (reversible, sin afectar el resto de columnas; pérdida de los links históricos al hacer
+      rollback es el comportamiento esperado de cualquier `DROP COLUMN`, no un defecto)
+- [x] **Verificado con mutación real por `@tester`**: se comentó el `if (payload.link) { data.link =
+      payload.link; }` en `broadcastPushNotification` — rompió exactamente los 2 tests que dependen
+      de que el link viaje en `data` (el de `broadcastPushNotification` "con link" y el de
+      `sendMarketingBroadcast` "con link"), ningún otro (19/21 en verde). Mutación revertida,
+      `git status --short` confirma el árbol limpio otra vez
+- [x] **Verificado con mutación real por `@tester`**: se quitó `@MaxLength(500)` del DTO — rompió
+      exactamente el test e2e "rechaza un link de más de 500 caracteres (400)" (201 en vez de 400),
+      ningún otro (18/19 en verde). Mutación revertida, árbol limpio confirmado
+- [x] Swagger: confirmado contra `/docs-json` real (servidor levantado) — `BroadcastNotificationDto`
+      documenta `link` como `type: "string"` opcional (no aparece en `required: ["title","body"]`),
+      con `example`/`description`; las respuestas del endpoint (201/400/401/403) no cambiaron
+- [x] Prueba end-to-end real (`curl` contra `pnpm run start:dev` + Postgres `celtas-db` reales,
+      admin real promovido vía `UPDATE users SET role='admin'`): `POST /notifications/broadcast` con
+      `link` real devolvió `{sent, total}` correctamente y el `SELECT` directo a
+      `marketing_notifications` confirmó la fila con `link` guardado tal cual; `GET
+      /notifications/broadcast-history` expuso el mismo `link` en el JSON. Datos de prueba (usuario
+      admin QA y la fila de historial) borrados de la BD al finalizar
+- [x] Seguridad: sin cambios de superficie — `POST /notifications/broadcast` y `GET
+      /notifications/broadcast-history` siguen exigiendo rol `admin` (cubierto en la sección
+      anterior, sin regresión); `link` no es un campo sensible
+- [ ] ⚠️ **Observación, no bloqueante**: `sendPushNotification` (envío individual a un solo usuario,
+      usado por ej. en `POST /notifications/test` y notificaciones transaccionales) NO soporta
+      `link` — su `data: payload.data` no agrega el link aunque la interfaz `PushNotificationPayload`
+      ahora lo declare. Confirmado fuera de alcance por el pedido explícito (solo broadcast masivo),
+      pero si en el futuro se quiere que notificaciones individuales (ej. "tu pedido está en camino")
+      también naveguen a un deep link, haría falta el mismo tratamiento (`if (payload.link) data.link
+      = payload.link`) en `sendPushNotification`. Ningún test cubre — ni positivo ni de regresión —
+      este método con `link` seteado, así que si alguien lo agrega sin querer y rompe algo, nada lo
+      va a detectar hoy.
+- [ ] ⚠️ **Observación, no bloqueante — tipos del frontend admin desactualizados**: confirmado
+      leyendo directamente `../celtas-admin/src/types/api.d.ts` (acceso real al repo hermano, no
+      inferido) que `BroadcastNotificationInput` (líneas 13-16) y `MarketingBroadcast` (líneas 34-42)
+      NO declaran el campo `link`, a pesar de que ese mismo archivo documenta explícitamente que sus
+      tipos son "espejo del contrato real del backend" leyendo la fuente directamente. El endpoint
+      real ya devuelve/acepta `link` (confirmado en vivo arriba), así que `celtas-admin` necesita
+      actualizar ambas interfaces (agregar `link?: string` a `BroadcastNotificationInput` y `link:
+      string | null` a `MarketingBroadcast`) para poder enviar/mostrar el link desde el panel — fuera
+      del alcance de este backend, se reporta como pendiente para esa sesión.
+- [ ] Sin test para `link: ''` (string vacío explícito, no ausente): pasa la validación (`@IsOptional`
+      no excluye `''`, `@IsString`/`@MaxLength(500)` la aceptan), y produce una inconsistencia menor:
+      `sendMarketingBroadcast` guarda `link: '' ` en el historial (`payload.link ?? null` solo
+      reemplaza `null`/`undefined`, no `''`) pero `broadcastPushNotification` NO la manda en
+      `data.link` (`if (payload.link)` es falsy para `''`). Riesgo bajo (un admin real no va a
+      mandar un link vacío a propósito desde un formulario), pero no está cubierto por ningún test y
+      el comportamiento no está documentado como decisión intencional.
+
+**Veredicto: LISTO.** Todo lo crítico pasa: build limpio, 491/491 unit y 388/388 e2e confirmados de
+forma independiente (no solo el conteo reportado por la sesión principal), migración verificada 1:1
+contra Postgres local real, dos mutaciones reales en los puntos más frágiles (el `if` que arma
+`data.link` y el `@MaxLength`) que confirman que la cobertura nueva es real y no cosmética, contrato
+de FCM (`data` como `Record<string,string>`) respetado, Swagger correcto contra `/docs-json` real, y
+prueba end-to-end real contra el servidor y la BD confirmando que el link persiste y se expone
+correctamente. Ningún hallazgo bloqueante. Quedan tres observaciones de riesgo bajo, no bloqueantes:
+(1) `sendPushNotification` individual no soporta `link` (fuera de alcance a propósito, sin cobertura
+de regresión si se agrega mal en el futuro), (2) `celtas-admin/src/types/api.d.ts` quedó
+desactualizado y necesita el campo `link` en sus interfaces espejo, (3) gap de cobertura en
+`link: ''` (string vacío explícito) que produce una inconsistencia menor entre lo que se persiste en
+el historial y lo que se manda al push.
+
 ## Admin / Dashboard
 
 - [ ] `GET /admin/dashboard/summary` y `GET /admin/dashboard/top-products` devuelven `401` sin token y `403` con rol `cliente`

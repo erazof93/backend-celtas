@@ -89,12 +89,15 @@ describe('MenuService', () => {
       sauces: [],
       sauceGroupRequired: false,
       sauceGroupMaxSelectable: 1,
+      sauceAllowWithout: true,
       beverages: [],
       beverageGroupRequired: false,
       beverageGroupMaxSelectable: 1,
+      beverageAllowWithout: true,
       extraPortions: [],
       extraPortionsGroupRequired: false,
       extraPortionsGroupMaxSelectable: 1,
+      extraPortionsAllowWithout: true,
       ...overrides,
     }) as MenuItem;
 
@@ -203,6 +206,11 @@ describe('MenuService', () => {
       expect(result[0].items[0].beverageGroupMaxSelectable).toBe(1);
       expect(result[0].items[0].extraPortionsGroupRequired).toBe(false);
       expect(result[0].items[0].extraPortionsGroupMaxSelectable).toBe(1);
+      // GET /menu expone sauceAllowWithout/beverageAllowWithout/
+      // extraPortionsAllowWithout; defaults a true si el producto no los especificó.
+      expect(result[0].items[0].sauceAllowWithout).toBe(true);
+      expect(result[0].items[0].beverageAllowWithout).toBe(true);
+      expect(result[0].items[0].extraPortionsAllowWithout).toBe(true);
     });
 
     it('omite categorías activas sin productos disponibles', async () => {
@@ -347,6 +355,21 @@ describe('MenuService', () => {
       expect(result[0].items[0].beverageGroupMaxSelectable).toBe(2);
       expect(result[0].items[0].extraPortionsGroupRequired).toBe(true);
       expect(result[0].items[0].extraPortionsGroupMaxSelectable).toBe(3);
+    });
+
+    it('expone sauceAllowWithout/beverageAllowWithout/extraPortionsAllowWithout tal como están en el producto', async () => {
+      const item = seedItem({
+        sauceAllowWithout: false,
+        beverageAllowWithout: false,
+        extraPortionsAllowWithout: false,
+      });
+      categoriesRepo.find.mockResolvedValue([seedCategory({ items: [item] })]);
+
+      const result = await service.findPublicMenu();
+
+      expect(result[0].items[0].sauceAllowWithout).toBe(false);
+      expect(result[0].items[0].beverageAllowWithout).toBe(false);
+      expect(result[0].items[0].extraPortionsAllowWithout).toBe(false);
     });
   });
 
@@ -613,6 +636,40 @@ describe('MenuService', () => {
         seedExtraPortion({ id: extraPortionId1 }),
       ]);
     });
+
+    it('crea el producto con sauceAllowWithout=false explícito', async () => {
+      categoriesRepo.findOne.mockResolvedValue(seedCategory());
+      itemsRepo.create.mockImplementation(passthrough);
+      itemsRepo.save.mockImplementation(passthrough);
+
+      const result = await service.createItem({
+        name: 'Celta',
+        price: 15,
+        categoryId: catId,
+        sauceAllowWithout: false,
+      });
+
+      expect(itemsRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ sauceAllowWithout: false }),
+      );
+      expect(result.sauceAllowWithout).toBe(false);
+    });
+
+    it('crea el producto sin sauceAllowWithout/beverageAllowWithout/extraPortionsAllowWithout: quedan sin definir en el DTO (el default true lo aplica la columna, no el service)', async () => {
+      categoriesRepo.findOne.mockResolvedValue(seedCategory());
+      itemsRepo.create.mockImplementation(passthrough);
+      itemsRepo.save.mockImplementation(passthrough);
+
+      const result = await service.createItem({
+        name: 'Celta',
+        price: 15,
+        categoryId: catId,
+      });
+
+      expect(result.sauceAllowWithout).toBeUndefined();
+      expect(result.beverageAllowWithout).toBeUndefined();
+      expect(result.extraPortionsAllowWithout).toBeUndefined();
+    });
   });
 
   describe('findAllItems', () => {
@@ -744,6 +801,22 @@ describe('MenuService', () => {
       expect(extraPortionsService.findByIds).toHaveBeenCalledWith([]);
       expect(result.beverages).toEqual([]);
       expect(result.extraPortions).toEqual([]);
+    });
+
+    it('actualiza sauceAllowWithout/beverageAllowWithout/extraPortionsAllowWithout', async () => {
+      const existing = seedItem();
+      itemsRepo.findOne.mockResolvedValue(existing);
+      itemsRepo.save.mockImplementation(passthrough);
+
+      const result = await service.updateItem('item-1', {
+        sauceAllowWithout: false,
+        beverageAllowWithout: false,
+        extraPortionsAllowWithout: false,
+      });
+
+      expect(result.sauceAllowWithout).toBe(false);
+      expect(result.beverageAllowWithout).toBe(false);
+      expect(result.extraPortionsAllowWithout).toBe(false);
     });
   });
 
