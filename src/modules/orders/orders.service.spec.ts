@@ -1150,6 +1150,49 @@ describe('OrdersService', () => {
 
       expect(result.items[0].selectedSauces).toEqual(['Mayonesa', 'Ketchup']);
     });
+
+    it.each([5, 10])(
+      'sauceGroupMaxSelectable=null (sin límite) + %i sauceIds → no lanza',
+      async (count) => {
+        const sauces = Array.from({ length: count }, (_, i) => ({
+          id: `sauce-${i + 1}`,
+          name: `Salsa ${i + 1}`,
+        }));
+        menuItemsRepo.find.mockResolvedValue([
+          menuMenuItem({ sauces, sauceGroupMaxSelectable: null }),
+        ]);
+
+        const result = await service.create(userId, {
+          addressId,
+          items: [
+            {
+              menuItemId,
+              quantity: 1,
+              sauceIds: sauces.map((s) => s.id),
+            },
+          ],
+        });
+
+        expect(result.items[0].selectedSauces).toHaveLength(count);
+      },
+    );
+
+    it('sauceGroupMaxSelectable=null NO desactiva sauceGroupRequired → 400 si no elige ninguna', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          sauces: [{ id: 'sauce-mayo', name: 'Mayonesa' }],
+          sauceGroupRequired: true,
+          sauceGroupMaxSelectable: null,
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 1, sauceIds: [] }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
   });
 
   describe('create — bebidas/extras combinadas con canje de premio (rewardRedemptionId)', () => {

@@ -106,11 +106,19 @@ export class MenuItem {
   sauceGroupRequired: boolean;
 
   /**
-   * Máximo de salsas que el cliente puede elegir para este producto. Default 1
-   * (mismo criterio que `beverageGroupMaxSelectable`/`extraPortionsGroupMaxSelectable`).
+   * Máximo de salsas que el cliente puede elegir para este producto. `null` =
+   * sin límite (default): el cliente puede elegir todas las que el producto
+   * ofrece. A diferencia de `beverageGroupMaxSelectable`/
+   * `extraPortionsGroupMaxSelectable`, que siguen NOT NULL default 1 (las salsas
+   * no suman precio, así que no hay razón de negocio para limitarlas por defecto).
    */
-  @Column({ name: 'sauce_group_max_selectable', type: 'int', default: 1 })
-  sauceGroupMaxSelectable: number;
+  @Column({
+    name: 'sauce_group_max_selectable',
+    type: 'int',
+    nullable: true,
+    default: null,
+  })
+  sauceGroupMaxSelectable: number | null;
 
   /**
    * Bebidas que este producto ofrece, del catálogo global de `beverages`. Vacío =

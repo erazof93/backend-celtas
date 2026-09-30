@@ -47,7 +47,7 @@ interface PublicMenuCategory {
     price: number;
     available?: boolean;
     sauceGroupRequired: boolean;
-    sauceGroupMaxSelectable: number;
+    sauceGroupMaxSelectable: number | null;
   }[];
 }
 
@@ -270,7 +270,8 @@ describe('Menu (e2e)', () => {
       expect(burgers?.items[0].available).toBeUndefined();
       // El config de grupo de salsas viaja siempre, con sus defaults de columna.
       expect(burgers?.items[0].sauceGroupRequired).toBe(false);
-      expect(burgers?.items[0].sauceGroupMaxSelectable).toBe(1);
+      // Default NULL = sin límite de salsas (ver MakeSauceGroupMaxSelectableNullable).
+      expect(burgers?.items[0].sauceGroupMaxSelectable).toBeNull();
     });
 
     it('un producto no disponible no aparece en el menú público', async () => {
@@ -530,6 +531,148 @@ describe('Menu (e2e)', () => {
       expect(data.categoryId).toBe(regCatId);
       expect(data.createdAt).toBeDefined();
       expect(data.updatedAt).toBeDefined();
+    });
+  });
+
+  // Antes: `@IsOptional()` (y el que agrega `PartialType` por defecto) dejaba
+  // pasar `null`, `merge`/`create` lo copiaban y Postgres lo rechazaba por
+  // NOT NULL → 500. Ver `IsOptionalNonNullable`.
+  describe('Regresión null en campos NOT NULL → 400 (no 500)', () => {
+    let nullCatId: string;
+    let nullItemId: string;
+
+    const patchItem = (body: Record<string, unknown>) =>
+      request(app.getHttpServer())
+        .patch(`/menu/items/${nullItemId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send(body);
+
+    beforeAll(async () => {
+      const cat = await request(app.getHttpServer())
+        .post('/menu/categories')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ name: `Null ${suffix}` })
+        .expect(201);
+      nullCatId = ((cat.body as Envelope).data as { id: string }).id;
+
+      const item = await request(app.getHttpServer())
+        .post('/menu/items')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          name: 'Item null',
+          price: 12.5,
+          categoryId: nullCatId,
+          beverageGroupMaxSelectable: 2,
+        })
+        .expect(201);
+      nullItemId = ((item.body as Envelope).data as { id: string }).id;
+    });
+
+    afterAll(async () => {
+      await itemsRepo.delete({ id: nullItemId });
+      await categoriesRepo.delete({ id: nullCatId });
+    });
+
+    it.each([
+      [
+        'beverageGroupMaxSelectable',
+        'beverageGroupMaxSelectable debe ser un número entero',
+      ],
+      [
+        'extraPortionsGroupMaxSelectable',
+        'extraPortionsGroupMaxSelectable debe ser un número entero',
+      ],
+      ['sauceGroupRequired', 'sauceGroupRequired debe ser true o false'],
+      ['price', 'El precio debe ser un número con hasta 2 decimales'],
+      ['name', 'El nombre debe ser texto'],
+      ['categoryId', 'categoryId debe ser un UUID válido'],
+      ['available', 'available debe ser true o false'],
+      ['sauceIds', 'sauceIds debe ser una lista'],
+    ])(
+      'PATCH con %s: null → 400 con mensaje en español',
+      async (field, msg) => {
+        const res = await patchItem({ [field]: null }).expect(400);
+        expect((res.body as ErrorResponse).message).toContain(msg);
+      },
+    );
+
+    it('POST con null en un campo NOT NULL → 400', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/menu/items')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          name: `Post null ${suffix}`,
+          price: 10,
+          categoryId: nullCatId,
+          beverageGroupMaxSelectable: null,
+        })
+        .expect(400);
+      expect((res.body as ErrorResponse).message).toContain(
+        'beverageGroupMaxSelectable debe ser un número entero',
+      );
+    });
+
+    it('POST con name: null → 400 (ya era obligatorio; sigue igual)', async () => {
+      await request(app.getHttpServer())
+        .post('/menu/items')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ name: null, price: 10, categoryId: nullCatId })
+        .expect(400);
+    });
+
+    it('los 400 anteriores NO modificaron el producto en BD', async () => {
+      const stored = await itemsRepo.findOneByOrFail({ id: nullItemId });
+      expect(stored.name).toBe('Item null');
+      expect(stored.price).toBe(12.5);
+      expect(stored.beverageGroupMaxSelectable).toBe(2);
+    });
+
+    it('PATCH omitiendo el campo → 200 y no lo cambia', async () => {
+      const res = await patchItem({ description: 'solo descripción' }).expect(
+        200,
+      );
+      const data = (res.body as Envelope).data as Record<string, unknown>;
+      expect(data.description).toBe('solo descripción');
+      expect(data.beverageGroupMaxSelectable).toBe(2);
+      expect(data.price).toBe(12.5);
+      expect(data.name).toBe('Item null');
+    });
+
+    it('PATCH con undefined → 200 (JSON.stringify descarta la clave, no llega)', async () => {
+      const res = await patchItem({
+        beverageGroupMaxSelectable: undefined,
+        price: undefined,
+        description: 'con undefined',
+      }).expect(200);
+      const data = (res.body as Envelope).data as Record<string, unknown>;
+      expect(data.description).toBe('con undefined');
+      expect(data.beverageGroupMaxSelectable).toBe(2);
+      expect(data.price).toBe(12.5);
+    });
+
+    it('campos nullable siguen aceptando null: description, image, sauceGroupMaxSelectable → 200', async () => {
+      const res = await patchItem({
+        description: null,
+        image: null,
+        sauceGroupMaxSelectable: null,
+      }).expect(200);
+      const data = (res.body as Envelope).data as Record<string, unknown>;
+      expect(data.description).toBeNull();
+      expect(data.image).toBeNull();
+      expect(data.sauceGroupMaxSelectable).toBeNull();
+    });
+
+    it('PATCH de categoría con name: null → 400; description: null → 200', async () => {
+      await request(app.getHttpServer())
+        .patch(`/menu/categories/${nullCatId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ name: null })
+        .expect(400);
+      await request(app.getHttpServer())
+        .patch(`/menu/categories/${nullCatId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ description: null })
+        .expect(200);
     });
   });
 });

@@ -10,6 +10,7 @@ import {
   IsUUID,
   Min,
 } from 'class-validator';
+import { IsOptionalNonNullable } from '../../../common/decorators/is-optional-non-nullable.decorator';
 
 export class CreateMenuItemDto {
   @ApiProperty({
@@ -52,7 +53,7 @@ export class CreateMenuItemDto {
     example: true,
     description: 'Si el producto está disponible para pedir (default true)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'available debe ser true o false' })
   available?: boolean;
 
@@ -61,7 +62,7 @@ export class CreateMenuItemDto {
     description:
       'Si el producto puede canjearse con estrellas del programa de fidelización (default false)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'redeemableWithStars debe ser true o false' })
   redeemableWithStars?: boolean;
 
@@ -70,7 +71,7 @@ export class CreateMenuItemDto {
     description:
       'Si el producto puede canjearse específicamente con el premio especial (catálogo exclusivo, independiente de redeemableWithStars, default false)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'specialReward debe ser true o false' })
   specialReward?: boolean;
 
@@ -87,7 +88,7 @@ export class CreateMenuItemDto {
     description:
       'UUIDs de las salsas del catálogo que este producto ofrece (vacío u omitido = sin selector de salsas, ej. arroz chaufa)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsArray({ message: 'sauceIds debe ser una lista' })
   @IsUUID('4', { each: true, message: 'Cada sauceId debe ser un UUID válido' })
   sauceIds?: string[];
@@ -97,19 +98,21 @@ export class CreateMenuItemDto {
     description:
       'Si el grupo de salsas es obligatorio (default false). Sin efecto si sauceIds queda vacío.',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'sauceGroupRequired debe ser true o false' })
   sauceGroupRequired?: boolean;
 
   @ApiPropertyOptional({
     example: 1,
+    type: Number,
+    nullable: true,
     description:
-      'Máximo de salsas que el cliente puede elegir para este producto (default 1)',
+      'Máximo de salsas que el cliente puede elegir para este producto. null u omitido al crear = sin límite (default). En PATCH, null quita el límite.',
   })
   @IsOptional()
   @IsInt({ message: 'sauceGroupMaxSelectable debe ser un número entero' })
   @Min(1, { message: 'sauceGroupMaxSelectable debe ser al menos 1' })
-  sauceGroupMaxSelectable?: number;
+  sauceGroupMaxSelectable?: number | null;
 
   @ApiPropertyOptional({
     type: [String],
@@ -117,7 +120,7 @@ export class CreateMenuItemDto {
     description:
       'UUIDs de las bebidas del catálogo que este producto ofrece (vacío u omitido = sin selector de bebidas)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsArray({ message: 'beverageIds debe ser una lista' })
   @IsUUID('4', {
     each: true,
@@ -130,7 +133,7 @@ export class CreateMenuItemDto {
     description:
       'Si el grupo de bebidas es obligatorio (default false). Sin efecto si beverageIds queda vacío.',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'beverageGroupRequired debe ser true o false' })
   beverageGroupRequired?: boolean;
 
@@ -139,7 +142,7 @@ export class CreateMenuItemDto {
     description:
       'Máximo de bebidas que el cliente puede elegir para este producto (default 1)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsInt({ message: 'beverageGroupMaxSelectable debe ser un número entero' })
   @Min(1, { message: 'beverageGroupMaxSelectable debe ser al menos 1' })
   beverageGroupMaxSelectable?: number;
@@ -150,7 +153,7 @@ export class CreateMenuItemDto {
     description:
       'UUIDs de las porciones extras del catálogo que este producto ofrece (vacío u omitido = sin selector de porciones extras)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsArray({ message: 'extraPortionIds debe ser una lista' })
   @IsUUID('4', {
     each: true,
@@ -163,7 +166,7 @@ export class CreateMenuItemDto {
     description:
       'Si el grupo de porciones extras es obligatorio (default false). Sin efecto si extraPortionIds queda vacío.',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'extraPortionsGroupRequired debe ser true o false' })
   extraPortionsGroupRequired?: boolean;
 
@@ -172,7 +175,7 @@ export class CreateMenuItemDto {
     description:
       'Máximo de porciones extras que el cliente puede elegir para este producto (default 1)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsInt({
     message: 'extraPortionsGroupMaxSelectable debe ser un número entero',
   })
@@ -184,7 +187,7 @@ export class CreateMenuItemDto {
     description:
       'Si la app debe ofrecer la opción explícita "Sin salsas" para este producto (default true)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'sauceAllowWithout debe ser true o false' })
   sauceAllowWithout?: boolean;
 
@@ -193,7 +196,7 @@ export class CreateMenuItemDto {
     description:
       'Si la app debe ofrecer la opción explícita "Sin bebida" para este producto (default true)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'beverageAllowWithout debe ser true o false' })
   beverageAllowWithout?: boolean;
 
@@ -202,7 +205,7 @@ export class CreateMenuItemDto {
     description:
       'Si la app debe ofrecer la opción explícita "Sin porciones extras" para este producto (default true)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'extraPortionsAllowWithout debe ser true o false' })
   extraPortionsAllowWithout?: boolean;
 }

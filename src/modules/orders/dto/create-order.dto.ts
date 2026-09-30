@@ -13,6 +13,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { IsOptionalNonNullable } from '../../../common/decorators/is-optional-non-nullable.decorator';
 
 export class CreateOrderItemDto {
   @ApiProperty({
@@ -34,7 +35,7 @@ export class CreateOrderItemDto {
     description:
       'UUIDs de las salsas elegidas para este ítem (deben estar entre las que el producto ofrece; se aplican a las `quantity` unidades del ítem, no una selección por unidad individual). Omitido (campo no enviado) = no aplica, el producto no ofrece salsas o el cliente nunca llegó al selector. Array vacío enviado explícitamente ([]) = el cliente vio el selector y eligió deliberadamente "Sin salsas"; se guarda y se muestra como una elección real, no como ausencia de dato.',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsArray({ message: 'sauceIds debe ser una lista' })
   @IsUUID('4', { each: true, message: 'Cada sauceId debe ser un UUID válido' })
   sauceIds?: string[];
@@ -45,7 +46,7 @@ export class CreateOrderItemDto {
     description:
       'UUIDs de las bebidas elegidas para este ítem (deben estar entre las que el producto ofrece; se aplican a las `quantity` unidades del ítem — cada bebida elegida suma su precio una vez por unidad). Mismo tri-state que sauceIds: omitido = no aplica, [] explícito = "sin bebida" elegido a propósito.',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsArray({ message: 'beverageIds debe ser una lista' })
   @IsUUID('4', {
     each: true,
@@ -59,7 +60,7 @@ export class CreateOrderItemDto {
     description:
       'UUIDs de las porciones extras elegidas para este ítem (deben estar entre las que el producto ofrece; se aplican a las `quantity` unidades del ítem — cada porción extra elegida suma su precio una vez por unidad). Mismo tri-state que sauceIds.',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsArray({ message: 'extraPortionIds debe ser una lista' })
   @IsUUID('4', {
     each: true,

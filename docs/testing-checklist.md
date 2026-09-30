@@ -282,6 +282,81 @@ hizo en esta sesión). El fix original (`menu.service.ts`), el bug de la misma c
 `orders.service.ts`, y la cobertura de regresión para ambos quedaron aplicados y verificados con
 build + unit + e2e en verde.
 
+## `MenuItem.sauceGroupMaxSelectable` nullable (NULL = sin límite de salsas)
+
+> Cambio: columna `sauce_group_max_selectable` pasa a `NULL` permitido y default `NULL`
+> (migración `MakeSauceGroupMaxSelectableNullable1790726082297`). `beverage`/`extraPortions`
+> siguen NOT NULL default 1. `validateGroupSelection` salta el tope si `max === null`
+> (`groupRequired` sigue aplicando).
+
+- [x] `pnpm run build` OK
+- [x] `pnpm run test`: 25/25 suites, 501/501
+- [x] `pnpm run test:e2e` completo: 14/14 suites, 403/403 (396 previos + 7 agregados por `@tester`)
+- [x] BD local: `sauce_group_max_selectable` `is_nullable=YES`, sin default; `beverage`/`extra`
+      siguen `NO` / default 1; productos existentes conservan su valor (2 filas en `1`, ninguna NULL)
+- [x] Migración `up` solo DDL (DROP NOT NULL + DROP DEFAULT, no toca datos); `down` hace
+      `UPDATE NULL→1` antes de `SET NOT NULL` (con pérdida intencional del "sin límite")
+- [x] Contrato DTO: `null` aceptado en POST y PATCH; `0`, `-1`, `1.5`, `'3'`, `true` → 400 (e2e)
+- [x] PATCH `null` persiste `NULL` en BD (verificado con `findOneByOrFail`, no solo la respuesta)
+- [x] PATCH que omite el campo no lo toca (número se queda en 3; `NULL` se queda en `NULL`) (e2e nuevo)
+- [x] PATCH de `null` → número vuelve a poner límite (e2e nuevo)
+- [x] POST /orders con `max=null` + 5/10 salsas → 201; `max=1` + 2 → 400; `required` + `max=null` + `[]` → 400
+- [x] Mutación: quitar `groupMaxSelectable !== null` → 2 unit + 3 e2e fallan; `merge` que
+      descarta `null` → 1 unit + 1 e2e fallan; forzar `null` al omitir → falla el e2e de omisión
+- [x] Swagger: `CreateMenuItemDto`/`UpdateMenuItemDto.sauceGroupMaxSelectable` = `{type: number, nullable: true}`
+- [x] Barrido de `sauceGroupMaxSelectable` en `src/` y `test/`: sin otros puntos que asuman `number`
+- [ ] **Bug pre-existente (misma clase, NO introducido por este cambio)**: `PATCH /menu/items/:id`
+      con `null` en cualquier columna NOT NULL (`beverageGroupMaxSelectable`,
+      `extraPortionsGroupMaxSelectable`, `sauceGroupRequired`, `price`, `name`) → **500**
+      (`QueryFailedError: null value in column ... violates not-null constraint`). `@IsOptional`
+      deja pasar `null` y `merge` lo copia. Debería ser 400.
+- [ ] **Riesgo cross-repo (deploy)**: `celtas-app` parsea `null` → `0` (`@Default(0) int`,
+      `public_menu_item.g.dart:24`) y `product_detail_screen.dart:212` bloquea cualquier selección
+      (`length > 0`). `celtas-admin` tipa `number`, el form hace `?? 1` y zod `min(1)` → al editar
+      un producto sin límite lo vuelve a 1 sin avisar.
+
+**Veredicto: LISTO para el alcance backend del cambio**, con el bug pre-existente de 500 en
+PATCH `null` y el riesgo de coordinación con los clientes pendientes (ver arriba).
+
+## Clase de bug: `null` en campo NOT NULL → 500 (debe ser 400)
+
+> Fix: `IsOptionalNonNullable` (`ValidateIf(v !== undefined)`) en los campos NOT NULL de 11 DTOs
+> + `PartialType(X, { skipNullProperties: false })` en los 5 Update DTOs con `PartialType`.
+> Guardias: `test/null-fields.e2e-spec.ts` (CRUD catálogo/banners/premios/direcciones/perfil) y
+> `test/null-fields-extra.e2e-spec.ts` (agregado por `tester`: pedidos, cupones, settings,
+> auth, roles, fcm-token, reorder de banners + Swagger de los Update DTOs).
+
+- [x] `pnpm run build` OK; `pnpm run lint` OK
+- [x] `pnpm run test`: 25/25 suites, 501/501
+- [x] `pnpm run test:e2e` (antes de agregar `null-fields-extra`): 15/15 suites, 419/419
+- [x] `pnpm run test:e2e` (re-auditoría, con `null-fields-extra`): 16/16 suites, 431/431
+- [x] Guardia `null-fields` falla si se revierte el fix (mutación en copia aislada:
+      `UpdateCategoryDto` con `skipNullProperties: true` + `CreateSauceDto.active` con
+      `@IsOptional()` → 5 fallas reportadas: PATCH categories name/active/sortOrder, POST/PATCH sauces.active)
+- [x] Swagger: los 10 Update DTOs tienen `required: []` (todo opcional); Create DTOs conservan sus requeridos
+- [x] `PATCH /orders/:id/status` `status`/`cancelReason` null → 200/400 (desde `en_camino` exige motivo), nunca 500
+- [x] `POST /coupons/generate` `minPurchaseAmount`/`expiresAt` null → 201 (default aplicado); requeridos null → 400
+- [x] `POST /coupons/generate-bulk` requeridos null → 400; `/coupons/validate` `subtotal: null` → 201, `code: null` → 400
+- [x] `PATCH /settings` `description: null` → 200 (columna nullable); `key`/`value` null → 400
+- [x] auth (register/login/google/refresh), `users/:id/role`, `users/me/fcm-token`, `banners/reorder` con null → 400 (o 201 en `phone`)
+- [x] `POST /orders` `couponCode`/`addressId`/`addressSnapshot`/`items[].comment`/`items[].rewardRedemptionId` null → 201; `items`/`items[null]`/`quantity`/`menuItemId` null → 400
+- [x] Clientes: `celtas-app` usa entradas null-aware (`'k': ?v` / `if (...)`) en pedidos, direcciones y perfil;
+      `celtas-admin` solo manda `null` explícito en campos que siguen con `@IsOptional` (banner
+      `startDate`/`endDate`/`daysOfWeek`, cupón `minPurchaseAmount`) → sin regresión
+- [x] **BUG RESUELTO** (antes 500): `POST /orders` con `items[].sauceIds`/`beverageIds`/`extraPortionIds: null`
+      daba `TypeError: Cannot read properties of null (reading 'length')` (`resolveSelectedSauces` /
+      `resolveSelectedPriced` solo contemplaban `undefined`). Fix: `@IsOptionalNonNullable()` en los 3
+      campos de `CreateOrderItemDto`. Ahora `null` → 400 con mensaje en español (`"<campo> debe ser una
+      lista"`); omitido → 201 con snapshot `null`; `[]` → 201 con snapshot `[]` (tri-state intacto,
+      9 tests e2e en `null-fields-extra`).
+- [x] Mutación: volver esos 3 campos a `@IsOptional()` (copia aislada) → 4 tests de `null-fields-extra` fallan
+- [x] `POST /notifications/broadcast` y `/notifications/test`: **solo revisión estática, no ejecutados**
+      (mandan push real). Requeridos con `@IsString/@IsNotEmpty`/`@IsUUID` (null → 400); `link: null` pasa
+      `@IsOptional` y el service hace `if (payload.link)` / `payload.link ?? null` en columna nullable → sin 500 esperado
+
+**Veredicto: LISTO** (re-auditoría). Único punto no ejecutado: notifications broadcast/test (verificado
+solo estáticamente por enviar push reales).
+
 ## Orders
 
 - [ ] El pedido se crea siempre en estado `pendiente`

@@ -17,6 +17,7 @@ import { TransformInterceptor } from './../src/common/interceptors/transform.int
 import { Category } from './../src/modules/menu/entities/category.entity';
 import { MenuItem } from './../src/modules/menu/entities/menu-item.entity';
 import { Order } from './../src/modules/orders/entities/order.entity';
+import { Sauce } from './../src/modules/sauces/entities/sauce.entity';
 import { Setting } from './../src/modules/settings/entities/setting.entity';
 import { Address } from './../src/modules/users/entities/address.entity';
 import {
@@ -83,6 +84,7 @@ describe('Orders (e2e)', () => {
   let itemAId: string;
   let itemBId: string;
   let addressId: string;
+  const sauceIds: string[] = [];
 
   const suffix = Date.now();
   const clientAEmail = `qa-orders-a-${suffix}@test.com`;
@@ -231,6 +233,11 @@ describe('Orders (e2e)', () => {
       await addressesRepo.delete(ids.map((id) => ({ userId: id })));
     }
     await itemsRepo.delete({ categoryId });
+    if (sauceIds.length > 0) {
+      await app
+        .get<Repository<Sauce>>(getRepositoryToken(Sauce))
+        .delete(sauceIds);
+    }
     await categoriesRepo.delete({ id: categoryId });
     await usersRepo.delete({ email: clientAEmail });
     await usersRepo.delete({ email: clientBEmail });
@@ -606,6 +613,210 @@ describe('Orders (e2e)', () => {
       expect(data.items[0].comment).toBe(comment);
       expect(data.items[0].comment).toHaveLength(140);
     });
+  });
+
+  // BD real con la migración aplicada: el default NULL (salsas) vs NOT NULL
+  // default 1 (bebidas/extras) lo pone la columna, no el service — un unit
+  // test con repos mockeados no puede verificarlo.
+  describe('sauceGroupMaxSelectable nullable (NULL = sin límite)', () => {
+    let unlimitedItemId: string;
+    let limitedItemId: string;
+
+    interface MenuItemData {
+      id: string;
+      sauceGroupMaxSelectable: number | null;
+      beverageGroupMaxSelectable: number;
+      extraPortionsGroupMaxSelectable: number;
+    }
+
+    const createItem = async (body: Record<string, unknown>) => {
+      const res = await request(app.getHttpServer())
+        .post('/menu/items')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ price: 20, categoryId, sauceIds, ...body })
+        .expect(201);
+      return (res.body as Envelope).data as MenuItemData;
+    };
+
+    // Se borran en el afterAll global, DESPUÉS de los productos (FK de
+    // menu_item_sauces sin cascade hacia sauces).
+    beforeAll(async () => {
+      for (let i = 1; i <= 10; i++) {
+        const res = await request(app.getHttpServer())
+          .post('/sauces')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ name: `Salsa QA ${i} ${suffix}` })
+          .expect(201);
+        sauceIds.push(((res.body as Envelope).data as { id: string }).id);
+      }
+    });
+
+    it('crear producto SIN sauceGroupMaxSelectable → null en BD; bebidas/extras siguen en 1', async () => {
+      const item = await createItem({ name: `Sin límite ${suffix}` });
+      unlimitedItemId = item.id;
+
+      const stored = await itemsRepo.findOneByOrFail({ id: item.id });
+      expect(stored.sauceGroupMaxSelectable).toBeNull();
+      expect(stored.beverageGroupMaxSelectable).toBe(1);
+      expect(stored.extraPortionsGroupMaxSelectable).toBe(1);
+    });
+
+    it('crear producto con sauceGroupMaxSelectable: null explícito → 201 y null', async () => {
+      const item = await createItem({
+        name: `Null explícito ${suffix}`,
+        sauceGroupMaxSelectable: null,
+      });
+      expect(item.sauceGroupMaxSelectable).toBeNull();
+    });
+
+    it('sauceGroupMaxSelectable: 0 sigue siendo inválido → 400', async () => {
+      await request(app.getHttpServer())
+        .post('/menu/items')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          name: `Cero ${suffix}`,
+          price: 20,
+          categoryId,
+          sauceGroupMaxSelectable: 0,
+        })
+        .expect(400);
+    });
+
+    it('GET /menu devuelve sauceGroupMaxSelectable: null y beverageGroupMaxSelectable: 1', async () => {
+      const res = await request(app.getHttpServer()).get('/menu').expect(200);
+      const data = (res.body as Envelope).data as {
+        id: string;
+        items: MenuItemData[];
+      }[];
+      const item = data
+        .find((c) => c.id === categoryId)
+        ?.items.find((i) => i.id === unlimitedItemId);
+
+      expect(item).toBeDefined();
+      expect(item?.sauceGroupMaxSelectable).toBeNull();
+      expect(item?.beverageGroupMaxSelectable).toBe(1);
+      expect(item?.extraPortionsGroupMaxSelectable).toBe(1);
+    });
+
+    it.each([5, 10])(
+      'POST /orders con max=null + %i salsas → 201 (acepta todas)',
+      async (count) => {
+        const res = await createOrder(clientAToken, {
+          addressId,
+          items: [
+            {
+              menuItemId: unlimitedItemId,
+              quantity: 1,
+              sauceIds: sauceIds.slice(0, count),
+            },
+          ],
+        }).expect(201);
+        const data = (res.body as Envelope).data as {
+          items: { selectedSauces: string[] }[];
+        };
+        expect(data.items[0].selectedSauces).toHaveLength(count);
+      },
+    );
+
+    it('POST /orders con max=1 explícito + 2 salsas → sigue siendo 400', async () => {
+      limitedItemId = (
+        await createItem({
+          name: `Límite 1 ${suffix}`,
+          sauceGroupMaxSelectable: 1,
+        })
+      ).id;
+
+      const res = await createOrder(clientAToken, {
+        addressId,
+        items: [
+          {
+            menuItemId: limitedItemId,
+            quantity: 1,
+            sauceIds: sauceIds.slice(0, 2),
+          },
+        ],
+      }).expect(400);
+      expect((res.body as ErrorResponse).message).toContain(
+        'como máximo 1 salsa(s)',
+      );
+    });
+
+    it('PATCH con sauceGroupMaxSelectable: null quita el límite de un producto existente', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/menu/items/${limitedItemId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ sauceGroupMaxSelectable: null })
+        .expect(200);
+      expect((res.body as Envelope).data).toMatchObject({
+        sauceGroupMaxSelectable: null,
+      });
+
+      await createOrder(clientAToken, {
+        addressId,
+        items: [
+          {
+            menuItemId: limitedItemId,
+            quantity: 1,
+            sauceIds: sauceIds.slice(0, 2),
+          },
+        ],
+      }).expect(201);
+
+      // Persistido en BD (no solo en la respuesta del save).
+      const stored = await itemsRepo.findOneByOrFail({ id: limitedItemId });
+      expect(stored.sauceGroupMaxSelectable).toBeNull();
+    });
+
+    it('PATCH que OMITE sauceGroupMaxSelectable no toca el valor existente (ni un número ni null)', async () => {
+      const item = await createItem({
+        name: `Límite 3 ${suffix}`,
+        sauceGroupMaxSelectable: 3,
+      });
+
+      await request(app.getHttpServer())
+        .patch(`/menu/items/${item.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ price: 21 })
+        .expect(200);
+      expect(
+        (await itemsRepo.findOneByOrFail({ id: item.id }))
+          .sauceGroupMaxSelectable,
+      ).toBe(3);
+
+      // Y un producto ya en null tampoco vuelve a número al omitirlo.
+      await request(app.getHttpServer())
+        .patch(`/menu/items/${unlimitedItemId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ price: 22 })
+        .expect(200);
+      expect(
+        (await itemsRepo.findOneByOrFail({ id: unlimitedItemId }))
+          .sauceGroupMaxSelectable,
+      ).toBeNull();
+    });
+
+    it('PATCH puede volver de null a un número (re-poner límite)', async () => {
+      await request(app.getHttpServer())
+        .patch(`/menu/items/${limitedItemId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ sauceGroupMaxSelectable: 2 })
+        .expect(200);
+      expect(
+        (await itemsRepo.findOneByOrFail({ id: limitedItemId }))
+          .sauceGroupMaxSelectable,
+      ).toBe(2);
+    });
+
+    it.each([0, -1, 1.5, '3', true])(
+      'PATCH con sauceGroupMaxSelectable=%p inválido → 400',
+      async (value) => {
+        await request(app.getHttpServer())
+          .patch(`/menu/items/${limitedItemId}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ sauceGroupMaxSelectable: value })
+          .expect(400);
+      },
+    );
   });
 
   describe('POST /orders/estimate-delivery-fee', () => {

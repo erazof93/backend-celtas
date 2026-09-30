@@ -10,6 +10,7 @@ import {
   IsUUID,
   Min,
 } from 'class-validator';
+import { IsOptionalNonNullable } from '../../../common/decorators/is-optional-non-nullable.decorator';
 
 export class CreateBeverageDto {
   @ApiProperty({
@@ -36,7 +37,7 @@ export class CreateBeverageDto {
     description:
       'Si la bebida está disponible para asignarse a productos (default true)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'active debe ser true o false' })
   active?: boolean;
 
@@ -44,7 +45,7 @@ export class CreateBeverageDto {
     example: 1,
     description: 'Orden de aparición en el selector (menor = primero)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsInt({ message: 'sortOrder debe ser un número entero' })
   @Min(0, { message: 'sortOrder no puede ser negativo' })
   sortOrder?: number;

@@ -12,6 +12,7 @@ import {
   Max,
   Min,
 } from 'class-validator';
+import { IsOptionalNonNullable } from '../../../common/decorators/is-optional-non-nullable.decorator';
 import { BannerActionType } from '../entities/banner.entity';
 
 /**
@@ -22,7 +23,7 @@ import { BannerActionType } from '../entities/banner.entity';
  */
 export class UpdateBannerDto {
   @ApiPropertyOptional({ example: '2x1 en burgers', description: 'Título' })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsString({ message: 'El título debe ser texto' })
   @IsNotEmpty({ message: 'El título no puede estar vacío' })
   title?: string;
@@ -36,7 +37,7 @@ export class UpdateBannerDto {
     enum: BannerActionType,
     description: 'A dónde lleva el banner al tocarlo',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsEnum(BannerActionType, {
     message: 'actionType debe ser none, category, menuItem o external_url',
   })
@@ -63,7 +64,7 @@ export class UpdateBannerDto {
   endDate?: Date;
 
   @ApiPropertyOptional({ description: 'Si el banner está habilitado' })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'active debe ser true o false' })
   active?: boolean;
 
@@ -90,7 +91,7 @@ export class UpdateBannerDto {
   daysOfWeek?: number[];
 
   @ApiPropertyOptional({ description: 'Orden de visualización (ascendente)' })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @Type(() => Number)
   @IsInt({ message: 'order debe ser un número entero' })
   @Min(0, { message: 'order no puede ser negativo' })

@@ -7,6 +7,7 @@ import {
   IsString,
   Min,
 } from 'class-validator';
+import { IsOptionalNonNullable } from '../../../common/decorators/is-optional-non-nullable.decorator';
 
 export class CreateCategoryDto {
   @ApiProperty({
@@ -38,7 +39,7 @@ export class CreateCategoryDto {
     example: true,
     description: 'Si la categoría está visible en la app (default true)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'active debe ser true o false' })
   active?: boolean;
 
@@ -46,7 +47,7 @@ export class CreateCategoryDto {
     example: 1,
     description: 'Orden de aparición en la app (menor = primero)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsInt({ message: 'sortOrder debe ser un número entero' })
   @Min(0, { message: 'sortOrder no puede ser negativo' })
   sortOrder?: number;

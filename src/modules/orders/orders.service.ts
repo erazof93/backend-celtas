@@ -789,14 +789,15 @@ export class OrdersService {
    *
    * Sin efecto si el producto no ofrece nada de esta categoría (`offered` vacío
    * o ausente) — el `groupRequired`/`Max` configurado no importa si no hay nada
-   * para elegir.
+   * para elegir. `groupMaxSelectable === null` = sin tope máximo (el
+   * `groupRequired` se sigue aplicando).
    */
   private validateGroupSelection(
     menuItemName: string,
     offered: { id: string }[] | undefined,
     selected: { name: string }[] | null,
     groupRequired: boolean,
-    groupMaxSelectable: number,
+    groupMaxSelectable: number | null,
     itemLabel: string,
   ): void {
     if (!offered || offered.length === 0) {
@@ -807,7 +808,12 @@ export class OrdersService {
         `El producto "${menuItemName}" requiere elegir al menos una ${itemLabel}`,
       );
     }
-    if (selected !== null && selected.length > groupMaxSelectable) {
+    // `null` = sin límite (hoy solo `sauceGroupMaxSelectable` puede serlo).
+    if (
+      selected !== null &&
+      groupMaxSelectable !== null &&
+      selected.length > groupMaxSelectable
+    ) {
       throw new BadRequestException(
         `El producto "${menuItemName}" permite elegir como máximo ${groupMaxSelectable} ${itemLabel}(s)`,
       );

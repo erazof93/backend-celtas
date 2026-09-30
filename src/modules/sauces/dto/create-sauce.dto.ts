@@ -1,12 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsBoolean,
-  IsInt,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Min,
-} from 'class-validator';
+import { IsBoolean, IsInt, IsNotEmpty, IsString, Min } from 'class-validator';
+import { IsOptionalNonNullable } from '../../../common/decorators/is-optional-non-nullable.decorator';
 
 export class CreateSauceDto {
   @ApiProperty({
@@ -22,7 +16,7 @@ export class CreateSauceDto {
     description:
       'Si la salsa está disponible para asignarse a productos (default true)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'active debe ser true o false' })
   active?: boolean;
 
@@ -30,7 +24,7 @@ export class CreateSauceDto {
     example: 1,
     description: 'Orden de aparición en el selector (menor = primero)',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsInt({ message: 'sortOrder debe ser un número entero' })
   @Min(0, { message: 'sortOrder no puede ser negativo' })
   sortOrder?: number;

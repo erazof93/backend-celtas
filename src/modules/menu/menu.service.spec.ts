@@ -357,6 +357,19 @@ describe('MenuService', () => {
       expect(result[0].items[0].extraPortionsGroupMaxSelectable).toBe(3);
     });
 
+    it('expone sauceGroupMaxSelectable=null (sin límite) tal cual, sin convertirlo a número', async () => {
+      const item = seedItem({
+        sauceGroupMaxSelectable: null,
+        beverageGroupMaxSelectable: 1,
+      });
+      categoriesRepo.find.mockResolvedValue([seedCategory({ items: [item] })]);
+
+      const result = await service.findPublicMenu();
+
+      expect(result[0].items[0].sauceGroupMaxSelectable).toBeNull();
+      expect(result[0].items[0].beverageGroupMaxSelectable).toBe(1);
+    });
+
     it('expone sauceAllowWithout/beverageAllowWithout/extraPortionsAllowWithout tal como están en el producto', async () => {
       const item = seedItem({
         sauceAllowWithout: false,
@@ -670,6 +683,24 @@ describe('MenuService', () => {
       expect(result.beverageAllowWithout).toBeUndefined();
       expect(result.extraPortionsAllowWithout).toBeUndefined();
     });
+
+    it('crea el producto con sauceGroupMaxSelectable=null explícito (sin límite)', async () => {
+      categoriesRepo.findOne.mockResolvedValue(seedCategory());
+      itemsRepo.create.mockImplementation(passthrough);
+      itemsRepo.save.mockImplementation(passthrough);
+
+      const result = await service.createItem({
+        name: 'Celta',
+        price: 15,
+        categoryId: catId,
+        sauceGroupMaxSelectable: null,
+      });
+
+      expect(itemsRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ sauceGroupMaxSelectable: null }),
+      );
+      expect(result.sauceGroupMaxSelectable).toBeNull();
+    });
   });
 
   describe('findAllItems', () => {
@@ -817,6 +848,19 @@ describe('MenuService', () => {
       expect(result.sauceAllowWithout).toBe(false);
       expect(result.beverageAllowWithout).toBe(false);
       expect(result.extraPortionsAllowWithout).toBe(false);
+    });
+
+    it('PATCH con sauceGroupMaxSelectable=null quita el límite (merge copia null, solo ignora undefined)', async () => {
+      const existing = seedItem({ sauceGroupMaxSelectable: 2 });
+      itemsRepo.findOne.mockResolvedValue(existing);
+      itemsRepo.save.mockImplementation(passthrough);
+
+      const result = await service.updateItem('item-1', {
+        sauceGroupMaxSelectable: null,
+      });
+
+      expect(result.sauceGroupMaxSelectable).toBeNull();
+      expect(result.beverageGroupMaxSelectable).toBe(1);
     });
   });
 

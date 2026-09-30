@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsOptionalNonNullable } from '../../../common/decorators/is-optional-non-nullable.decorator';
 
 /**
  * Actualización del perfil propio (PATCH /users/me).
@@ -13,7 +14,7 @@ export class UpdateProfileDto {
     example: 'Juan Pérez',
     description: 'Nombre completo',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsString({ message: 'El nombre completo debe ser texto' })
   @IsNotEmpty({ message: 'El nombre completo no puede estar vacío' })
   fullName?: string;

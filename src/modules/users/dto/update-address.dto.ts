@@ -8,6 +8,7 @@ import {
   IsOptional,
   IsString,
 } from 'class-validator';
+import { IsOptionalNonNullable } from '../../../common/decorators/is-optional-non-nullable.decorator';
 
 /** Actualización parcial de una dirección (PATCH). Todos los campos son opcionales. */
 export class UpdateAddressDto {
@@ -15,7 +16,7 @@ export class UpdateAddressDto {
     example: 'Trabajo',
     description: 'Alias de la dirección',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsString({ message: 'El alias debe ser texto' })
   @IsNotEmpty({ message: 'El alias no puede estar vacío' })
   alias?: string;
@@ -24,7 +25,7 @@ export class UpdateAddressDto {
     example: 'Jr. Los Olivos 456',
     description: 'Dirección completa',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsString({ message: 'La dirección debe ser texto' })
   @IsNotEmpty({ message: 'La dirección completa no puede estar vacía' })
   fullAddress?: string;
@@ -39,7 +40,7 @@ export class UpdateAddressDto {
   reference?: string;
 
   @ApiPropertyOptional({ example: 'Surco', description: 'Distrito' })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsString({ message: 'El distrito debe ser texto' })
   @IsNotEmpty({ message: 'El distrito no puede estar vacío' })
   district?: string;
@@ -48,7 +49,7 @@ export class UpdateAddressDto {
     example: true,
     description: 'Si es la dirección principal del usuario',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'isDefault debe ser true o false' })
   isDefault?: boolean;
 

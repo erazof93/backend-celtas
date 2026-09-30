@@ -28,7 +28,7 @@ export interface PublicMenuCategory {
     image: string | null;
     sauces: { id: string; name: string }[];
     sauceGroupRequired: boolean;
-    sauceGroupMaxSelectable: number;
+    sauceGroupMaxSelectable: number | null;
     sauceAllowWithout: boolean;
     beverages: { id: string; name: string; price: number }[];
     beverageGroupRequired: boolean;

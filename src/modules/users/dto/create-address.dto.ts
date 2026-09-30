@@ -8,6 +8,7 @@ import {
   IsOptional,
   IsString,
 } from 'class-validator';
+import { IsOptionalNonNullable } from '../../../common/decorators/is-optional-non-nullable.decorator';
 
 export class CreateAddressDto {
   @ApiProperty({
@@ -47,7 +48,7 @@ export class CreateAddressDto {
     example: false,
     description: 'Si es la dirección principal del usuario',
   })
-  @IsOptional()
+  @IsOptionalNonNullable()
   @IsBoolean({ message: 'isDefault debe ser true o false' })
   isDefault?: boolean;
 
