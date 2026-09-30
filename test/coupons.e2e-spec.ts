@@ -10,7 +10,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { Repository } from 'typeorm';
+import { Like, Repository } from 'typeorm';
 import { AppModule } from './../src/app.module';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
 import { TransformInterceptor } from './../src/common/interceptors/transform.interceptor';
@@ -200,6 +200,10 @@ describe('Coupons (e2e)', () => {
   });
 
   afterAll(async () => {
+    // generate-bulk crea un cupón para CADA cliente de la BD, no solo los de esta
+    // suite: borrar por userId dejaba los de los demás clientes (804 acumulados de
+    // "padre-<n>"/"padre-<n>-fecha"). Se borran por las campañas de ESTA corrida.
+    await couponsRepo.delete({ campaignName: Like(`padre-${suffix}%`) });
     const users = await usersRepo.find({
       where: [
         { email: clientAEmail },

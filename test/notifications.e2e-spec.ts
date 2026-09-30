@@ -10,7 +10,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { AppModule } from './../src/app.module';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
 import { TransformInterceptor } from './../src/common/interceptors/transform.interceptor';
@@ -112,6 +112,14 @@ describe('Notifications (e2e)', () => {
   });
 
   afterAll(async () => {
+    // Antes solo cerraba la app: cada corrida dejaba sus 2 usuarios (había 270
+    // qa-notif-* acumulados). Se borran por email EXACTO de esta corrida, igual
+    // que el resto de las suites (no por patrón: no toca datos de otra corrida).
+    // Direcciones, cupones, pedidos y premios caen en cascada; los broadcasts
+    // quedan con adminId NULL (SET NULL), pero esta suite los mockea.
+    const emails = [clientEmail, adminEmail];
+    await usersRepo.delete({ email: In(emails) });
+    expect(await usersRepo.countBy({ email: In(emails) })).toBe(0);
     await app.close();
   });
 

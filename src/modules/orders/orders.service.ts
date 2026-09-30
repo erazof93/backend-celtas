@@ -612,6 +612,145 @@ export class OrdersService {
   }
 
   /**
+   * Pedidos manuales ANÓNIMOS (userId null) cuyo `customerPhone` coincide con el
+   * celular del cliente: el preview que el admin revisa antes de vincular. No
+   * vincula nada.
+   */
+  async findLinkableAnonymousOrders(
+    userId: string,
+  ): Promise<{ userId: string; phone: string; orders: Order[] }> {
+    const { user, phone } = await this.findCustomerForLinking(userId);
+    const orders = await this.ordersRepository.find({
+      where: { userId: IsNull(), customerPhone: phone },
+      relations: { items: true },
+      order: { createdAt: 'DESC' },
+    });
+    return { userId: user.id, phone, orders };
+  }
+
+  /**
+   * Vincula a un cliente registrado los pedidos anónimos que el ADMIN eligió
+   * (después de confirmar con el cliente que son suyos: el teléfono solo no
+   * prueba identidad, por eso esto no es automático al registrarse).
+   *
+   * Todo o nada, en una transacción con lock sobre los pedidos: si alguno no es
+   * anónimo, no existe o su customerPhone no es el del cliente → 409 y no se
+   * vincula ninguno (dos clicks simultáneos no pueden sumar dos veces). Los
+   * entregados suman su total a `totalSpent` como si se hubieran entregado a este
+   * cliente; tras el commit se recalculan estrellas y cupón automático (mismo
+   * disparo que `updateStatus`). customerName/customerPhone se conservan como
+   * registro de cómo se tomó el pedido.
+   */
+  async linkAnonymousOrders(
+    userId: string,
+    orderIds: string[],
+  ): Promise<{
+    userId: string;
+    linkedOrderIds: string[];
+    deliveredTotalAdded: number;
+    totalSpent: number;
+  }> {
+    const { user, phone } = await this.findCustomerForLinking(userId);
+
+    const { deliveredTotalAdded, totalSpent } =
+      await this.dataSource.transaction(async (manager) => {
+        const orders = await manager.find(Order, {
+          where: { id: In(orderIds) },
+          lock: { mode: 'pessimistic_write' },
+        });
+        const byId = new Map(orders.map((order) => [order.id, order]));
+        const notLinkable = orderIds.filter((id) => {
+          const order = byId.get(id);
+          return (
+            !order || order.userId !== null || order.customerPhone !== phone
+          );
+        });
+        if (notLinkable.length > 0) {
+          throw new ConflictException(
+            `Estos pedidos no existen, ya tienen cliente o su celular no es ${phone}: ${notLinkable.join(', ')}. No se vinculó ninguno.`,
+          );
+        }
+
+        await manager.update(Order, { id: In(orderIds) }, { userId: user.id });
+
+        const delivered = this.round2(
+          orders
+            .filter((order) => order.status === OrderStatus.ENTREGADO)
+            .reduce((sum, order) => sum + order.total, 0),
+        );
+        const lockedUser = await manager.findOne(User, {
+          where: { id: user.id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!lockedUser) {
+          throw new NotFoundException('Usuario no encontrado');
+        }
+        if (delivered > 0) {
+          lockedUser.totalSpent = this.round2(
+            lockedUser.totalSpent + delivered,
+          );
+          await manager.save(User, lockedUser);
+        }
+        return {
+          deliveredTotalAdded: delivered,
+          totalSpent: lockedUser.totalSpent,
+        };
+      });
+
+    // Mismo disparo post-commit que al entregar (best-effort): la vinculación ya
+    // quedó registrada aunque esto falle. Las estrellas son mensuales: solo
+    // cuentan los entregados del mes en curso (ver RewardsService.monthlyStats).
+    if (deliveredTotalAdded > 0) {
+      try {
+        await this.couponsService.checkAndGenerateForUser(user.id);
+      } catch (err) {
+        this.logger.error(
+          `No se pudo generar el cupón automático para el usuario ${user.id}`,
+          err as Error,
+        );
+      }
+      try {
+        await this.rewardsService.recalculateForUser(user.id);
+      } catch (err) {
+        this.logger.error(
+          `No se pudo recalcular las estrellas del usuario ${user.id}`,
+          err as Error,
+        );
+      }
+    }
+
+    return {
+      userId: user.id,
+      linkedOrderIds: orderIds,
+      deliveredTotalAdded,
+      totalSpent,
+    };
+  }
+
+  /** Cliente (rol cliente) con celular normalizable: base de la vinculación. */
+  private async findCustomerForLinking(
+    userId: string,
+  ): Promise<{ user: User; phone: string }> {
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+    if (user.role !== UserRole.CLIENTE) {
+      throw new BadRequestException(
+        'Solo se pueden vincular pedidos a una cuenta de cliente',
+      );
+    }
+    // normalizePhone también normaliza los teléfonos viejos con formato libre.
+    const phone = normalizePhone(user.phone);
+    if (!phone) {
+      throw new BadRequestException(
+        'El cliente no tiene un celular válido: no hay con qué buscar sus pedidos anónimos',
+      );
+    }
+    return { user, phone };
+  }
+
+  /**
    * Estima el costo de delivery de una dirección ya guardada del usuario, sin crear
    * un pedido. Mismo cálculo que `create()` (Haversine + tramo + radio de aviso),
    * reutilizado vía `computeDelivery` — no lo duplica. Misma dirección ajena → 404

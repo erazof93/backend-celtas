@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { DataSource, EntityTarget, ObjectLiteral } from 'typeorm';
+import { DataSource, EntityTarget, In, IsNull, ObjectLiteral } from 'typeorm';
 import { CouponsService } from '../coupons/coupons.service';
 import { MenuItem } from '../menu/entities/menu-item.entity';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -2265,6 +2265,179 @@ describe('OrdersService', () => {
 
       expect(result.whatsappSentAt).toBe(first);
       expect(ordersRepo.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('vincular pedidos anónimos a un cliente (findLinkableAnonymousOrders / linkAnonymousOrders)', () => {
+    const customerId = '55555555-5555-4555-8555-555555555555';
+    const orderA = '66666666-6666-4666-8666-666666666666';
+    const orderB = '77777777-7777-4777-8777-777777777777';
+    const customer = (overrides: Partial<User> = {}) =>
+      ({
+        id: customerId,
+        role: UserRole.CLIENTE,
+        // Formato libre viejo: normalizePhone lo lleva a 51987654321.
+        phone: '+51 987-654-321',
+        totalSpent: 100,
+        ...overrides,
+      }) as User;
+    const anon = (id: string, overrides: Partial<Order> = {}) =>
+      seedOrder({
+        id,
+        userId: null,
+        customerName: 'Pedro',
+        customerPhone: '51987654321',
+        status: OrderStatus.ENTREGADO,
+        total: 49.8,
+        ...overrides,
+      });
+    let manager: {
+      find: jest.Mock;
+      update: jest.Mock;
+      findOne: jest.Mock;
+      save: jest.Mock;
+    };
+    const setupTx = (orders: Order[], lockedUser: User | null = customer()) => {
+      manager = {
+        find: jest.fn().mockResolvedValue(orders),
+        update: jest.fn().mockResolvedValue({ affected: orders.length }),
+        findOne: jest.fn().mockResolvedValue(lockedUser),
+        save: jest.fn((_entity: unknown, value: unknown) =>
+          Promise.resolve(value),
+        ),
+      };
+      dataSource.transaction.mockImplementation(
+        (cb: (m: typeof manager) => Promise<unknown>) => cb(manager),
+      );
+    };
+
+    it('preview: busca anónimos por el celular NORMALIZADO del cliente, sin vincular', async () => {
+      usersRepo.findOne.mockResolvedValue(customer());
+      ordersRepo.find.mockResolvedValue([anon(orderA)]);
+
+      const result = await service.findLinkableAnonymousOrders(customerId);
+
+      expect(result).toEqual({
+        userId: customerId,
+        phone: '51987654321',
+        orders: [anon(orderA)],
+      });
+      expect(ordersRepo.find).toHaveBeenCalledWith({
+        where: { userId: IsNull(), customerPhone: '51987654321' },
+        relations: { items: true },
+        order: { createdAt: 'DESC' },
+      });
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('vincula: setea userId, suma SOLO los entregados a totalSpent y recalcula estrellas/cupón', async () => {
+      usersRepo.findOne.mockResolvedValue(customer());
+      setupTx([
+        anon(orderA),
+        anon(orderB, { status: OrderStatus.PENDIENTE, total: 30 }),
+      ]);
+
+      const result = await service.linkAnonymousOrders(customerId, [
+        orderA,
+        orderB,
+      ]);
+
+      expect(manager.find).toHaveBeenCalledWith(Order, {
+        where: { id: In([orderA, orderB]) },
+        lock: { mode: 'pessimistic_write' },
+      });
+      expect(manager.update).toHaveBeenCalledWith(
+        Order,
+        { id: In([orderA, orderB]) },
+        { userId: customerId },
+      );
+      expect(manager.save).toHaveBeenCalledWith(
+        User,
+        expect.objectContaining({ totalSpent: 149.8 }),
+      );
+      expect(result).toEqual({
+        userId: customerId,
+        linkedOrderIds: [orderA, orderB],
+        deliveredTotalAdded: 49.8,
+        totalSpent: 149.8,
+      });
+      expect(couponsService.checkAndGenerateForUser).toHaveBeenCalledWith(
+        customerId,
+      );
+      expect(rewardsService.recalculateForUser).toHaveBeenCalledWith(
+        customerId,
+      );
+    });
+
+    it('sin entregados: vincula pero no toca totalSpent ni recalcula', async () => {
+      usersRepo.findOne.mockResolvedValue(customer());
+      setupTx([anon(orderA, { status: OrderStatus.PENDIENTE })]);
+
+      const result = await service.linkAnonymousOrders(customerId, [orderA]);
+
+      expect(result.deliveredTotalAdded).toBe(0);
+      expect(result.totalSpent).toBe(100);
+      expect(manager.save).not.toHaveBeenCalled();
+      expect(rewardsService.recalculateForUser).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['ya tiene cliente', { userId: 'otro-usuario' }],
+      ['celular distinto', { customerPhone: '51911111111' }],
+    ])(
+      'todo o nada: si un pedido %s → 409 y NO se vincula ninguno',
+      async (_label, override) => {
+        usersRepo.findOne.mockResolvedValue(customer());
+        setupTx([anon(orderA), anon(orderB, override)]);
+
+        await expect(
+          service.linkAnonymousOrders(customerId, [orderA, orderB]),
+        ).rejects.toThrow(ConflictException);
+        expect(manager.update).not.toHaveBeenCalled();
+        expect(manager.save).not.toHaveBeenCalled();
+      },
+    );
+
+    it('un orderId que no existe → 409 que lo nombra, sin vincular', async () => {
+      usersRepo.findOne.mockResolvedValue(customer());
+      setupTx([anon(orderA)]);
+
+      await expect(
+        service.linkAnonymousOrders(customerId, [orderA, orderB]),
+      ).rejects.toThrow(orderB);
+      expect(manager.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'usuario inexistente → 404',
+        null,
+        new NotFoundException('Usuario no encontrado'),
+      ],
+      [
+        'cuenta admin → 400',
+        customer({ role: UserRole.ADMIN }),
+        new BadRequestException(
+          'Solo se pueden vincular pedidos a una cuenta de cliente',
+        ),
+      ],
+      [
+        'cliente sin celular válido → 400',
+        customer({ phone: null }),
+        new BadRequestException(
+          'El cliente no tiene un celular válido: no hay con qué buscar sus pedidos anónimos',
+        ),
+      ],
+    ])('%s (preview y vinculación)', async (_label, user, error) => {
+      usersRepo.findOne.mockResolvedValue(user);
+
+      await expect(
+        service.findLinkableAnonymousOrders(customerId),
+      ).rejects.toThrow(error);
+      await expect(
+        service.linkAnonymousOrders(customerId, [orderA]),
+      ).rejects.toThrow(error);
+      expect(dataSource.transaction).not.toHaveBeenCalled();
     });
   });
 

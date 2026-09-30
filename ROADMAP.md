@@ -665,6 +665,29 @@ celtas-backend/
   (`ana123`) también trae teléfonos con `123` (OR por diseño); teléfono no único entre usuarios;
   `celtas-admin` (`CustomerPicker.tsx`) todavía filtra clientes en el navegador en vez de usar
   `?search=`.
+- [x] **Vincular pedidos anónimos a un cliente registrado (desde el panel, solo admin).** El spec
+  pedía "deduplicación en `POST /auth/register`": fusionar por teléfono un usuario `admin_phone`
+  con el que se registra (pisándole email/password) + campo `registrationChannel`. **Rechazado**:
+  (1) cualquiera que conozca un teléfono se apropiaría de esa cuenta (pedidos, direcciones,
+  estrellas) — el teléfono no prueba identidad y un OTP por SMS/WhatsApp es de pago; (2) con
+  `phone` vacío, `findOne({ where: { phone: undefined } })` no filtra y agarraría a cualquier
+  usuario; (3) no existen usuarios `admin_phone` (el anónimo vive en el pedido). Decisión del
+  usuario: el ADMIN vincula tras confirmar con el cliente; **el registro no cambia**, sin
+  migración. `GET /users/:id/anonymous-orders` (preview por `normalizePhone(user.phone)`) y `POST
+  /users/:id/link-anonymous-orders` `{ orderIds }` (200) en `AnonymousOrdersLinkController`
+  (módulo orders, ruta bajo `/users`, admin a nivel de clase). Todo o nada con lock pesimista
+  sobre los pedidos: si alguno no existe, ya tiene cliente o su `customerPhone` no coincide → 409
+  y no se vincula ninguno. Los ENTREGADOS suman a `totalSpent`; post-commit se recalculan cupón
+  automático y estrellas (mensuales: solo cuenta el mes en curso). `customerName`/`customerPhone`
+  se conservan como registro. `@tester`: **LISTO** — 675 unit + 580 e2e; concurrencia real (3 POST
+  simultáneos → `[200, 409, 409]`, `totalSpent` sube una vez; sin el lock falla con `[200, 200,
+  409]`); estrellas reflejadas en `GET /rewards/progress`; mutaciones (sin chequeo de celular, sin
+  chequeo de `userId`) rompen tests. Riesgos no bloqueantes: `users.phone` NO es único → dos
+  clientes con el mismo celular ven los mismos anónimos en el preview (el primero en vincular
+  gana, el otro recibe 409); un entregado de un mes anterior suma a `totalSpent` pero no da
+  estrellas (por diseño, sin test e2e); Swagger no muestra max/unique/uuid de `orderIds`.
+  **Pendiente en `celtas-admin`**: sección "Pedidos sin cuenta con este celular" en la vista del
+  cliente (preview con checkboxes + botón Vincular).
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)

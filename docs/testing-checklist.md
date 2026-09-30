@@ -2941,3 +2941,75 @@ registra la confirmación del admin.
       al leerlos, pero `GET /users` y `/users/me` los siguen mostrando sin normalizar.
 - [ ] celtas-admin (`CustomerPicker.tsx`) todavía filtra los clientes en el navegador y no usa
       `?search=`.
+
+## Vincular pedidos anónimos a un cliente (`GET /users/:id/anonymous-orders`, `POST /users/:id/link-anonymous-orders`)
+
+- [x] **Compilación**: `pnpm run build` sin errores.
+- [x] **Unit**: 675/675 (9 del describe "vincular pedidos anónimos a un cliente").
+- [x] **E2E**: 580/580 (7 del implementador + 4 de QA en `test/orders.e2e-spec.ts`).
+- [x] **Validación de contrato** (e2e QA): sin `orderIds`, no array, `[123]`, ids repetidos, 101 ids,
+      `[]`, `['no-es-uuid']` → 400; `:id` no UUID → 400 en GET y POST.
+- [x] **Seguridad**: cliente → 403 y sin token → 401 en ambos; pedido de OTRO celular → 409 sin
+      vincular ninguno; pedido ya vinculado a OTRO cliente con el mismo `customerPhone` → 409 y sigue
+      siendo del otro (e2e QA); ya vinculado al mismo → 409; cuenta admin → 400; sin celular → 400;
+      usuario inexistente → 404. `users.phone` es `unique`, así que dos clientes no pueden compartir
+      el celular de un anónimo.
+- [x] **`POST /auth/register` sin cambios**: `git diff` no toca `src/modules/auth` ni `src/modules/users`.
+      E2E QA: registrarse con el celular de un anónimo lo deja con `userId` null (solo aparece en el
+      preview); la respuesta del registro y la del preview no contienen `password`.
+- [x] **Concurrencia real** (e2e QA): 3 POST simultáneos (`Promise.all`) con el mismo entregado →
+      `[200, 409, 409]` y `totalSpent` sube una sola vez. Mutación: quitar el
+      `lock: pessimistic_write` del `find` de pedidos → falla el test (`[200, 200, 409]`); se
+      restauró el original (md5 `09d5611686e4fb07a665f6374c55f1f6`).
+- [x] **Carrera con `updateStatus`**: ambos toman `FOR UPDATE` sobre la fila del pedido y leen
+      `userId`/`status` después del lock, así que `totalSpent` se suma una sola vez sin importar el
+      orden (revisión de código, sin test).
+- [x] **Estrellas** (e2e QA): después de vincular un entregado del mes en curso,
+      `GET /rewards/progress` del cliente muestra más `estrellasDelMes` que antes.
+- [x] **Rutas**: `/users/:id/anonymous-orders` y `/users/:id/link-anonymous-orders` no chocan con
+      `/users/me*`, `/users/:id/addresses`, `/users/:id/role` ni `GET /users` (Swagger real: 13 rutas
+      distintas; la suite de users e2e pasa).
+- [x] **Swagger** (`/docs-json` de la app levantada): las dos rutas con tag `users` y bearer; respuestas
+      200/400/401/403/404 (+409 en POST); body `LinkAnonymousOrdersDto` con `orderIds` requerido.
+- [ ] Los `customerPhone` de pedidos anónimos creados ANTES de `normalizePhone` (entre `dc35681` y
+      `a52eaf8`) no se migraron: el preview compara por igualdad exacta y no los encontraría.
+- [ ] Los disparos después del commit (cupón automático y `recalculateForUser`) solo están probados en
+      unit; en e2e las estrellas se ven porque `getProgress` recalcula al leer.
+- [ ] Vincular un entregado de un mes anterior suma a `totalSpent` (puede generar el cupón automático)
+      pero no da estrellas. Es por diseño, pero no tiene test e2e.
+- [ ] Swagger no documenta `ArrayMaxSize`/`uniqueItems`/`format: uuid` en `orderIds`, ni el schema
+      de la respuesta 200 del preview.
+
+### Test Cleanup (datos huérfanos de las suites e2e)
+
+**Causa**: `notifications.e2e-spec.ts` y `banners.e2e-spec.ts` tenían un `afterAll` que solo hacía
+`app.close()`; `coupons.e2e-spec.ts` borraba cupones por `userId`, pero `generate-bulk` crea uno
+para CADA cliente de la BD. Medido con un conteo de filas por tabla antes/después de cada suite.
+
+- [x] `notifications.e2e-spec.ts`: `afterAll` borra sus 2 usuarios por email EXACTO de la corrida
+      (`qa-notif-client-<suffix>`, `qa-notif-admin-<suffix>`) y verifica `countBy === 0`.
+- [x] `banners.e2e-spec.ts`: foto de ids de banners en `beforeAll`; el `afterAll` borra solo los
+      creados por la corrida (por repo y por `POST /banners`) + sus 2 usuarios por email exacto, y
+      verifica que `banners.count()` vuelve al valor inicial.
+- [x] `coupons.e2e-spec.ts`: el `afterAll` borra también los cupones de las campañas de la corrida
+      (`campaignName LIKE 'padre-<suffix>%'`).
+- [x] Por email/campaña EXACTOS de la corrida, no por patrón genérico (`ILIKE '%qa-notif%'`): no
+      borra datos de otra corrida en curso ni de otras suites.
+- [x] Limpieza única de lo acumulado en la BD local (solo filas que coinciden exacto con lo que
+      crean esas suites): 536 usuarios `qa-(notif|banners)-(client|admin)-<n>@test.com`, 3350
+      banners (los 25 títulos de la suite × 134 corridas) y 804 cupones `padre-<n>[-fecha]`. Se
+      dejaron `qa-admin` y `qa-delivery` (origen desconocido, no los crea ninguna suite actual).
+- [x] Full `pnpm run test:e2e` (18 suites, 580 tests): **0 de 21 tablas cambian** de cantidad de
+      filas entre antes y después de la corrida.
+- [x] **Guard automático** (`test/jest-e2e.json` → `globalSetup`/`globalTeardown`): foto de filas
+      por tabla (`test/helpers/table-counts.ts`, `COUNT(*)::int`, sin `migrations`) antes de la
+      corrida, pasada al teardown vía `globalThis` (mismo proceso); si alguna tabla cambió, la
+      corrida FALLA (exit 1) listando `tabla: antes → después (±n)`. Solo en e2e: `pnpm run test`
+      (unit) no toca la BD. Verificado: corrida limpia → exit 0 y "✅ E2E cleanup verified: 21
+      tablas sin cambios"; quitando el borrado de usuarios del afterAll de notifications → 19/19
+      tests verdes pero exit 1 con `users: 8 → 10 (+2)` y `coupons: 1 → 2 (+1)` (el cupón
+      automático del usuario filtrado: el guard también ve efectos colaterales).
+- [ ] El guard asume que nada más escribe en la BD local durante la corrida (backend levantado,
+      app apuntándole, seed manual): eso da un falso positivo. No hay opción para saltearlo.
+- [ ] `qa-admin@local.test` y `qa-delivery@local.test` (admins creados a mano, no por una suite;
+      qa-delivery tiene 1 pedido) siguen en la BD local: pendientes de confirmación del usuario.

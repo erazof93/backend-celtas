@@ -2417,6 +2417,305 @@ describe('Orders (e2e)', () => {
         ).toBeNull();
       });
     });
+
+    describe('Vincular anónimos a un cliente: GET /users/:id/anonymous-orders + POST /users/:id/link-anonymous-orders', () => {
+      // Celular único por corrida: no se mezcla con los anónimos de otros tests.
+      const s8 = String(suffix).slice(-8);
+      const linkPhoneInput = `+51 9${s8.slice(0, 2)} ${s8.slice(2, 5)} ${s8.slice(5)}`;
+      const linkPhone = `519${s8}`;
+      const linkEmail = `qa-orders-link-${suffix}@test.com`;
+      const noPhoneEmail = `qa-orders-link-nophone-${suffix}@test.com`;
+      let linkUserId: string;
+      let linkUserToken: string;
+      let noPhoneUserId: string;
+      let deliveredId: string;
+      let pendingId: string;
+      let deliveredTotal: number;
+
+      interface PreviewData {
+        userId: string;
+        phone: string;
+        orders: { id: string }[];
+      }
+      interface LinkData {
+        userId: string;
+        linkedOrderIds: string[];
+        deliveredTotalAdded: number;
+        totalSpent: number;
+      }
+      const preview = (userId: string, token: string | null = adminToken) => {
+        const req = request(app.getHttpServer()).get(
+          `/users/${userId}/anonymous-orders`,
+        );
+        if (token) req.set('Authorization', `Bearer ${token}`);
+        return req;
+      };
+      const link = (
+        userId: string,
+        orderIds: string[],
+        token: string | null = adminToken,
+      ) => {
+        const req = request(app.getHttpServer()).post(
+          `/users/${userId}/link-anonymous-orders`,
+        );
+        if (token) req.set('Authorization', `Bearer ${token}`);
+        return req.send({ orderIds });
+      };
+      const advanceTo = async (orderId: string, statuses: string[]) => {
+        for (const status of statuses) {
+          await request(app.getHttpServer())
+            .patch(`/orders/${orderId}/status`)
+            .set('Authorization', `Bearer ${adminToken}`)
+            .send({ status })
+            .expect(200);
+        }
+      };
+
+      beforeAll(async () => {
+        const reg = await request(app.getHttpServer())
+          .post('/auth/register')
+          .send({
+            email: linkEmail,
+            password,
+            fullName: 'Pedro Vinculado',
+            phone: linkPhoneInput,
+          })
+          .expect(201);
+        linkUserToken = (reg.body as AuthTokensResponse).data.accessToken;
+        linkUserId = (await usersRepo.findOneByOrFail({ email: linkEmail })).id;
+        noPhoneUserId = (
+          await usersRepo.save(
+            usersRepo.create({
+              email: noPhoneEmail,
+              fullName: 'Sin Telefono',
+              provider: UserProvider.LOCAL,
+            } as Partial<User>),
+          )
+        ).id;
+
+        // Dos pedidos anónimos tomados por teléfono ANTES de que se registrara.
+        const delivered = data(
+          await createManual(
+            adminToken,
+            withItemA({ ...anonBody, customerPhone: linkPhoneInput }),
+          ),
+        );
+        await advanceTo(delivered.id, ['confirmado', 'en_camino', 'entregado']);
+        const pending = data(
+          await createManual(adminToken, {
+            ...anonBody,
+            customerPhone: linkPhone,
+            items: [{ menuItemId: itemBId, quantity: 1 }],
+          }),
+        );
+        deliveredId = delivered.id;
+        pendingId = pending.id;
+        deliveredTotal = delivered.total;
+      });
+
+      afterAll(async () => {
+        // Los pedidos vinculados caen en cascada al borrar el usuario.
+        await usersRepo.delete({ email: linkEmail });
+        await usersRepo.delete({ email: noPhoneEmail });
+      });
+
+      it('preview → 200 con los anónimos de su celular normalizado, sin vincular nada', async () => {
+        const res = await preview(linkUserId).expect(200);
+        const body = (res.body as Envelope).data as PreviewData;
+
+        expect(body.phone).toBe(linkPhone);
+        expect(body.orders.map((o) => o.id).sort()).toEqual(
+          [deliveredId, pendingId].sort(),
+        );
+        const saved = await ordersRepo.findOneByOrFail({ id: deliveredId });
+        expect(saved.userId).toBeNull();
+      });
+
+      it('token de cliente → 403 en ambos; sin token → 401', async () => {
+        await preview(linkUserId, linkUserToken).expect(403);
+        await link(linkUserId, [deliveredId], linkUserToken).expect(403);
+        await preview(linkUserId, null).expect(401);
+        await link(linkUserId, [deliveredId], null).expect(401);
+        const saved = await ordersRepo.findOneByOrFail({ id: deliveredId });
+        expect(saved.userId).toBeNull();
+      });
+
+      it('pedido anónimo de OTRO celular en la lista → 409 y no vincula ninguno', async () => {
+        const foreign = data(
+          await createManual(adminToken, withItemA(anonBody)),
+        );
+
+        await link(linkUserId, [deliveredId, foreign.id]).expect(409);
+
+        for (const id of [deliveredId, foreign.id]) {
+          const saved = await ordersRepo.findOneByOrFail({ id });
+          expect(saved.userId).toBeNull();
+        }
+      });
+
+      it('cliente sin celular → 400; cuenta admin → 400; usuario inexistente → 404', async () => {
+        await preview(noPhoneUserId).expect(400);
+        const admin = await usersRepo.findOneByOrFail({ email: adminEmail });
+        await link(admin.id, [deliveredId]).expect(400);
+        await preview('99999999-9999-4999-8999-999999999999').expect(404);
+      });
+
+      it('orderIds vacío o no UUID → 400', async () => {
+        await link(linkUserId, []).expect(400);
+        await link(linkUserId, ['no-es-uuid']).expect(400);
+      });
+
+      it('vincula → 200: suma SOLO el entregado a totalSpent y los pedidos pasan a ser del cliente', async () => {
+        const before = await usersRepo.findOneByOrFail({ id: linkUserId });
+
+        const res = await link(linkUserId, [deliveredId, pendingId]).expect(
+          200,
+        );
+        const body = (res.body as Envelope).data as LinkData;
+
+        expect(body.linkedOrderIds).toEqual([deliveredId, pendingId]);
+        expect(body.deliveredTotalAdded).toBe(deliveredTotal);
+        const after = await usersRepo.findOneByOrFail({ id: linkUserId });
+        expect(after.totalSpent).toBeCloseTo(
+          before.totalSpent + deliveredTotal,
+          2,
+        );
+        expect(body.totalSpent).toBeCloseTo(after.totalSpent, 2);
+
+        const mine = await request(app.getHttpServer())
+          .get('/orders/me')
+          .set('Authorization', `Bearer ${linkUserToken}`)
+          .expect(200);
+        expect(
+          ((mine.body as Envelope).data as { id: string }[]).map((o) => o.id),
+        ).toEqual(expect.arrayContaining([deliveredId, pendingId]));
+      });
+
+      it('repetir la vinculación → 409 y totalSpent NO se suma dos veces', async () => {
+        const before = await usersRepo.findOneByOrFail({ id: linkUserId });
+
+        await link(linkUserId, [deliveredId]).expect(409);
+
+        const after = await usersRepo.findOneByOrFail({ id: linkUserId });
+        expect(after.totalSpent).toBe(before.totalSpent);
+        const res = await preview(linkUserId).expect(200);
+        expect(((res.body as Envelope).data as PreviewData).orders).toEqual([]);
+      });
+
+      // --- QA: casos adicionales (tester) ---
+
+      it('QA: pedido ya vinculado a OTRO cliente (mismo customerPhone) → 409, sigue siendo del otro', async () => {
+        const other = data(
+          await createManual(
+            adminToken,
+            withItemA({ ...anonBody, customerPhone: linkPhone }),
+          ),
+        );
+        await ordersRepo.update({ id: other.id }, { userId: clientAId });
+
+        await link(linkUserId, [other.id]).expect(409);
+
+        const saved = await ordersRepo.findOneByOrFail({ id: other.id });
+        expect(saved.userId).toBe(clientAId);
+      });
+
+      it('QA: payloads inválidos → 400 (sin orderIds, no array, repetidos, >100, UUID de id inválido en la ruta)', async () => {
+        const post = (userId: string, body: object) =>
+          request(app.getHttpServer())
+            .post(`/users/${userId}/link-anonymous-orders`)
+            .set('Authorization', `Bearer ${adminToken}`)
+            .send(body);
+        const u = '3fa85f64-5717-4562-b3fc-2c963f66afa6';
+        await post(linkUserId, {}).expect(400);
+        await post(linkUserId, { orderIds: u }).expect(400);
+        await post(linkUserId, { orderIds: [u, u] }).expect(400);
+        await post(linkUserId, { orderIds: [123] }).expect(400);
+        await post(linkUserId, {
+          orderIds: Array.from(
+            { length: 101 },
+            (_, i) => `3fa85f64-5717-4562-b3fc-${String(i).padStart(12, '0')}`,
+          ),
+        }).expect(400);
+        await post('no-es-uuid', { orderIds: [u] }).expect(400);
+        await preview('no-es-uuid').expect(400);
+      });
+
+      it('QA: POST /auth/register con el celular de un anónimo NO lo vincula (sin fusión automática)', async () => {
+        const s8b = String(suffix + 1).slice(-8);
+        const regPhone = `519${s8b}`;
+        const regEmail = `qa-orders-link-reg-${suffix}@test.com`;
+        const anon = data(
+          await createManual(
+            adminToken,
+            withItemA({ ...anonBody, customerPhone: regPhone }),
+          ),
+        );
+        try {
+          const reg = await request(app.getHttpServer())
+            .post('/auth/register')
+            .send({
+              email: regEmail,
+              password,
+              fullName: 'Registro Sin Fusion',
+              phone: regPhone,
+            })
+            .expect(201);
+          expect(JSON.stringify(reg.body)).not.toContain('password');
+
+          const saved = await ordersRepo.findOneByOrFail({ id: anon.id });
+          expect(saved.userId).toBeNull();
+          const newUser = await usersRepo.findOneByOrFail({ email: regEmail });
+          const res = await preview(newUser.id).expect(200);
+          const body = (res.body as Envelope).data as PreviewData;
+          expect(body.orders.map((o) => o.id)).toEqual([anon.id]);
+          expect(JSON.stringify(res.body)).not.toContain('password');
+        } finally {
+          await usersRepo.delete({ email: regEmail });
+        }
+      });
+
+      it('QA: dos POST simultáneos con el mismo entregado → uno 200 y otro 409; totalSpent suma UNA vez; estrellas reflejan el pedido', async () => {
+        const order = data(
+          await createManual(
+            adminToken,
+            withItemA({ ...anonBody, customerPhone: linkPhone }),
+          ),
+        );
+        await advanceTo(order.id, ['confirmado', 'en_camino', 'entregado']);
+
+        const progress = async () =>
+          (
+            (
+              await request(app.getHttpServer())
+                .get('/rewards/progress')
+                .set('Authorization', `Bearer ${linkUserToken}`)
+                .expect(200)
+            ).body as Envelope
+          ).data as { estrellasDelMes: number };
+        const starsBefore = (await progress()).estrellasDelMes;
+        const before = await usersRepo.findOneByOrFail({ id: linkUserId });
+
+        const results = await Promise.all([
+          link(linkUserId, [order.id]),
+          link(linkUserId, [order.id]),
+          link(linkUserId, [order.id]),
+        ]);
+        expect(results.map((r) => r.status).sort()).toEqual([200, 409, 409]);
+
+        const after = await usersRepo.findOneByOrFail({ id: linkUserId });
+        expect(after.totalSpent).toBeCloseTo(
+          before.totalSpent + order.total,
+          2,
+        );
+        const saved = await ordersRepo.findOneByOrFail({ id: order.id });
+        expect(saved.userId).toBe(linkUserId);
+
+        // 2 x 24.90 = 49.80 de subtotal: con cualquier soles/estrella <= 49.80
+        // (default 10) suma al menos una estrella en el mes en curso.
+        const starsAfter = (await progress()).estrellasDelMes;
+        expect(starsAfter).toBeGreaterThan(starsBefore);
+      });
+    });
   });
 
   describe('GET /orders/geocode', () => {

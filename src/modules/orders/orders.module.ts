@@ -9,6 +9,7 @@ import { Address } from '../users/entities/address.entity';
 import { User } from '../users/entities/user.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { Order } from './entities/order.entity';
+import { AnonymousOrdersLinkController } from './anonymous-orders-link.controller';
 import { DeliveryController } from './delivery.controller';
 import { GeoapifyService } from './geoapify.service';
 import { OrdersController } from './orders.controller';
@@ -22,7 +23,11 @@ import { OrdersService } from './orders.service';
     NotificationsModule,
     SettingsModule,
   ],
-  controllers: [OrdersController, DeliveryController],
+  controllers: [
+    OrdersController,
+    DeliveryController,
+    AnonymousOrdersLinkController,
+  ],
   providers: [OrdersService, GeoapifyService],
   exports: [OrdersService],
 })

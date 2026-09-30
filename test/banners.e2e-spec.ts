@@ -10,7 +10,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { AppModule } from './../src/app.module';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
 import { TransformInterceptor } from './../src/common/interceptors/transform.interceptor';
@@ -43,6 +43,7 @@ interface Envelope {
 describe('Banners (e2e)', () => {
   let app: INestApplication<App>;
   let bannersRepo: Repository<Banner>;
+  let preexistingBannerIds: Set<string>;
   let usersRepo: Repository<User>;
   let clientToken: string;
   let adminToken: string;
@@ -110,6 +111,11 @@ describe('Banners (e2e)', () => {
 
     usersRepo = app.get<Repository<User>>(getRepositoryToken(User));
     bannersRepo = app.get<Repository<Banner>>(getRepositoryToken(Banner));
+    // Foto de los banners que YA existían: en el afterAll se borran solo los que
+    // creó esta corrida (por repo y por POST /banners, en ~20 lugares distintos).
+    preexistingBannerIds = new Set(
+      (await bannersRepo.find({ select: { id: true } })).map((b) => b.id),
+    );
 
     const adminHash = await bcrypt.hash(password, 10);
     await usersRepo.save(
@@ -131,6 +137,21 @@ describe('Banners (e2e)', () => {
   });
 
   afterAll(async () => {
+    // Antes solo cerraba la app: cada corrida dejaba sus 2 usuarios y sus 25
+    // banners (había 262 qa-banners-* y 3325 banners acumulados en la BD local,
+    // que además ensuciaban GET /banners/active). Usuarios por email EXACTO de
+    // esta corrida, igual que el resto de las suites.
+    const createdBannerIds = (await bannersRepo.find({ select: { id: true } }))
+      .map((b) => b.id)
+      .filter((id) => !preexistingBannerIds.has(id));
+    if (createdBannerIds.length > 0) {
+      await bannersRepo.delete({ id: In(createdBannerIds) });
+    }
+    const emails = [clientEmail, adminEmail];
+    await usersRepo.delete({ email: In(emails) });
+
+    expect(await usersRepo.countBy({ email: In(emails) })).toBe(0);
+    expect(await bannersRepo.count()).toBe(preexistingBannerIds.size);
     await app.close();
   });
 
