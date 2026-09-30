@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -99,6 +101,77 @@ export class OrdersController {
   @ApiResponse({ status: 409, description: 'El cupón ya fue usado' })
   createOrderByAdmin(@Body() dto: CreateOrderAdminDto) {
     return this.ordersService.createOrderByAdmin(dto);
+  }
+
+  @Get('admin/:orderId/whatsapp-links')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Links de WhatsApp de un pedido: cliente y tienda (solo admin)',
+    description:
+      'El backend NO envía mensajes: devuelve links wa.me que el admin abre desde el panel. Se rearman desde el snapshot del pedido con el número del negocio actual. `customer` ("CONFIRMA TU PEDIDO") sale de customerPhone (anónimo) o del teléfono del cliente; es null si no hay un celular peruano válido. `store` ("NUEVO PEDIDO") siempre viene. Tras mandarlo, el panel llama a POST /orders/admin/:orderId/whatsapp-sent.',
+  })
+  @ApiParam({ name: 'orderId', description: 'UUID del pedido' })
+  @ApiResponse({
+    status: 200,
+    description: 'Links de WhatsApp y whatsappSentAt',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          orderId: '3fa85f64-5717-4562-b3fc-2c963f66afa6',
+          customer: {
+            phone: '51987654321',
+            url: 'https://wa.me/51987654321?text=...',
+          },
+          store: {
+            phone: '51999999999',
+            url: 'https://wa.me/51999999999?text=...',
+          },
+          whatsappSentAt: null,
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'orderId no es un UUID válido' })
+  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
+  @ApiResponse({ status: 403, description: 'El usuario no es admin' })
+  @ApiResponse({ status: 404, description: 'Pedido no encontrado' })
+  @ApiResponse({ status: 409, description: 'El pedido está cancelado' })
+  getWhatsappLinks(@Param('orderId', ParseUUIDPipe) orderId: string) {
+    return this.ordersService.getWhatsappLinks(orderId);
+  }
+
+  @Post('admin/:orderId/whatsapp-sent')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Marcar que el admin mandó el WhatsApp del pedido (solo admin)',
+    description:
+      'Registra la CONFIRMACIÓN del admin de que ya mandó el WhatsApp (el backend no envía nada). Guarda whatsappSentAt la primera vez; llamadas repetidas devuelven la misma fecha sin pisarla.',
+  })
+  @ApiParam({ name: 'orderId', description: 'UUID del pedido' })
+  @ApiResponse({
+    status: 200,
+    description: 'Fecha de la (primera) confirmación',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          orderId: '3fa85f64-5717-4562-b3fc-2c963f66afa6',
+          whatsappSentAt: '2026-09-30T22:15:00.000Z',
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'orderId no es un UUID válido' })
+  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
+  @ApiResponse({ status: 403, description: 'El usuario no es admin' })
+  @ApiResponse({ status: 404, description: 'Pedido no encontrado' })
+  @ApiResponse({ status: 409, description: 'El pedido está cancelado' })
+  markWhatsappSent(@Param('orderId', ParseUUIDPipe) orderId: string) {
+    return this.ordersService.markWhatsappSent(orderId);
   }
 
   @Post('estimate-delivery-fee')

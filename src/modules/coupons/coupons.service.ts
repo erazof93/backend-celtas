@@ -299,6 +299,19 @@ export class CouponsService {
     await manager.save(Coupon, coupon);
   }
 
+  /**
+   * Código del cupón canjeado en un pedido, o null si no usó ninguno. Solo
+   * lectura: lo usa OrdersService para rearmar el mensaje de WhatsApp de un
+   * pedido ya creado (el Order no guarda el código, solo el total descontado).
+   */
+  async findCodeUsedInOrder(orderId: string): Promise<string | null> {
+    const coupon = await this.couponsRepository.findOne({
+      where: { usedInOrderId: orderId },
+      select: { id: true, code: true },
+    });
+    return coupon?.code ?? null;
+  }
+
   // ── Generación automática ───────────────────────────────────────────────────
 
   /**

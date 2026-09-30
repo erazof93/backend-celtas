@@ -623,6 +623,26 @@ celtas-backend/
   no se probó en navegador real contra pedidos anónimos (solo jsdom); sin columna "creado por"
   (qué admin cargó el pedido). Hallazgo ajeno a esta tarea: `banners.e2e-spec.ts` y
   `notifications.e2e-spec.ts` dejan 2 usuarios de prueba cada uno por corrida en la BD local.
+- [x] **Links de WhatsApp de un pedido + confirmación humana de envío (solo admin).** El spec
+  pedía `POST /orders/admin/:id/send-whatsapp` con `sent: true` / `notificationStatus='sent'`,
+  pero **el backend NO envía WhatsApp** (solo arma links wa.me; enviar de verdad requeriría Meta
+  Cloud API, de pago) — marcar "enviado" sin envío habría registrado algo falso. Decisión del
+  usuario: versión honesta. `GET /orders/admin/:orderId/whatsapp-links` → `{ customer:
+  {phone,url} | null, store: {phone,url}, whatsappSentAt }`, rearmados desde el snapshot del
+  pedido con el número del negocio ACTUAL; customer = `customerPhone` (anónimo) o
+  `normalizePeruMobile(user.phone)`, null si no hay celular válido. `POST
+  /orders/admin/:orderId/whatsapp-sent` (200) → el panel lo llama cuando el admin CONFIRMA que lo
+  mandó; guarda `whatsappSentAt` (migración `AddWhatsappSentAtToOrder`) una sola vez, idempotente
+  (`update()` de la columna sola). Ambos: 404 / 409 si está cancelado. Refactor: el texto del
+  mensaje salió a `buildWhatsappMessage` (builder único de creación y rearmado — el link
+  rearmado es idéntico al `whatsappUrl` original, verificado en e2e con cupón real); código de
+  cupón vía nuevo `CouponsService.findCodeUsedInOrder`. `@tester`: **LISTO** — 634 unit + 541
+  e2e; mutaciones (sin `RolesGuard`, sin idempotencia, sin chequeo de cancelado, sin buscar el
+  cupón) rompen tests; ningún texto de la API afirma un envío. Riesgos no bloqueantes: el orden
+  de los ítems al rearmar no está garantizado (`relations: { items }` sin `order`, mismo
+  `createdAt` — también afecta `GET /orders/:id`); si el cupón se borra después, el mensaje
+  rearmado muestra "Cupón" sin código. **Pendiente en `celtas-admin`**: botones de los links +
+  "Ya lo envié" y `whatsappSentAt` en el tipo `Order`.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)

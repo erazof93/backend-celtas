@@ -97,6 +97,15 @@ export class Order {
   whatsappUrl: string;
 
   /**
+   * Cuándo el admin CONFIRMÓ en el panel que mandó el WhatsApp del pedido
+   * (POST /orders/admin/:id/whatsapp-sent). El backend nunca envía mensajes: solo
+   * arma links wa.me, así que esto registra la confirmación humana, no un envío.
+   * Null = nadie lo confirmó todavía. Se guarda la PRIMERA confirmación.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  whatsappSentAt: Date | null;
+
+  /**
    * Cuándo se marcó el pedido como `entregado`. Nullable: solo se setea al pasar a
    * `entregado` (dentro de la transacción de updateStatus). Las métricas de ventas
    * del dashboard se miden con ESTA fecha (entrega real), no con createdAt.

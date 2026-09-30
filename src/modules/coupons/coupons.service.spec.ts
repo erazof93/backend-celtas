@@ -127,6 +127,26 @@ describe('CouponsService', () => {
     service = module.get(CouponsService);
   });
 
+  describe('findCodeUsedInOrder', () => {
+    it('devuelve el código del cupón canjeado en el pedido', async () => {
+      couponsRepo.findOne.mockResolvedValue({ id: 'c-1', code: 'A1B2C3D4' });
+
+      await expect(service.findCodeUsedInOrder('order-1')).resolves.toBe(
+        'A1B2C3D4',
+      );
+      expect(couponsRepo.findOne).toHaveBeenCalledWith({
+        where: { usedInOrderId: 'order-1' },
+        select: { id: true, code: true },
+      });
+    });
+
+    it('pedido sin cupón → null', async () => {
+      couponsRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.findCodeUsedInOrder('order-1')).resolves.toBeNull();
+    });
+  });
+
   describe('generateManual', () => {
     it('crea un cupón manual con expiración según config', async () => {
       usersRepo.findOne.mockResolvedValue({ id: userId });

@@ -33,6 +33,7 @@ describe('OrdersService', () => {
     findAndCount: jest.Mock;
     create: jest.Mock;
     save: jest.Mock;
+    update: jest.Mock;
   };
   let orderItemsRepo: { create: jest.Mock };
   let menuItemsRepo: { find: jest.Mock };
@@ -46,6 +47,7 @@ describe('OrdersService', () => {
     markUsed: jest.Mock;
     checkAndGenerateForUser: jest.Mock;
     reactivateForCancelledOrder: jest.Mock;
+    findCodeUsedInOrder: jest.Mock;
   };
   let rewardsService: {
     validateForOrder: jest.Mock;
@@ -129,6 +131,7 @@ describe('OrdersService', () => {
       findAndCount: jest.fn(),
       create: jest.fn(),
       save: jest.fn(),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
     orderItemsRepo = { create: jest.fn() };
     menuItemsRepo = { find: jest.fn() };
@@ -145,6 +148,7 @@ describe('OrdersService', () => {
       markUsed: jest.fn().mockResolvedValue(undefined),
       checkAndGenerateForUser: jest.fn().mockResolvedValue(null),
       reactivateForCancelledOrder: jest.fn().mockResolvedValue(undefined),
+      findCodeUsedInOrder: jest.fn().mockResolvedValue(null),
     };
     rewardsService = {
       validateForOrder: jest.fn(),
@@ -2062,6 +2066,189 @@ describe('OrdersService', () => {
           data: { orderId: result.id, status: OrderStatus.PENDIENTE },
         }),
       );
+    });
+  });
+
+  describe('getWhatsappLinks / markWhatsappSent (links wa.me, el backend no envía)', () => {
+    const orderId = '33333333-3333-4333-8333-333333333333';
+    const item = (overrides: Partial<OrderItem> = {}) =>
+      ({
+        name: 'Celtas Clásica',
+        quantity: 2,
+        unitPrice: 24.9,
+        subtotal: 49.8,
+        selectedSauces: null,
+        selectedBeverages: null,
+        selectedExtraPortions: null,
+        selectedFriesTypes: null,
+        comment: null,
+        ...overrides,
+      }) as OrderItem;
+    const order = (overrides: Partial<Order> = {}) =>
+      seedOrder({
+        id: orderId,
+        items: [item()],
+        total: 49.8,
+        deliveryFee: 0,
+        whatsappSentAt: null,
+        user: { id: userId, phone: '987 654 321' } as User,
+        ...overrides,
+      });
+    const decode = (url: string) => {
+      const parsed = new URL(url);
+      return {
+        number: parsed.pathname.slice(1),
+        text: parsed.searchParams.get('text') ?? '',
+      };
+    };
+
+    it('cliente con celular: link al cliente ("CONFIRMA TU PEDIDO") + link a la tienda ("NUEVO PEDIDO")', async () => {
+      ordersRepo.findOne.mockResolvedValue(order());
+
+      const result = await service.getWhatsappLinks(orderId);
+
+      expect(result.customer?.phone).toBe('51987654321');
+      const customer = decode(result.customer!.url);
+      expect(customer.number).toBe('51987654321');
+      expect(customer.text).toContain('*CONFIRMA TU PEDIDO #33333333*');
+      expect(customer.text).toContain('2x Celtas Clásica');
+      expect(customer.text).toContain('*Total a pagar:* S/ 49.80');
+
+      expect(result.store.phone).toBe('51999999999');
+      const store = decode(result.store.url);
+      expect(store.number).toBe('51999999999');
+      expect(store.text).toContain('*NUEVO PEDIDO #33333333*');
+      expect(result.whatsappSentAt).toBeNull();
+      expect(ordersRepo.findOne).toHaveBeenCalledWith({
+        where: { id: orderId },
+        relations: { items: true, user: true },
+      });
+    });
+
+    it('cliente sin celular válido → customer null, solo queda la tienda', async () => {
+      ordersRepo.findOne.mockResolvedValue(
+        order({ user: { id: userId, phone: '12345' } as User }),
+      );
+
+      const result = await service.getWhatsappLinks(orderId);
+
+      expect(result.customer).toBeNull();
+      expect(decode(result.store.url).number).toBe('51999999999');
+    });
+
+    it('anónimo: el cliente sale de customerPhone (user null)', async () => {
+      ordersRepo.findOne.mockResolvedValue(
+        order({
+          userId: null,
+          user: null,
+          customerName: 'Juan Pérez',
+          customerPhone: '51912345678',
+        }),
+      );
+
+      const result = await service.getWhatsappLinks(orderId);
+
+      expect(result.customer?.phone).toBe('51912345678');
+      expect(decode(result.customer!.url).number).toBe('51912345678');
+    });
+
+    it('rearma el mensaje con el cupón: busca el código y muestra el descuento', async () => {
+      // subtotal 49.8, envío 2, total 46.82 → descuento 4.98 (10%).
+      ordersRepo.findOne.mockResolvedValue(
+        order({ total: 46.82, deliveryFee: 2 }),
+      );
+      couponsService.findCodeUsedInOrder.mockResolvedValue('A1B2C3D4');
+
+      const result = await service.getWhatsappLinks(orderId);
+
+      const { text } = decode(result.store.url);
+      expect(couponsService.findCodeUsedInOrder).toHaveBeenCalledWith(orderId);
+      expect(text).toContain('*Cupón (A1B2C3D4):* -S/ 4.98');
+      expect(text).toContain('*Envío:* S/ 2.00');
+    });
+
+    it('sin descuento no consulta cupones', async () => {
+      ordersRepo.findOne.mockResolvedValue(order());
+
+      await service.getWhatsappLinks(orderId);
+
+      expect(couponsService.findCodeUsedInOrder).not.toHaveBeenCalled();
+    });
+
+    it('mismo mensaje que al crear el pedido (salvo el encabezado)', async () => {
+      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+      orderItemsRepo.create.mockImplementation(passthrough);
+      dataSource.transaction.mockImplementation(
+        (cb: (m: { create: jest.Mock; save: jest.Mock }) => Promise<unknown>) =>
+          cb({
+            create: jest.fn((_entity: unknown, value: unknown) => value),
+            save: jest.fn((_entity: unknown, value: unknown) =>
+              Promise.resolve(value),
+            ),
+          }),
+      );
+      const created = await service.createOrderByAdmin({
+        customerName: 'Juan Pérez',
+        customerPhone: '987654321',
+        addressSnapshot: JSON.stringify({ fullAddress: 'Av. Los Héroes 500' }),
+        items: [{ menuItemId, quantity: 2 }],
+      });
+      ordersRepo.findOne.mockResolvedValue({
+        ...created,
+        whatsappSentAt: null,
+      });
+
+      const result = await service.getWhatsappLinks(created.id);
+
+      expect(result.customer!.url).toBe(created.whatsappUrl);
+    });
+
+    it('pedido inexistente → 404', async () => {
+      ordersRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.getWhatsappLinks(orderId)).rejects.toThrow(
+        new NotFoundException('Pedido no encontrado'),
+      );
+      await expect(service.markWhatsappSent(orderId)).rejects.toThrow(
+        new NotFoundException('Pedido no encontrado'),
+      );
+    });
+
+    it('pedido cancelado → 409 en ambos endpoints', async () => {
+      ordersRepo.findOne.mockResolvedValue(
+        order({ status: OrderStatus.CANCELADO }),
+      );
+
+      await expect(service.getWhatsappLinks(orderId)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      await expect(service.markWhatsappSent(orderId)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(ordersRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('markWhatsappSent: guarda whatsappSentAt con update() de la columna sola', async () => {
+      ordersRepo.findOne.mockResolvedValue(order());
+
+      const result = await service.markWhatsappSent(orderId);
+
+      expect(result.orderId).toBe(orderId);
+      expect(result.whatsappSentAt).toBeInstanceOf(Date);
+      expect(ordersRepo.update).toHaveBeenCalledWith(orderId, {
+        whatsappSentAt: result.whatsappSentAt,
+      });
+      expect(ordersRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('markWhatsappSent es idempotente: devuelve la PRIMERA fecha sin pisarla', async () => {
+      const first = new Date('2026-09-30T20:00:00.000Z');
+      ordersRepo.findOne.mockResolvedValue(order({ whatsappSentAt: first }));
+
+      const result = await service.markWhatsappSent(orderId);
+
+      expect(result.whatsappSentAt).toBe(first);
+      expect(ordersRepo.update).not.toHaveBeenCalled();
     });
   });
 

@@ -48,6 +48,34 @@ const VALID_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
 /** Granularidad (metros) del `distanceMeters` que se expone en las respuestas de delivery. */
 const DISTANCE_ROUNDING_METERS = 50;
 
+/** Lo mínimo de un ítem que necesita el mensaje de WhatsApp (OrderItem lo cumple). */
+type WhatsappMessageItem = Pick<
+  OrderItem,
+  | 'name'
+  | 'quantity'
+  | 'selectedSauces'
+  | 'selectedBeverages'
+  | 'selectedExtraPortions'
+  | 'selectedFriesTypes'
+  | 'comment'
+>;
+
+/** Un destinatario de WhatsApp: celular (51XXXXXXXXX) + link wa.me con el mensaje. */
+export interface WhatsappLink {
+  phone: string;
+  url: string;
+}
+
+export interface WhatsappLinks {
+  orderId: string;
+  /** Link al cliente ("CONFIRMA TU PEDIDO"); null si no hay un celular peruano válido. */
+  customer: WhatsappLink | null;
+  /** Link al número del negocio ("NUEVO PEDIDO"), siempre presente. */
+  store: WhatsappLink;
+  /** Cuándo el admin confirmó que lo mandó (POST .../whatsapp-sent); null = sin confirmar. */
+  whatsappSentAt: Date | null;
+}
+
 export interface PaginatedOrders {
   items: Order[];
   meta: {
@@ -484,6 +512,103 @@ export class OrdersService {
       throw new BadRequestException(`Dirección no encontrada: "${text}"`);
     }
     return coords;
+  }
+
+  /**
+   * Links de WhatsApp de un pedido ya creado (admin). El backend NO envía mensajes:
+   * arma links wa.me que el admin abre desde el panel. Se regeneran desde el
+   * snapshot del pedido (items/precios/dirección tal como se guardaron) con el
+   * número del negocio ACTUAL de settings. El cliente sale de `customerPhone`
+   * (anónimo) o del `phone` del usuario (normalizado); si no hay un celular
+   * peruano válido, `customer` es null y solo queda el link a la tienda.
+   */
+  async getWhatsappLinks(orderId: string): Promise<WhatsappLinks> {
+    const order = await this.findOrderForWhatsapp(orderId, {
+      items: true,
+      user: true,
+    });
+
+    const subtotal = this.round2(
+      order.items.reduce((sum, item) => sum + item.subtotal, 0),
+    );
+    // Mismo despeje que el panel: total = (subtotal - descuento) + deliveryFee.
+    const discountAmount = this.round2(
+      subtotal + order.deliveryFee - order.total,
+    );
+    const couponCode =
+      discountAmount > 0
+        ? await this.couponsService.findCodeUsedInOrder(order.id)
+        : null;
+    const messageFor = (heading: 'NUEVO PEDIDO' | 'CONFIRMA TU PEDIDO') =>
+      this.buildWhatsappMessage({
+        heading,
+        orderId: order.id,
+        items: order.items,
+        total: order.total,
+        addressSnapshot: order.addressSnapshot,
+        subtotal,
+        deliveryFee: order.deliveryFee,
+        discountAmount,
+        couponCode,
+      });
+    const link = (phone: string, message: string): WhatsappLink => ({
+      phone,
+      url: `https://wa.me/${phone}?text=${encodeURIComponent(message)}`,
+    });
+
+    const customerPhone =
+      order.userId === null
+        ? order.customerPhone
+        : normalizePeruMobile(order.user?.phone);
+    const storePhone = await this.settingsService.getWhatsappNumber();
+
+    return {
+      orderId: order.id,
+      customer: customerPhone
+        ? link(customerPhone, messageFor('CONFIRMA TU PEDIDO'))
+        : null,
+      store: link(storePhone, messageFor('NUEVO PEDIDO')),
+      whatsappSentAt: order.whatsappSentAt,
+    };
+  }
+
+  /**
+   * El admin confirma en el panel que YA mandó el WhatsApp del pedido. Registra
+   * la confirmación humana (no un envío: el backend no envía nada). Idempotente:
+   * se guarda la PRIMERA confirmación y las siguientes la devuelven sin pisarla.
+   */
+  async markWhatsappSent(
+    orderId: string,
+  ): Promise<{ orderId: string; whatsappSentAt: Date }> {
+    const order = await this.findOrderForWhatsapp(orderId);
+    if (order.whatsappSentAt) {
+      return { orderId: order.id, whatsappSentAt: order.whatsappSentAt };
+    }
+    const whatsappSentAt = new Date();
+    // update() de la columna sola: no re-guarda relaciones ni pisa otros campos.
+    await this.ordersRepository.update(order.id, { whatsappSentAt });
+    return { orderId: order.id, whatsappSentAt };
+  }
+
+  /** Pedido para los endpoints de WhatsApp: 404 si no existe, 409 si está cancelado. */
+  private async findOrderForWhatsapp(
+    orderId: string,
+    relations: { items?: true; user?: true } = {},
+  ): Promise<Order> {
+    const order = await this.ordersRepository.findOne({
+      where: { id: orderId },
+      relations,
+    });
+    if (!order) {
+      throw new NotFoundException('Pedido no encontrado');
+    }
+    // "CONFIRMA TU PEDIDO" de un pedido cancelado confundiría al cliente.
+    if (order.status === OrderStatus.CANCELADO) {
+      throw new ConflictException(
+        'El pedido está cancelado: no corresponde mandarle WhatsApp',
+      );
+    }
+    return order;
   }
 
   /**
@@ -1033,15 +1158,7 @@ export class OrdersService {
   /** Link de WhatsApp: https://wa.me/<número>?text=<mensaje codificado>. */
   private async buildWhatsappUrl(
     orderId: string,
-    items: {
-      name: string;
-      quantity: number;
-      selectedSauces: string[] | null;
-      selectedBeverages: { name: string; price: number }[] | null;
-      selectedExtraPortions: { name: string; price: number }[] | null;
-      selectedFriesTypes: string[] | null;
-      comment: string | null;
-    }[],
+    items: WhatsappMessageItem[],
     total: number,
     addressSnapshot: string,
     subtotal: number,
@@ -1055,8 +1172,48 @@ export class OrdersService {
     // está vacía, SettingsService cae al valor de .env y loguea un warning.
     const number =
       recipient ?? (await this.settingsService.getWhatsappNumber());
-    // Al negocio le llega un pedido nuevo; al cliente, el resumen a confirmar.
-    const heading = recipient ? 'CONFIRMA TU PEDIDO' : 'NUEVO PEDIDO';
+    const message = this.buildWhatsappMessage({
+      // Al negocio le llega un pedido nuevo; al cliente, el resumen a confirmar.
+      heading: recipient ? 'CONFIRMA TU PEDIDO' : 'NUEVO PEDIDO',
+      orderId,
+      items,
+      total,
+      addressSnapshot,
+      subtotal,
+      deliveryFee,
+      discountAmount,
+      couponCode,
+    });
+    return `https://wa.me/${number}?text=${encodeURIComponent(message)}`;
+  }
+
+  /**
+   * Texto del mensaje de WhatsApp de un pedido. Único lugar que arma el mensaje:
+   * lo usan la creación (`buildWhatsappUrl`) y los links de un pedido ya creado
+   * (`getWhatsappLinks`), así ambos nunca divergen.
+   */
+  private buildWhatsappMessage(params: {
+    heading: 'NUEVO PEDIDO' | 'CONFIRMA TU PEDIDO';
+    orderId: string;
+    items: WhatsappMessageItem[];
+    total: number;
+    addressSnapshot: string;
+    subtotal: number;
+    deliveryFee: number;
+    discountAmount: number;
+    couponCode: string | null;
+  }): string {
+    const {
+      heading,
+      orderId,
+      items,
+      total,
+      addressSnapshot,
+      subtotal,
+      deliveryFee,
+      discountAmount,
+      couponCode,
+    } = params;
     const itemsText = items
       .map((item) => {
         // null = no aplica (sin sufijo); [] = "Sin salsas" elegido a propósito;
@@ -1091,11 +1248,14 @@ export class OrdersService {
       .join('\n');
     // Desglose para que el dueño pueda verificar el monto sin abrir el panel admin:
     // subtotal → cupón (solo si hubo descuento real) → envío, y el total ya existente al final.
+    // Sin código (no debería pasar en un pedido vigente) se muestra "Cupón" a secas
+    // en vez de "Cupón (null)".
+    const couponLabel = couponCode ? `Cupón (${couponCode})` : 'Cupón';
     const couponLine =
       discountAmount > 0
-        ? `\n🎟️ *Cupón (${couponCode}):* -S/ ${discountAmount.toFixed(2)}`
+        ? `\n🎟️ *${couponLabel}:* -S/ ${discountAmount.toFixed(2)}`
         : '';
-    const message = `📌 *${heading} #${orderId.slice(0, 8).toUpperCase()}*
+    return `📌 *${heading} #${orderId.slice(0, 8).toUpperCase()}*
 
 🛒 *Detalle:*
 ${itemsText}
@@ -1106,7 +1266,6 @@ ${itemsText}
 🧾 *Subtotal:* S/ ${subtotal.toFixed(2)}${couponLine}
 🛵 *Envío:* S/ ${deliveryFee.toFixed(2)}
 💰 *Total a pagar:* S/ ${total.toFixed(2)}`;
-    return `https://wa.me/${number}?text=${encodeURIComponent(message)}`;
   }
 
   /** Convierte el snapshot JSON a texto legible para el mensaje de WhatsApp. */

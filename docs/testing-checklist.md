@@ -2858,3 +2858,44 @@ Auditoría `@tester` sobre cambios sin commitear (migración `1790787155985-Allo
       filas (se denegó la consulta de datos de usuario en la sesión de QA). Revisar a mano qué suite
       no limpia sus usuarios.
 - [ ] Anónimo con `rewardRedemptionId` sigue cubierto solo por unit tests (sin cambios).
+
+## Links de WhatsApp de un pedido + confirmación humana (`GET /orders/admin/:orderId/whatsapp-links`, `POST /orders/admin/:orderId/whatsapp-sent`)
+
+Auditoría `@tester` sobre cambios sin commitear (migración `1790802308089-AddWhatsappSentAtToOrder`,
+`orders.whatsappSentAt timestamptz NULL`). El backend NO envía WhatsApp: solo arma links wa.me y
+registra la confirmación del admin.
+
+- [x] **Build / unit / e2e**: `pnpm run build` OK; unit 634/634 (29 suites); e2e completo 541/541
+      (18 suites; 536 + 5 tests `QA:` nuevos en `test/orders.e2e-spec.ts`); orders e2e 151/151.
+- [x] **Refactor `buildWhatsappMessage` sin regresión**: el diff solo mueve el texto a un builder
+      único; el único cambio de texto es `Cupón` a secas si hay descuento sin código (inalcanzable al
+      crear). Los tests previos de `whatsappUrl` de `POST /orders` y `POST /orders/admin` pasan.
+- [x] **Mismo texto al crear y al rearmar, con cupón real (e2e)** `[QA]`: `POST /orders` con cupón +
+      2 ítems + nota → `store.url === whatsappUrl` guardado; `POST /orders/admin` con `customerId` +
+      celular + cupón → `customer.url === whatsappUrl`, y el cuerpo de `store` es idéntico salvo el
+      encabezado. Mutación "no buscar el código del cupón" → falla 1 unit + 2 e2e.
+- [x] **Negocio**: anónimo → customer = customerPhone; registrado sin celular → customer null;
+      idempotente (misma fecha en la segunda llamada, reflejada en links y BD); `whatsapp-sent` no toca
+      status/total/whatsappUrl `[QA]`; cancelado → 409 en ambos sin marcar. Mutación "sin chequeo de
+      cancelado" → falla 1 unit + 2 e2e.
+- [x] **Seguridad**: sin token → 401; token cliente → 403 en ambos, incluso el DUEÑO del pedido `[QA]`,
+      sin marcar nada; orderId no UUID → 400; inexistente → 404 "Pedido no encontrado". Mutación "sin
+      RolesGuard en whatsapp-links" → fallan 2 e2e. La respuesta solo trae
+      `orderId/customer/store/whatsappSentAt` (no expone `user` ni `password`) `[QA]`.
+- [x] **Textos**: ningún mensaje de API ni de Swagger dice que el backend envió algo; ambos describen
+      links + confirmación del admin.
+- [x] **Swagger** (`/docs-json` real): ambos con summary, bearer, tag `orders`, param `orderId`,
+      respuestas 200/400/401/403/404/409 (POST sin 201, por `@HttpCode(200)`).
+- [x] **Migración**: verificada por la sesión principal (`migration:generate` sin cambios,
+      `migration:run` sin pendientes); no se volvió a correr en QA.
+
+**Riesgos / pendientes:**
+
+- [ ] El orden de `order.items` al rearmar no es determinista: `findOne({ relations: { items } })` sin
+      `order` y los ítems comparten `createdAt` (misma transacción). En Postgres suele salir en orden de
+      inserción (los tests pasan), pero no está garantizado: el link rearmado podría listar los ítems en
+      otro orden que el `whatsappUrl` original. Mismo caso en `GET /orders/:id`.
+- [x] El 409 decía "no se le envía WhatsApp" (podía leerse como que el backend envía). Cambiado a
+      "El pedido está cancelado: no corresponde mandarle WhatsApp".
+- [ ] Si la fila del cupón se borra después (DELETE del cupón o cascada al borrar el usuario), el mensaje rearmado muestra
+      "Cupón" sin código y ya no coincide con el `whatsappUrl` original. Es aceptable, pero no tiene test.

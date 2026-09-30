@@ -2121,6 +2121,279 @@ describe('Orders (e2e)', () => {
         }
       }
     });
+    describe('GET /orders/admin/:orderId/whatsapp-links + POST .../whatsapp-sent', () => {
+      const links = (orderId: string, token: string | null = adminToken) => {
+        const req = request(app.getHttpServer()).get(
+          `/orders/admin/${orderId}/whatsapp-links`,
+        );
+        if (token) req.set('Authorization', `Bearer ${token}`);
+        return req;
+      };
+      const markSent = (orderId: string, token: string | null = adminToken) => {
+        const req = request(app.getHttpServer()).post(
+          `/orders/admin/${orderId}/whatsapp-sent`,
+        );
+        if (token) req.set('Authorization', `Bearer ${token}`);
+        return req;
+      };
+      interface LinksData {
+        orderId: string;
+        customer: { phone: string; url: string } | null;
+        store: { phone: string; url: string };
+        whatsappSentAt: string | null;
+      }
+      const linksData = (res: { body: unknown }) =>
+        (res.body as Envelope).data as LinksData;
+      const decodedText = (url: string) =>
+        new URL(url).searchParams.get('text') ?? '';
+
+      it('anónimo → 200: link al cliente idéntico al whatsappUrl del pedido + link a la tienda', async () => {
+        const created = data(
+          await createManual(adminToken, withItemA(anonBody)),
+        );
+
+        const res = await links(created.id);
+
+        expect(res.status).toBe(200);
+        const body = linksData(res);
+        expect(body.orderId).toBe(created.id);
+        expect(body.customer?.phone).toBe('51987654321');
+        expect(body.customer?.url).toBe(created.whatsappUrl);
+        expect(
+          body.store.url.startsWith(`https://wa.me/${body.store.phone}?text=`),
+        ).toBe(true);
+        expect(decodedText(body.store.url)).toContain('*NUEVO PEDIDO #');
+        expect(decodedText(body.store.url)).toContain('2x Clásica');
+        expect(body.whatsappSentAt).toBeNull();
+      });
+
+      it('cliente registrado SIN celular → customer null, solo la tienda', async () => {
+        const created = data(
+          await createManual(adminToken, {
+            customerId: clientAId,
+            addressSnapshot: snapshot,
+            items: [{ menuItemId: itemAId, quantity: 1 }],
+          }),
+        );
+
+        const body = linksData(await links(created.id).expect(200));
+
+        expect(body.customer).toBeNull();
+        expect(decodedText(body.store.url)).toContain('*NUEVO PEDIDO #');
+      });
+
+      it('whatsapp-sent → 200 con fecha; repetido devuelve la MISMA fecha; links la refleja', async () => {
+        const created = data(
+          await createManual(adminToken, withItemA(anonBody)),
+        );
+
+        const first = await markSent(created.id);
+        expect(first.status).toBe(200);
+        const sentAt = (
+          (first.body as Envelope).data as { whatsappSentAt: string }
+        ).whatsappSentAt;
+        expect(new Date(sentAt).getTime()).not.toBeNaN();
+
+        const second = await markSent(created.id).expect(200);
+        expect(
+          ((second.body as Envelope).data as { whatsappSentAt: string })
+            .whatsappSentAt,
+        ).toBe(sentAt);
+
+        expect(
+          linksData(await links(created.id).expect(200)).whatsappSentAt,
+        ).toBe(sentAt);
+        const saved = await ordersRepo.findOneByOrFail({ id: created.id });
+        expect(saved.whatsappSentAt?.toISOString()).toBe(sentAt);
+      });
+
+      it('pedido cancelado → 409 en ambos', async () => {
+        const created = data(
+          await createManual(adminToken, withItemA(anonBody)),
+        );
+        await request(app.getHttpServer())
+          .patch(`/orders/${created.id}/status`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ status: 'cancelado' })
+          .expect(200);
+
+        await links(created.id).expect(409);
+        await markSent(created.id).expect(409);
+        const saved = await ordersRepo.findOneByOrFail({ id: created.id });
+        expect(saved.whatsappSentAt).toBeNull();
+      });
+
+      it('pedido inexistente → 404; orderId no UUID → 400', async () => {
+        const missing = '99999999-9999-4999-8999-999999999999';
+        await links(missing).expect(404);
+        await markSent(missing).expect(404);
+        await links('no-es-uuid').expect(400);
+        await markSent('no-es-uuid').expect(400);
+      });
+
+      it('token de cliente → 403 en ambos (y no marca nada)', async () => {
+        const created = data(
+          await createManual(adminToken, withItemA(anonBody)),
+        );
+
+        await links(created.id, clientAToken).expect(403);
+        await markSent(created.id, clientAToken).expect(403);
+        const saved = await ordersRepo.findOneByOrFail({ id: created.id });
+        expect(saved.whatsappSentAt).toBeNull();
+      });
+
+      it('sin token → 401 en ambos', async () => {
+        const created = data(
+          await createManual(adminToken, withItemA(anonBody)),
+        );
+
+        await links(created.id, null).expect(401);
+        await markSent(created.id, null).expect(401);
+      });
+
+      // ── Auditoría QA ───────────────────────────────────────────────────────
+      it('QA: POST /orders con cupón → link de tienda IDÉNTICO al whatsappUrl (mismo texto de cupón)', async () => {
+        const coupon = await request(app.getHttpServer())
+          .post('/coupons/generate')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({
+            userId: clientAId,
+            discountType: 'fixed_amount',
+            discountValue: 5,
+          })
+          .expect(201);
+        const couponCode = ((coupon.body as Envelope).data as { code: string })
+          .code;
+        const res = await createOrder(clientAToken, {
+          addressId: ownAddressId,
+          items: [
+            { menuItemId: itemAId, quantity: 2, comment: 'Sin cebolla' },
+            { menuItemId: itemBId, quantity: 1 },
+          ],
+          couponCode,
+        }).expect(201);
+        const created = (res.body as Envelope).data as {
+          id: string;
+          whatsappUrl: string;
+        };
+
+        const body = linksData(await links(created.id).expect(200));
+
+        // clientA no tiene celular → customer null; el link de tienda debe ser
+        // byte a byte el guardado al crear (cupón, ítems, nota, totales).
+        expect(body.customer).toBeNull();
+        expect(body.store.url).toBe(created.whatsappUrl);
+        expect(decodedText(body.store.url)).toContain(
+          `Cupón (${couponCode}):* -S/ 5.00`,
+        );
+      });
+
+      it('QA: POST /orders/admin con customerId + cupón + celular → link del cliente IDÉNTICO al whatsappUrl', async () => {
+        const clientB = await usersRepo.findOneByOrFail({
+          email: clientBEmail,
+        });
+        await usersRepo.update(clientB.id, { phone: '987 111 222' });
+        const coupon = await request(app.getHttpServer())
+          .post('/coupons/generate')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({
+            userId: clientB.id,
+            discountType: 'fixed_amount',
+            discountValue: 3,
+          })
+          .expect(201);
+        const couponCode = ((coupon.body as Envelope).data as { code: string })
+          .code;
+        const created = data(
+          await createManual(adminToken, {
+            customerId: clientB.id,
+            addressSnapshot: snapshot,
+            items: [
+              { menuItemId: itemBId, quantity: 3 },
+              { menuItemId: itemAId, quantity: 1 },
+            ],
+            couponCode,
+          }).then((r) => {
+            expect(r.status).toBe(201);
+            return r;
+          }),
+        );
+
+        const body = linksData(await links(created.id).expect(200));
+
+        expect(body.customer?.phone).toBe('51987111222');
+        expect(body.customer?.url).toBe(created.whatsappUrl);
+        expect(decodedText(body.customer!.url)).toContain(
+          `Cupón (${couponCode}):* -S/ 3.00`,
+        );
+        expect(decodedText(body.store.url)).toContain(
+          `Cupón (${couponCode}):* -S/ 3.00`,
+        );
+        // Mismo cuerpo, solo cambia el encabezado.
+        expect(decodedText(body.store.url).replace('NUEVO PEDIDO', 'X')).toBe(
+          decodedText(body.customer!.url).replace('CONFIRMA TU PEDIDO', 'X'),
+        );
+      });
+
+      it('QA: whatsapp-sent no toca status, total ni whatsappUrl; la respuesta no expone datos del usuario', async () => {
+        const created = data(
+          await createManual(adminToken, withItemA(anonBody)),
+        );
+        const before = await ordersRepo.findOneByOrFail({ id: created.id });
+
+        const sent = await markSent(created.id).expect(200);
+        const linksRes = await links(created.id).expect(200);
+
+        const after = await ordersRepo.findOneByOrFail({ id: created.id });
+        expect(after.status).toBe(before.status);
+        expect(after.total).toBe(before.total);
+        expect(after.whatsappUrl).toBe(before.whatsappUrl);
+        expect(
+          Object.keys((sent.body as Envelope).data as object).sort(),
+        ).toEqual(['orderId', 'whatsappSentAt']);
+        expect(Object.keys(linksData(linksRes)).sort()).toEqual([
+          'customer',
+          'orderId',
+          'store',
+          'whatsappSentAt',
+        ]);
+        expect(JSON.stringify(linksRes.body)).not.toContain('password');
+      });
+
+      it('QA: mensajes de error en español y sin afirmar que el backend "envió" algo', async () => {
+        const missing = '99999999-9999-4999-8999-999999999999';
+        const notFound = await links(missing).expect(404);
+        expect((notFound.body as ErrorResponse).message).toBe(
+          'Pedido no encontrado',
+        );
+        const created = data(
+          await createManual(adminToken, withItemA(anonBody)),
+        );
+        await request(app.getHttpServer())
+          .patch(`/orders/${created.id}/status`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ status: 'cancelado' })
+          .expect(200);
+        const conflict = await markSent(created.id).expect(409);
+        const msg = String((conflict.body as ErrorResponse).message);
+        expect(msg).toMatch(/cancelado/);
+        expect(msg).not.toMatch(/\benviado\b|\benvió\b|\bsent\b/i);
+      });
+
+      it('QA: el cliente dueño del pedido tampoco accede (403)', async () => {
+        const res = await createOrder(clientAToken, {
+          addressId: ownAddressId,
+          items: [{ menuItemId: itemAId, quantity: 1 }],
+        }).expect(201);
+        const id = ((res.body as Envelope).data as { id: string }).id;
+
+        await links(id, clientAToken).expect(403);
+        await markSent(id, clientAToken).expect(403);
+        expect(
+          (await ordersRepo.findOneByOrFail({ id })).whatsappSentAt,
+        ).toBeNull();
+      });
+    });
   });
 
   describe('GET /orders/geocode', () => {
