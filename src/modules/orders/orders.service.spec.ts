@@ -18,6 +18,7 @@ import { User, UserRole } from '../users/entities/user.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { Order, OrderStatus } from './entities/order.entity';
 import { OrdersService } from './orders.service';
+import * as geoUtil from '../../common/utils/geo.util';
 
 /** Mock de repositorio: devuelve el mismo objeto que recibe (identity tipado). */
 const passthrough = <T>(value: T): T => value;
@@ -1416,6 +1417,20 @@ describe('OrdersService', () => {
       expect(result.total).toBe(51.8); // subtotal 49.8 + deliveryFee 2
     });
 
+    it('borde de tramo: 120 m exactos cobra S/4 (tramo <=400m), aunque la distancia expuesta se redondee a 100 m', async () => {
+      // 120 m al sur del local sobre el meridiano (1° = 2π·6371000/360 m).
+      addressesRepo.findOne.mockResolvedValue(
+        seedAddress({
+          latitude: -12.1631 - 120 / ((2 * Math.PI * 6371000) / 360),
+          longitude: -76.97,
+        }),
+      );
+      const result = await service.create(userId, { ...dto, addressId });
+
+      expect(result.deliveryFee).toBe(4);
+      expect(result.total).toBe(53.8); // 49.8 + 4
+    });
+
     it('dirección en tramo intermedio (851.93m, tramo 3 <=1000m) → deliveryFee = 6', async () => {
       addressesRepo.findOne.mockResolvedValue(seedAddress(MID_COORDS));
       const result = await service.create(userId, { ...dto, addressId });
@@ -1571,7 +1586,8 @@ describe('OrdersService', () => {
 
       expect(result.deliveryFee).toBe(2);
       expect(result.isFarOrder).toBe(false);
-      expect(result.distanceMeters).toBeCloseTo(7.77, 1);
+      // ~7.77 m exactos; se expone redondeado a múltiplos de 50 m.
+      expect(result.distanceMeters).toBe(0);
       expect(dataSource.transaction).not.toHaveBeenCalled();
       expect(addressesRepo.findOne).toHaveBeenCalledWith({
         where: { id: addressId, userId },
@@ -1621,6 +1637,236 @@ describe('OrdersService', () => {
 
       await expect(
         service.estimateDeliveryFee(userId, { addressId }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('computeDelivery — distanceMeters redondeado a 50 m (privacidad del local)', () => {
+    // Punto a `meters` metros exactos al sur del local (mock: -12.1631, -76.97).
+    // Sobre un meridiano, Haversine da exactamente R·Δφ → 1° = 2π·6371000/360 m.
+    const METERS_PER_DEGREE = (2 * Math.PI * 6371000) / 360;
+    const pointAt = (meters: number) => ({
+      latitude: -12.1631 - meters / METERS_PER_DEGREE,
+      longitude: -76.97,
+    });
+
+    it.each([
+      [0, 0],
+      [24, 0],
+      [49, 50],
+      [51, 50],
+      [100, 100],
+      [124, 100],
+      [380, 400],
+    ])(
+      '%i m exactos → distanceMeters %i (múltiplo de 50)',
+      async (exact, shown) => {
+        const result = await service.estimateDeliveryByCoords(pointAt(exact));
+
+        expect(result.distanceMeters).toBe(shown);
+        expect(result.distanceMeters! % 50).toBe(0);
+      },
+    );
+
+    it('la tarifa usa la distancia EXACTA: 120 m se muestra como 100 pero cobra el tramo ≤400 m (S/4), no S/2', async () => {
+      const result = await service.estimateDeliveryByCoords(pointAt(120));
+
+      expect(result.distanceMeters).toBe(100);
+      expect(result.deliveryFee).toBe(4);
+    });
+
+    it('99 m exactos → se muestra 100 y cobra S/2 (sigue dentro del tramo ≤100 m)', async () => {
+      const result = await service.estimateDeliveryByCoords(pointAt(99));
+
+      expect(result.distanceMeters).toBe(100);
+      expect(result.deliveryFee).toBe(2);
+    });
+
+    it('isFarOrder usa la distancia EXACTA: 2510 m se muestra como 2500 pero supera el radio de aviso (2500)', async () => {
+      const result = await service.estimateDeliveryByCoords(pointAt(2510));
+
+      expect(result.distanceMeters).toBe(2500);
+      expect(result.isFarOrder).toBe(true);
+    });
+
+    it('estimateDeliveryFee (mismo computeDelivery que create) cobra con la distancia exacta: 120 m → deliveryFee 4', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress(pointAt(120)));
+      const result = await service.estimateDeliveryFee(userId, { addressId });
+
+      expect(result.deliveryFee).toBe(4);
+    });
+  });
+
+  describe('QA — redondeo de distanceMeters no altera lo cobrado (distancia exacta mockeada)', () => {
+    // Se mockea haversineDistanceMeters para fijar la distancia EXACTA sin
+    // ruido de punto flotante (bordes de tramo 100/400/1000 y radio 2500).
+    const dto = { items: [{ menuItemId, quantity: 2 }] };
+    let haversineSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      haversineSpy = jest.spyOn(geoUtil, 'haversineDistanceMeters');
+      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+      orderItemsRepo.create.mockImplementation(passthrough);
+      ordersRepo.create.mockImplementation(passthrough);
+      ordersRepo.save.mockImplementation(passthrough);
+      dataSource.transaction.mockImplementation(
+        (cb: (m: { create: jest.Mock; save: jest.Mock }) => Promise<unknown>) =>
+          cb({
+            create: jest.fn((_entity: unknown, value: unknown) => value),
+            save: jest.fn((_entity: unknown, value: unknown) =>
+              Promise.resolve(value),
+            ),
+          }),
+      );
+      addressesRepo.findOne.mockResolvedValue(
+        seedAddress({ latitude: -12.2, longitude: -76.9 }),
+      );
+    });
+
+    afterEach(() => haversineSpy.mockRestore());
+
+    it.each([
+      [0, 2],
+      [74.9, 2],
+      [75, 2], // se mostraría 100
+      [100, 2],
+      [100.0001, 4],
+      [110, 4], // se mostraría 100 → redondear antes cobraría S/2
+      [124.99, 4],
+      [375, 4], // se mostraría 400
+      [400, 4],
+      [400.0001, 6],
+      [420, 6], // se mostraría 400 → redondear antes cobraría S/4
+      [975, 6],
+      [1000, 6],
+      [1000.0001, 8],
+      [1020, 8], // se mostraría 1000 → redondear antes cobraría S/6
+    ])(
+      'create(): %d m exactos → deliveryFee %d (cobro con distancia exacta)',
+      async (exact, fee) => {
+        haversineSpy.mockReturnValue(exact);
+        const result = await service.create(userId, { ...dto, addressId });
+
+        expect(result.deliveryFee).toBe(fee);
+        expect(result.total).toBe(Math.round((49.8 + fee) * 100) / 100);
+      },
+    );
+
+    it.each([
+      [2475, false],
+      [2500, false],
+      [2500.0001, true],
+      [2520, true], // se mostraría 2500 → redondear antes NO avisaría
+    ])(
+      'create(): %d m exactos → push de pedido lejano = %s (radio 2500 con distancia exacta)',
+      async (exact, far) => {
+        haversineSpy.mockReturnValue(exact);
+        usersRepo.find.mockResolvedValue([
+          { id: 'admin-1', role: UserRole.ADMIN, fcmToken: 'token-admin-1' },
+        ]);
+        await service.create(userId, { ...dto, addressId });
+
+        const [, payload] = notificationsService.sendPushNotification.mock
+          .calls[0] as [string, { title: string }];
+        expect(payload.title.includes('fuera de la zona habitual')).toBe(far);
+      },
+    );
+
+    it.each([
+      [0, 0],
+      [24.999999, 0],
+      [25, 50], // .5 exacto → Math.round sube
+      [75, 100],
+      [125, 150],
+      [2525, 2550],
+      [2524.99, 2500],
+      [1e-9, 0],
+    ])(
+      'estimateDeliveryByCoords: %d m exactos → distanceMeters %d',
+      async (exact, shown) => {
+        haversineSpy.mockReturnValue(exact);
+        const result = await service.estimateDeliveryByCoords({
+          latitude: -12.2,
+          longitude: -76.9,
+        });
+
+        expect(result.distanceMeters).toBe(shown);
+        expect(Object.is(result.distanceMeters, -0)).toBe(false);
+        expect(result.distanceMeters! % 50).toBe(0);
+      },
+    );
+
+    it('estimateDeliveryFee: mismo fee que create() para 110 m exactos (4) y distanceMeters 100', async () => {
+      haversineSpy.mockReturnValue(110);
+      const result = await service.estimateDeliveryFee(userId, { addressId });
+
+      expect(result).toEqual({
+        deliveryFee: 4,
+        isFarOrder: false,
+        distanceMeters: 100,
+      });
+    });
+
+    it('sin coordenadas → distanceMeters null (no 0) y no calcula Haversine', async () => {
+      addressesRepo.findOne.mockResolvedValue(
+        seedAddress({ latitude: null, longitude: null }),
+      );
+      const result = await service.estimateDeliveryFee(userId, { addressId });
+
+      expect(result.distanceMeters).toBeNull();
+      expect(haversineSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('estimateDeliveryByCoords', () => {
+    it('coordenadas del local → tramo 1 (S/2), distancia 0, sin tocar direcciones ni crear pedido', async () => {
+      const result = await service.estimateDeliveryByCoords({
+        latitude: -12.1631,
+        longitude: -76.97,
+      });
+
+      expect(result).toEqual({
+        deliveryFee: 2,
+        isFarOrder: false,
+        distanceMeters: 0,
+      });
+      expect(addressesRepo.findOne).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('coordenadas lejanas → tramo sin techo (S/8) e isFarOrder true, nunca rechaza', async () => {
+      const result = await service.estimateDeliveryByCoords({
+        latitude: -12.19,
+        longitude: -76.95,
+      });
+
+      expect(result.deliveryFee).toBe(8);
+      expect(result.isFarOrder).toBe(true);
+      expect(result.distanceMeters).toBe(3700); // ~3697.65 m exactos
+    });
+
+    it('mismo resultado que estimateDeliveryFee para las mismas coordenadas (cálculo compartido)', async () => {
+      const coords = { latitude: -12.1658, longitude: -76.97 }; // ~300 m → S/4
+      addressesRepo.findOne.mockResolvedValue(seedAddress(coords));
+
+      const byAddress = await service.estimateDeliveryFee(userId, {
+        addressId,
+      });
+      const byCoords = await service.estimateDeliveryByCoords(coords);
+
+      expect(byCoords).toEqual(byAddress);
+      expect(byCoords.deliveryFee).toBe(4);
+    });
+
+    it('store_location sin configurar → NotFoundException', async () => {
+      settingsService.getStoreLocation.mockRejectedValue(
+        new NotFoundException(
+          'La ubicación del local todavía no está configurada (setting "store_location")',
+        ),
+      );
+
+      await expect(
+        service.estimateDeliveryByCoords({ latitude: -12.1, longitude: -76.9 }),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
   });

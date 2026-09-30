@@ -681,6 +681,87 @@ son gaps de cobertura ya conocidos de la feature base (límite exacto de tramo/r
 ahora también aplican a este endpoint por compartir el mismo cálculo — vale la pena cerrarlos para
 ambos endpoints juntos en una vuelta futura.
 
+### `GET /delivery/estimate?latitude=&longitude=` (coordenadas sueltas, pin del mapa)
+
+> `DeliveryController` nuevo (`@Controller('delivery')`, registrado en `OrdersModule`), `JwtAuthGuard`
+> (cualquier rol, a propósito: evita triangular `store_location` con `distanceMeters` sin login).
+> `OrdersService.estimateDeliveryByCoords(dto)` delega en el mismo `computeDelivery` que `create()` y
+> `estimateDeliveryFee()`. DTO `EstimateDeliveryByCoordsDto`: `@Transform(toCoordinate)` (vacío/solo
+> espacios → `undefined`, otro string → `Number(value)`, no-string se deja igual) + `@IsNumber` +
+> `@IsLatitude/@IsLongitude`. Respuesta `{ deliveryFee, isFarOrder, distanceMeters }`.
+>
+> **Auditado por `@tester` — primer pase NO LISTO (bug de query vacía → 0 → 200); re-auditado tras
+> el fix — veredicto: LISTO.**
+
+- [x] Compilación (`pnpm run build`) OK; lint OK; unit 26 suites 506/506; e2e 16 suites 451/451
+      (tras el fix) + 1 test nuevo de 0 explícito (orders e2e 99/99)
+- [x] Unit: `delivery.controller.spec.ts` (delegación) + `describe('estimateDeliveryByCoords')` (4 tests,
+      incluye `store_location` sin configurar → `NotFoundException`)
+- [x] Sin duplicación de lógica: `estimateDeliveryByCoords` solo llama a `computeDelivery`; e2e compara
+      contra `POST /orders/estimate-delivery-fee` para las mismas coords (fee 4, `toEqual`)
+- [x] 200 coords del local (fee 2, dist 0); (-12,-76) → fee 8, `isFarOrder: true` (nunca rechaza)
+- [x] 400: sin params (mensajes en español), solo latitude, `abc`, fuera de rango, `Infinity`,
+      `-Infinity`, arrays (`?latitude=1&latitude=2`), param extra (`forbidNonWhitelisted`)
+- [x] `-0` y notación exponencial (`-1.21631e1`) → 200 (números válidos)
+- [x] 401 sin token; admin también → 200 (cualquier rol)
+- [x] `store_location` sin configurar → 404 (e2e real, restaura el valor en `finally`)
+- [x] Swagger: tag `delivery`, `latitude`/`longitude` como query `required: true` `type: number`,
+      respuestas 200/400/401/404, `security: bearer` (verificado en `/docs-json` real)
+- [x] No rompe rutas `/orders/...` (e2e de orders completos en verde)
+- [x] **Fix de query vacía** (antes `Number('') === 0` → cotizaba (0,0) con 200): ahora
+      `?latitude=&longitude=`, `?latitude=%20`, `%20%20`/`%09` → 400 con "obligatoria" en español,
+      verificado con curl contra la app real (`node dist/main.js`). Los 4 tests
+      `... → 400 (no debe convertirse en 0)` fallaron contra el código previo al fix (`expected 400,
+      got 200`) y pasan ahora → el test de regresión detecta la reversión.
+- [x] El fix no sobrecorrige: `latitude=0&longitude=0` → 200 (curl + e2e nuevo), `-0` → 200, `1e1` → 200
+
+**Riesgos / casos borde no cubiertos:**
+
+- `0x10`/`0b1` se aceptan como 16/1 (inofensivo, dentro de rango); latitudes con |x| < 1e-6
+  (`1e-7`) se rechazan porque `@IsLatitude` valida el string `"1e-7"` (irrelevante para Lima).
+- `property foo should not exist` y el 401 `Unauthorized` salen en inglés (comportamiento global
+  del `ValidationPipe`/guard JWT, preexistente, no propio de este endpoint).
+- Con valor vacío el mensaje 400 incluye también "debe ser una latitud válida (-90 a 90)" junto a
+  "obligatoria" (redundante, no incorrecto).
+- ~~`distanceMeters` sale sin redondear~~ → ahora se redondea a 50 m (ver sección siguiente).
+
+### `distanceMeters` expuesto redondeado a múltiplos de 50 m (`computeDelivery`)
+
+> `DISTANCE_ROUNDING_METERS = 50`: solo se redondea el `distanceMeters` DEVUELTO
+> (`GET /delivery/estimate`, `POST /orders/estimate-delivery-fee`). `feeForDistance` e `isFarOrder`
+> siguen con la distancia exacta (decisión deliberada: redondear antes cambiaba lo cobrado en los
+> bordes de tramo). `POST /orders` no expone `distanceMeters`.
+>
+> **Auditado por `@tester` — veredicto: LISTO.**
+
+- [x] Build OK; eslint sin errores (corrido sin `--fix`); unit 26 suites 547/547; e2e 16 suites 456/456
+- [x] Tests QA nuevos en `orders.service.spec.ts` (`describe('QA — redondeo de distanceMeters no
+      altera lo cobrado ...')`, `haversineDistanceMeters` mockeado con `jest.spyOn` para fijar la
+      distancia exacta sin ruido de flotante):
+  - `create()` en ambos lados de cada borde: 0/74.9/75/100 → S/2; 100.0001/110/124.99/375/400 → S/4;
+    400.0001/420/975/1000 → S/6; 1000.0001/1020 → S/8 (cierra el gap previo de "límite exacto de tramo")
+  - push de pedido lejano: 2475/2500 → normal; 2500.0001/2520 → "fuera de la zona habitual"
+    (cierra el gap previo del límite exacto del radio de aviso)
+  - redondeo: 25 → 50 (.5 exacto sube, `Math.round`), 24.999999 → 0, 75 → 100, 125 → 150,
+    2525 → 2550, 2524.99 → 2500, 1e-9 → 0 (nunca `-0`), siempre `% 50 === 0`
+  - `estimateDeliveryFee` 110 m → `{ deliveryFee: 4, isFarOrder: false, distanceMeters: 100 }`
+  - sin coordenadas → `distanceMeters: null` (no 0) y Haversine no se llama
+- [x] Mutaciones (en copia en scratchpad, `src/` real intacto): redondear ANTES del tramo → 14 tests
+      fallan; quitar el redondeo → 19 fallan; `Math.floor` en vez de `Math.round` → 8 fallan
+- [x] Negativos imposibles: Haversine = R·2·atan2(√a, √(1−a)) ≥ 0, y el redondeo de 0 da `+0`
+- [x] Swagger: ninguna descripción dice "exacta"; solo "deliveryFee, isFarOrder y distanceMeters calculados"
+
+**Riesgos / casos borde no cubiertos:**
+
+- El redondeo NO impide triangular con consultas repetidas: los saltos del valor redondeado ocurren
+  en distancias exactas (25, 75, 125… m) y los saltos de `deliveryFee`/`isFarOrder` en 100/400/1000/2500 m
+  exactos; una búsqueda binaria sobre el pin reconstruye círculos de radio exacto. Solo sube el costo
+  (varias decenas de requests en vez de 3). Mitigación real sería rate limit y/o jitter, fuera de alcance.
+- Comentario desactualizado en `src/modules/orders/delivery.controller.ts:22` ("distanceMeters exacto
+  desde 3 puntos…"): ya no es exacto. No es Swagger (no lo ve el cliente).
+- Swagger no documenta que `distanceMeters` va redondeado a 50 m (no hay DTO de respuesta tipado).
+
+
 ## Cancelar un pedido `en_camino`, con motivo obligatorio solo en ese caso (`OrdersService`)
 
 > Feature nueva: `VALID_TRANSITIONS[OrderStatus.EN_CAMINO]` ahora es `[ENTREGADO, CANCELADO]`

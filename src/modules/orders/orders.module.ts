@@ -9,6 +9,7 @@ import { Address } from '../users/entities/address.entity';
 import { User } from '../users/entities/user.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { Order } from './entities/order.entity';
+import { DeliveryController } from './delivery.controller';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 
@@ -20,7 +21,7 @@ import { OrdersService } from './orders.service';
     NotificationsModule,
     SettingsModule,
   ],
-  controllers: [OrdersController],
+  controllers: [OrdersController, DeliveryController],
   providers: [OrdersService],
   exports: [OrdersService],
 })

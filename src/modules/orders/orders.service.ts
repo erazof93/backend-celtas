@@ -26,6 +26,7 @@ import { DeliveryFeeTier, SettingsService } from '../settings/settings.service';
 import { Address } from '../users/entities/address.entity';
 import { User, UserRole } from '../users/entities/user.entity';
 import { CreateOrderDto, CreateOrderItemDto } from './dto/create-order.dto';
+import { EstimateDeliveryByCoordsDto } from './dto/estimate-delivery-by-coords.dto';
 import { EstimateDeliveryFeeDto } from './dto/estimate-delivery-fee.dto';
 import { QueryOrdersDto } from './dto/query-orders.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
@@ -40,6 +41,9 @@ const VALID_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.ENTREGADO]: [],
   [OrderStatus.CANCELADO]: [],
 };
+
+/** Granularidad (metros) del `distanceMeters` que se expone en las respuestas de delivery. */
+const DISTANCE_ROUNDING_METERS = 50;
 
 export interface PaginatedOrders {
   items: Order[];
@@ -388,6 +392,22 @@ export class OrdersService {
     return this.computeDelivery(coords);
   }
 
+  /**
+   * Estima el delivery para coordenadas sueltas (`GET /delivery/estimate`, ej. el
+   * pin del mapa antes de guardar la dirección). Mismo `computeDelivery` que
+   * `create()`: lo que se cotiza acá es exactamente lo que se cobrará.
+   */
+  async estimateDeliveryByCoords(dto: EstimateDeliveryByCoordsDto): Promise<{
+    deliveryFee: number;
+    isFarOrder: boolean;
+    distanceMeters: number | null;
+  }> {
+    return this.computeDelivery({
+      latitude: dto.latitude,
+      longitude: dto.longitude,
+    });
+  }
+
   /** Etiqueta legible de un estado de pedido para las notificaciones. */
   private statusLabel(status: OrderStatus): string {
     const labels: Record<OrderStatus, string> = {
@@ -479,10 +499,16 @@ export class OrdersService {
       this.settingsService.getDeliveryAlertRadiusMeters(),
     ]);
 
+    // Tarifa y aviso con la distancia EXACTA (redondear antes movería los
+    // bordes de tramo: 120 m → 100 m cobraría S/2 en vez de S/4). Solo la
+    // distancia expuesta se redondea, para no permitir triangular la
+    // ubicación del local con distancias al metro desde 3 puntos.
     return {
       deliveryFee: this.feeForDistance(distanceMeters, tiers),
       isFarOrder: distanceMeters > alertRadiusMeters,
-      distanceMeters,
+      distanceMeters:
+        Math.round(distanceMeters / DISTANCE_ROUNDING_METERS) *
+        DISTANCE_ROUNDING_METERS,
     };
   }
 

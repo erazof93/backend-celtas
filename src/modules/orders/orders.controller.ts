@@ -75,7 +75,8 @@ export class OrdersController {
   })
   @ApiResponse({
     status: 201,
-    description: 'deliveryFee, isFarOrder y distanceMeters calculados',
+    description:
+      'deliveryFee, isFarOrder y distanceMeters calculados (distanceMeters redondeado a múltiplos de 50 m; la tarifa usa la distancia exacta)',
   })
   @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
   @ApiResponse({

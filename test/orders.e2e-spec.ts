@@ -876,7 +876,7 @@ describe('Orders (e2e)', () => {
 
       expect(data.deliveryFee).toBe(2);
       expect(data.isFarOrder).toBe(false);
-      expect(data.distanceMeters).toBeCloseTo(7.77, 1);
+      expect(data.distanceMeters).toBe(0); // ~7.77 m exactos, expuesto redondeado a 50 m
       const ordersAfter = await ordersRepo.count({
         where: { userId: clientAId },
       });
@@ -928,6 +928,180 @@ describe('Orders (e2e)', () => {
         addressId: 'no-es-un-uuid',
       }).expect(400);
       expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+  });
+
+  describe('GET /delivery/estimate', () => {
+    interface DeliveryEstimate {
+      deliveryFee: number;
+      isFarOrder: boolean;
+      distanceMeters: number | null;
+    }
+
+    const estimate = (query: string, token: string | null = clientAToken) => {
+      const req = request(app.getHttpServer()).get(
+        `/delivery/estimate${query}`,
+      );
+      return token ? req.set('Authorization', `Bearer ${token}`) : req;
+    };
+
+    it('coordenadas del local → 200 con fee del primer tramo (S/2) y distancia 0', async () => {
+      const res = await estimate('?latitude=-12.1631&longitude=-76.97').expect(
+        200,
+      );
+      expect((res.body as Envelope).data).toEqual({
+        deliveryFee: 2,
+        isFarOrder: false,
+        distanceMeters: 0,
+      });
+    });
+
+    it.each([
+      ['~7.8 m', '?latitude=-12.16315&longitude=-76.97005', 0, 2],
+      [
+        '~120 m (borde de tramo)',
+        '?latitude=-12.16418&longitude=-76.97',
+        100,
+        4,
+      ],
+      ['~852 m', '?latitude=-12.169&longitude=-76.965', 850, 6],
+      ['~107 km', '?latitude=-12&longitude=-76', 107000, 8],
+    ])(
+      '%s → distanceMeters múltiplo de 50 (%i) y fee con la distancia exacta (S/%i)',
+      async (_label, query, shown, fee) => {
+        const res = await estimate(query).expect(200);
+        const data = (res.body as Envelope).data as DeliveryEstimate;
+        expect(data.distanceMeters).toBe(shown);
+        expect(data.distanceMeters! % 50).toBe(0);
+        expect(data.deliveryFee).toBe(fee);
+      },
+    );
+
+    it('coordenadas lejanas (-12, -76) → 200, tramo sin techo (S/8) e isFarOrder true (nunca rechaza)', async () => {
+      const res = await estimate('?latitude=-12&longitude=-76').expect(200);
+      const data = (res.body as Envelope).data as DeliveryEstimate;
+      expect(data.deliveryFee).toBe(8);
+      expect(data.isFarOrder).toBe(true);
+      expect(data.distanceMeters).toBeGreaterThan(100000);
+    });
+
+    it('mismo resultado que POST /orders/estimate-delivery-fee para la misma dirección', async () => {
+      const addr = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: `Delivery ${suffix}`,
+          fullAddress: 'Av. Estimate 300',
+          district: 'San Juan de Miraflores',
+          latitude: -12.1658,
+          longitude: -76.97,
+        })
+        .expect(201);
+      const byAddress = await request(app.getHttpServer())
+        .post('/orders/estimate-delivery-fee')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          addressId: ((addr.body as Envelope).data as { id: string }).id,
+        })
+        .expect(201);
+      const byCoords = await estimate(
+        '?latitude=-12.1658&longitude=-76.97',
+      ).expect(200);
+
+      expect((byCoords.body as Envelope).data).toEqual(
+        (byAddress.body as Envelope).data,
+      );
+      expect(
+        ((byCoords.body as Envelope).data as DeliveryEstimate).deliveryFee,
+      ).toBe(4);
+    });
+
+    it('sin params → 400 con mensajes en español', async () => {
+      const res = await estimate('').expect(400);
+      const message = (res.body as ErrorResponse).message;
+      expect(message).toContain('latitude es obligatoria y debe ser un número');
+      expect(message).toContain(
+        'longitude es obligatoria y debe ser un número',
+      );
+    });
+
+    it.each([
+      ['solo latitude', '?latitude=-12.1631'],
+      ['latitude no numérica', '?latitude=abc&longitude=-76.97'],
+      ['latitude fuera de rango', '?latitude=100&longitude=-76.97'],
+      ['longitude fuera de rango', '?latitude=-12&longitude=200'],
+    ])('%s → 400', async (_label, query) => {
+      await estimate(query).expect(400);
+    });
+
+    it('401 sin token (con login a propósito: evita triangular el local)', async () => {
+      await estimate('?latitude=-12.1631&longitude=-76.97', null).expect(401);
+    });
+
+    // --- Auditoría tester: casos borde de la query ---
+
+    it('cualquier rol autenticado: admin también → 200', async () => {
+      await estimate('?latitude=-12.1631&longitude=-76.97', adminToken).expect(
+        200,
+      );
+    });
+
+    it.each([
+      ['Infinity', '?latitude=Infinity&longitude=-76.97'],
+      ['-Infinity', '?latitude=-12&longitude=-Infinity'],
+      [
+        'array (?latitude=1&latitude=2)',
+        '?latitude=1&latitude=2&longitude=-76.97',
+      ],
+      [
+        'param extra (forbidNonWhitelisted)',
+        '?latitude=-12&longitude=-76.97&foo=1',
+      ],
+    ])('%s → 400', async (_label, query) => {
+      await estimate(query).expect(400);
+    });
+
+    it('-0 y notación exponencial (1e1) son números válidos → 200', async () => {
+      await estimate('?latitude=-0&longitude=-0').expect(200);
+      await estimate('?latitude=-1.21631e1&longitude=-76.97').expect(200);
+    });
+
+    // El fix de "vacío → 400" no debe rechazar el 0 explícito (coordenada válida).
+    it('0 explícito es una coordenada válida → 200 con distancia > 0', async () => {
+      const res = await estimate('?latitude=0&longitude=0').expect(200);
+      const data = (res.body as Envelope).data as DeliveryEstimate;
+      expect(data.distanceMeters).toBeGreaterThan(0);
+      expect(data.isFarOrder).toBe(true);
+    });
+
+    // Number('') === 0 y Number(' ') === 0: sin este chequeo un param vacío
+    // cotiza el punto (0,0) en vez de rechazar.
+    it.each([
+      ['latitude vacía', '?latitude=&longitude=-76.97'],
+      ['longitude vacía', '?latitude=-12.1631&longitude='],
+      ['ambas vacías', '?latitude=&longitude='],
+      ['latitude solo espacio', '?latitude=%20&longitude=-76.97'],
+    ])('%s → 400 (no debe convertirse en 0)', async (_label, query) => {
+      await estimate(query).expect(400);
+    });
+
+    it('store_location sin configurar → 404 (no 500)', async () => {
+      const original = await settingsRepo.findOneByOrFail({
+        key: 'store_location',
+      });
+      const originalValue = original.value;
+      await settingsRepo.update({ key: 'store_location' }, { value: '' });
+      try {
+        const res = await estimate(
+          '?latitude=-12.1631&longitude=-76.97',
+        ).expect(404);
+        expect((res.body as ErrorResponse).statusCode).toBe(404);
+      } finally {
+        await settingsRepo.update(
+          { key: 'store_location' },
+          { value: originalValue },
+        );
+      }
     });
   });
 
