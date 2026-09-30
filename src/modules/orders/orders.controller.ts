@@ -18,17 +18,23 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { UserThrottlerGuard } from '../../common/guards/user-throttler.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from '../users/entities/user.entity';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { EstimateDeliveryFeeDto } from './dto/estimate-delivery-fee.dto';
+import { GeocodeAddressDto } from './dto/geocode-address.dto';
 import { QueryMyOrdersDto } from './dto/query-my-orders.dto';
 import { QueryOrdersDto } from './dto/query-orders.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrdersService } from './orders.service';
+
+/** Máximo de GET /orders/geocode por usuario por minuto. */
+export const GEOCODE_LIMIT_PER_MINUTE = 10;
 
 interface AuthenticatedRequest extends Request {
   user: { userId: string; email: string; role: string };
@@ -89,6 +95,41 @@ export class OrdersController {
     @Body() dto: EstimateDeliveryFeeDto,
   ) {
     return this.ordersService.estimateDeliveryFee(req.user.userId, dto);
+  }
+
+  // Declarado antes de GET /orders/:id para que 'geocode' no se tome como un :id.
+  @Get('geocode')
+  // Protege los 5 req/seg del plan gratis de Geoapify, compartidos con el
+  // autocompletado de la app. 'auth' es el único throttler registrado
+  // (AuthModule); el contador es propio de este handler, no se mezcla con login.
+  @UseGuards(JwtAuthGuard, UserThrottlerGuard)
+  @Throttle({ auth: { limit: GEOCODE_LIMIT_PER_MINUTE, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Geocodificar una dirección a coordenadas [lat, lng]',
+    description:
+      'Resuelve la dirección con Geoapify (filtrado a Perú). Devuelve [latitude, longitude]. Incluir distrito o ciudad en el texto: "Jr. Carabaya 250" sin ciudad no se encuentra, "Jr. Carabaya 250, Lima" sí. Resultados con confianza < 0.5 se tratan como no encontrados.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Coordenadas [latitude, longitude]',
+    schema: { example: { success: true, data: [-12.0466994, -77.03041] } },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Dirección vacía, demasiado larga o no encontrada',
+  })
+  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
+  @ApiResponse({
+    status: 429,
+    description: `Más de ${GEOCODE_LIMIT_PER_MINUTE} geocodificaciones por minuto del mismo usuario`,
+  })
+  @ApiResponse({
+    status: 503,
+    description:
+      'Geoapify no disponible (API key sin configurar, rate limit o caída)',
+  })
+  geocodeAddress(@Query() dto: GeocodeAddressDto) {
+    return this.ordersService.geocodeAddress(dto.address);
   }
 
   @Get('me')

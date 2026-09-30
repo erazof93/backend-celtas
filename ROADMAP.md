@@ -169,8 +169,9 @@ celtas-backend/
   de columna en `sortBy` (rechazados con 400 por `ValidationPipe` + `forbidNonWhitelisted`, nunca
   llegan al ORM).
 - [x] **Coordenadas GPS en direcciones (`Address.latitude`/`longitude`), contraparte backend de
-  autocompletado + GPS + mapa (Geoapify) 100% client-side en `celtas-mobile`** — este backend
-  nunca llama a Geoapify, solo persiste `latitude`/`longitude` ya resueltas por la app. Columnas
+  autocompletado + GPS + mapa (Geoapify) 100% client-side en `celtas-mobile`** — el CRUD de
+  direcciones no llama a Geoapify, solo persiste `latitude`/`longitude` ya resueltas por la app
+  (la única llamada del backend a Geoapify es `GET /orders/geocode`, ver sección 4). Columnas
   nuevas `double precision` nullable en `Address` (sin backfill; direcciones existentes sin
   coordenadas siguen siendo válidas). `CreateAddressDto`/`UpdateAddressDto` validan con
   `@IsNumber()` + `@IsLatitude()`/`@IsLongitude()` (`class-validator` 0.15.1, confirmado
@@ -560,6 +561,38 @@ celtas-backend/
         bloqueantes: falta test de regresión automatizado para `limit=101`/no-numérico (solo
         verificado en vivo), y no es paginación completa (sin `skip`/cursor) — queda para cuando
         `celtas-app` construya el historial de pedidos. Ver detalle en `docs/testing-checklist.md`.
+- [x] **`GET /orders/geocode?address=` — dirección en texto → `[latitude, longitude]` vía
+  Geoapify (JWT).** Primera llamada del backend a Geoapify (antes 100% client-side). Nuevo
+  `GeoapifyService` en `orders/` con `fetch` nativo (sin SDK ni dependencia nueva), mismos
+  parámetros que la app (`lang=es`, `filter=countrycode:pe`, `limit=1`), timeout 10 s.
+  `GEOAPIFY_API_KEY` **opcional** (Joi + `configuration.ts` + `.env.example`): sin key la app
+  arranca y solo este endpoint responde 503. Contrato: vacío/solo espacios/>200 chars → 400;
+  sin resultado o `rank.confidence < 0.5` → 400 `Dirección no encontrada: "<texto>"`; falla del
+  proveedor (sin key, 429, 5xx, red, JSON inválido) → 503, **nunca reescrito a 400**. El umbral
+  0.5 sale de una prueba real: "Av. Los Héroes 500" sin distrito devolvía "Avenida Alfredo
+  Benavides 5540" con confidence 0.09. Gotcha verificado contra la API: "Jr. Carabaya 250" sin
+  ciudad NO se encuentra, "Jr. Carabaya 250, Lima" sí — el cliente debe incluir distrito/ciudad
+  (documentado en Swagger). Declarado antes de `GET /orders/:id`. Los e2e sobreescriben
+  `GeoapifyService` con un stub (sin red ni key en CI; rate limit compartido con la app).
+  `@tester`: **LISTO** — 601 unit (28 suites) + 498 e2e (17 suites), build/lint limpios,
+  apiKey ausente de logs y respuestas, texto URL-encoded sin inyección de params, mutaciones
+  (sin `trim`, 503→400, URL concatenada, log con key, ruta después de `:id`) rompen tests.
+  Riesgo restante, no bloqueante: sin caché de direcciones repetidas. **Pendiente en Render**:
+  configurar `GEOAPIFY_API_KEY`.
+- [x] **Rate limit de `GET /orders/geocode`: 10/min por usuario (`GEOCODE_LIMIT_PER_MINUTE`).**
+  Nuevo `UserThrottlerGuard` (`common/guards/`) que extiende `ThrottlerGuard` y trackea por
+  `user:<userId>` en vez de por IP (CGNAT en datos móviles: muchos clientes comparten IP
+  pública); sin `req.user` cae a la IP. `@UseGuards(JwtAuthGuard, UserThrottlerGuard)` — el
+  orden hace que 401 gane sobre 429. Reusa el único named throttler `auth` vía
+  `@Throttle({ auth: {...} })`: la key del contador incluye clase + handler, así que NO se mezcla
+  con login/register ni altera su 5/min (verificado con test de aislamiento). Suite propia
+  `test/geocode-throttle.e2e-spec.ts` (sin override del guard); `orders.e2e-spec.ts` lo desactiva.
+  `@tester`: **LISTO** — 604 unit (29 suites) + 504 e2e (18 suites), mutaciones (tracker por IP,
+  guards invertidos, `generateKey` común) rompen tests. Riesgos no bloqueantes: límite por
+  usuario, no global (muchos usuarios simultáneos aún pueden pasar los 5 req/seg → 503);
+  storage en memoria (OK con una instancia en Render free; con varias haría falta Redis); los
+  400 del DTO consumen cupo (guards antes que pipes); el 429 reusa el `errorMessage` genérico de
+  `AuthModule`; multi-cuenta multiplica el cupo.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)

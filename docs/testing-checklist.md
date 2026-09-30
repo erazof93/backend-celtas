@@ -761,6 +761,83 @@ ambos endpoints juntos en una vuelta futura.
   desde 3 puntos…"): ya no es exacto. No es Swagger (no lo ve el cliente).
 - Swagger no documenta que `distanceMeters` va redondeado a 50 m (no hay DTO de respuesta tipado).
 
+### `GET /orders/geocode?address=` (texto → `[lat, lng]` vía Geoapify)
+
+> `GeoapifyService` nuevo (fetch nativo, `lang=es`, `filter=countrycode:pe`, `limit=1`, timeout 10 s,
+> `rank.confidence < 0.5` → `null`; sin key / 429 / 5xx / red → 503). `OrdersService.geocodeAddress`
+> (trim; vacío → 400 "Dirección es requerida"; `null` → 400 `Dirección no encontrada: "<texto>"`; 503 se
+> propaga). `JwtAuthGuard` (cualquier rol), declarado antes de `GET /orders/:id`. `GEOAPIFY_API_KEY`
+> opcional (Joi + `configuration.ts` + `.env.example`).
+>
+> **Auditado por `@tester` — veredicto: LISTO** (sin llamadas a la API real de Geoapify).
+
+- [x] Build OK; eslint limpio; unit 28 suites 601/601; e2e 17 suites 498/498 (orders 114)
+- [x] Unit `geoapify.service.spec.ts` (fetch mockeado) + `describe('geocodeAddress')` en `orders.service.spec.ts`
+- [x] Tests QA nuevos: texto con `& # ? =` y tildes va URL-encoded (no inyecta `apiKey`/`limit`/`filter`);
+      429/500/red/JSON inválido → 503 en español y ni el log ni la respuesta contienen la apiKey; body
+      sin `results` y resultado sin `rank` → `null`; e2e: 503 del proveedor llega como 503 (no 400),
+      `address` repetido y param extra → 400, 200 caracteres exactos pasa el DTO, `GET /orders/not-a-uuid`
+      sigue dando el 400 de `ParseUUIDPipe`
+- [x] Mutaciones (copia en scratchpad, `src/` real intacto): sin `trim` → 2 fallan; 503 reescrito a
+      `null`/400 → 1 unit + 1 e2e fallan; URL por concatenación sin encoding → 1 falla; loguear la URL
+      (con key) → 4 fallan; mover `@Get('geocode')` después de `@Get(':id')` → 6 e2e fallan
+- [x] Contrato: sin `address`, solo espacios, >200, array, param extra → 400 en español
+- [x] Seguridad: 401 sin token (e2e + app real); apiKey solo viaja en la query hacia Geoapify
+- [x] Ningún otro módulo construye `OrdersService` a mano sin el provider (delivery/rewards specs lo
+      mockean; las suites e2e con `AppModule` pasan completas)
+- [x] Swagger (`/docs-json` real): `address` query `required`, `maxLength: 200`, respuestas
+      200/400/401/503, `security: bearer`, tag `orders`; `/orders/{id}` GET sigue presente
+
+**Riesgos / casos borde no cubiertos:**
+
+- [x] ~~Sin rate limit propio~~ → resuelto con `UserThrottlerGuard` (ver subsección siguiente).
+- [ ] Sin caché de resultados (cada request consume cuota aunque la dirección se repita).
+- [ ] El 400 "no encontrada" refleja el texto del usuario (JSON, máx. 200 caracteres; riesgo bajo).
+- [ ] `ROADMAP.md` (ítem de coordenadas GPS) dice "este backend nunca llama a Geoapify": ya no es cierto.
+- [ ] El timeout de 10 s y el caso "sin key → 503" end-to-end contra la app real no se probaron
+      (solo unit), para no tocar `.env` ni la API real.
+
+### Rate limit de `GET /orders/geocode` (`UserThrottlerGuard`, 10/min por usuario)
+
+> `UserThrottlerGuard` (extiende `ThrottlerGuard`, tracker `user:<userId>`, fallback a `req.ip`).
+> `@UseGuards(JwtAuthGuard, UserThrottlerGuard)` + `@Throttle({ auth: { limit: 10, ttl: 60_000 } })`
+> reutilizando el throttler nombrado `auth` (único registrado, `ThrottlerModule.forRoot` en `AuthModule`,
+> módulo `@Global` de la librería). Storage en memoria.
+>
+> **Auditado por `@tester` — veredicto: LISTO** (sin llamadas a la API real de Geoapify, `.env` intacto).
+
+- [x] Build OK; unit 29 suites 604/604; e2e 18 suites 504/504 (`geocode-throttle` 6 tests)
+- [x] Aislamiento de contadores: `@nestjs/throttler` 6.5.0 `generateKey` = `Clase-handler-nombre-tracker`
+      (hash), así que geocode (`OrdersController-geocodeAddress-auth-user:…`) y login/register
+      (`AuthController-login-auth-<ip>`) tienen claves distintas. `@Throttle` es metadata del handler:
+      no altera el 5/min de `/auth/*`
+- [x] Tests QA nuevos (`test/geocode-throttle.e2e-spec.ts`): 12 requests sin token seguidas → todas 401
+      (nunca 429); suite con app propia y SIN override de `ThrottlerGuard`: agotar geocode (10×200, 11ª
+      429) y luego login 5×200, 6º → 429 (no se consumen entre sí y login conserva su límite)
+- [x] Mutaciones (copia en scratchpad, `src/` real intacto): invertir orden de guards → 3 fallan
+      (incluido el test nuevo de 12×401, que no depende del orden de los tests); `generateKey` común para
+      todos los handlers → 2 fallan (incluido el de aislamiento con login); `getTracker`→`req.ip` → 1
+      falla (verificado por la sesión principal)
+- [x] Orden de guards: 401 gana sobre 429 (JwtAuthGuard corre primero; sin token el throttler no
+      cuenta). App real (`dist/`): 12× sin token → 12× 401
+- [x] Swagger (`/docs-json` real): `/orders/geocode` GET con 200/400/401/429/503 y `security: bearer`;
+      `/auth/login` sigue con 200/401/429
+- [x] `orders.e2e-spec.ts` desactiva solo `UserThrottlerGuard`; `geocode-throttle` desactiva solo
+      `ThrottlerGuard` (override por token de clase, no afecta a la subclase)
+
+**Riesgos / casos borde no cubiertos:**
+
+- [ ] Storage en memoria: correcto con una sola instancia (Render free). El contador se reinicia en cada
+      deploy/reinicio o spin-down por inactividad (tolerable: solo relaja el límite). Si se escala a >1
+      instancia, el límite efectivo se multiplica → habría que pasar a storage compartido (Redis).
+- [ ] 10/min es por usuario, no global: N usuarios en ráfaga pueden superar los 5 req/seg del plan de
+      Geoapify (el 429 del proveedor ya se traduce a 503). No hay límite global.
+- [ ] Requests con 400 del DTO también consumen cupo (los guards corren antes que los pipes).
+- [ ] El mensaje 429 es el `errorMessage` global de `AuthModule` ("Demasiados intentos..."): genérico,
+      no menciona geocodificación. Si se cambia ese texto para auth, cambia también aquí.
+- [ ] Cuentas nuevas sin límite de registro por usuario: un atacante puede crear cuentas (register limitado
+      a 5/min por IP) y multiplicar su cupo de geocode.
+
 
 ## Cancelar un pedido `en_camino`, con motivo obligatorio solo en ese caso (`OrdersService`)
 

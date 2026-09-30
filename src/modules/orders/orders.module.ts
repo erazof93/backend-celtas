@@ -10,6 +10,7 @@ import { User } from '../users/entities/user.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { Order } from './entities/order.entity';
 import { DeliveryController } from './delivery.controller';
+import { GeoapifyService } from './geoapify.service';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 
@@ -22,7 +23,7 @@ import { OrdersService } from './orders.service';
     SettingsModule,
   ],
   controllers: [OrdersController, DeliveryController],
-  providers: [OrdersService],
+  providers: [OrdersService, GeoapifyService],
   exports: [OrdersService],
 })
 export class OrdersModule {}

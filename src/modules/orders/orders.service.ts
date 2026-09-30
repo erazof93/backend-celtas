@@ -29,6 +29,7 @@ import { CreateOrderDto, CreateOrderItemDto } from './dto/create-order.dto';
 import { EstimateDeliveryByCoordsDto } from './dto/estimate-delivery-by-coords.dto';
 import { EstimateDeliveryFeeDto } from './dto/estimate-delivery-fee.dto';
 import { QueryOrdersDto } from './dto/query-orders.dto';
+import { GeoapifyService } from './geoapify.service';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrderItem } from './entities/order-item.entity';
 import { Order, OrderStatus } from './entities/order.entity';
@@ -85,6 +86,7 @@ export class OrdersService {
     private readonly rewardsService: RewardsService,
     private readonly notificationsService: NotificationsService,
     private readonly settingsService: SettingsService,
+    private readonly geoapifyService: GeoapifyService,
   ) {}
 
   async create(userId: string, dto: CreateOrderDto): Promise<Order> {
@@ -360,6 +362,24 @@ export class OrdersService {
 
         return saved;
       });
+  }
+
+  /**
+   * Dirección en texto → `[latitude, longitude]` vía Geoapify. Vacía o sin resultado
+   * confiable → 400. Las fallas del proveedor (sin key, 429, caída) salen como 503
+   * desde `GeoapifyService` y NO se reescriben a 400: no son culpa de la dirección.
+   */
+  async geocodeAddress(address: string): Promise<[number, number]> {
+    const text = address?.trim();
+    if (!text) {
+      throw new BadRequestException('Dirección es requerida');
+    }
+
+    const coords = await this.geoapifyService.geocode(text);
+    if (!coords) {
+      throw new BadRequestException(`Dirección no encontrada: "${text}"`);
+    }
+    return coords;
   }
 
   /**

@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -17,6 +18,7 @@ import { Address } from '../users/entities/address.entity';
 import { User, UserRole } from '../users/entities/user.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { Order, OrderStatus } from './entities/order.entity';
+import { GeoapifyService } from './geoapify.service';
 import { OrdersService } from './orders.service';
 import * as geoUtil from '../../common/utils/geo.util';
 
@@ -38,6 +40,7 @@ describe('OrdersService', () => {
   let usersRepo: { findOne: jest.Mock; find: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let configService: { get: jest.Mock };
+  let geoapifyService: { geocode: jest.Mock };
   let couponsService: {
     applyToOrder: jest.Mock;
     markUsed: jest.Mock;
@@ -171,6 +174,8 @@ describe('OrdersService', () => {
       ]),
       getDeliveryAlertRadiusMeters: jest.fn().mockResolvedValue(2500),
     };
+    // Nunca pegarle a Geoapify real desde un test unitario (rate limit compartido).
+    geoapifyService = { geocode: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -186,6 +191,7 @@ describe('OrdersService', () => {
         { provide: RewardsService, useValue: rewardsService },
         { provide: NotificationsService, useValue: notificationsService },
         { provide: SettingsService, useValue: settingsService },
+        { provide: GeoapifyService, useValue: geoapifyService },
       ],
     }).compile();
 
@@ -1801,6 +1807,48 @@ describe('OrdersService', () => {
 
       const result = await service.create(userId, { ...dto, addressId });
       expect(result.status).toBe(OrderStatus.PENDIENTE);
+    });
+  });
+
+  describe('geocodeAddress', () => {
+    it('dirección válida → [lat, lng] (texto recortado antes de enviarlo)', async () => {
+      geoapifyService.geocode.mockResolvedValue([-12.0466994, -77.03041]);
+
+      const result = await service.geocodeAddress('  Jr. Carabaya 250, Lima  ');
+
+      expect(result).toEqual([-12.0466994, -77.03041]);
+      expect(result[0]).toBeLessThan(0); // Lima: latitud sur
+      expect(geoapifyService.geocode).toHaveBeenCalledWith(
+        'Jr. Carabaya 250, Lima',
+      );
+    });
+
+    it.each(['', '   '])(
+      'dirección vacía (%p) → 400 sin llamar a Geoapify',
+      async (address) => {
+        await expect(service.geocodeAddress(address)).rejects.toThrow(
+          new BadRequestException('Dirección es requerida'),
+        );
+        expect(geoapifyService.geocode).not.toHaveBeenCalled();
+      },
+    );
+
+    it('dirección sin resultado → 400 "Dirección no encontrada"', async () => {
+      geoapifyService.geocode.mockResolvedValue(null);
+
+      await expect(service.geocodeAddress('xyzabc123notreal')).rejects.toThrow(
+        new BadRequestException('Dirección no encontrada: "xyzabc123notreal"'),
+      );
+    });
+
+    it('falla del proveedor (503) se propaga tal cual, no se reescribe a 400', async () => {
+      geoapifyService.geocode.mockRejectedValue(
+        new ServiceUnavailableException('caído'),
+      );
+
+      await expect(
+        service.geocodeAddress('Jr. Carabaya 250, Lima'),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
     });
   });
 

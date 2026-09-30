@@ -47,6 +47,10 @@ export default () => ({
     // si la tabla está vacía. No lanza si falta (a diferencia de las requeridas).
     businessNumber: process.env.WHATSAPP_BUSINESS_NUMBER,
   },
+  geoapify: {
+    // Opcional (ver validation.schema.ts): sin key, GET /orders/geocode responde 503.
+    apiKey: process.env.GEOAPIFY_API_KEY,
+  },
   cloudinary: {
     cloudName: env('CLOUDINARY_CLOUD_NAME'),
     apiKey: env('CLOUDINARY_API_KEY'),

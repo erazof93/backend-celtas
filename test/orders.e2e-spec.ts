@@ -1,6 +1,7 @@
 import {
   ClassSerializerInterceptor,
   INestApplication,
+  ServiceUnavailableException,
   ValidationPipe,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
@@ -13,10 +14,12 @@ import { App } from 'supertest/types';
 import { Repository } from 'typeorm';
 import { AppModule } from './../src/app.module';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
+import { UserThrottlerGuard } from './../src/common/guards/user-throttler.guard';
 import { TransformInterceptor } from './../src/common/interceptors/transform.interceptor';
 import { Category } from './../src/modules/menu/entities/category.entity';
 import { MenuItem } from './../src/modules/menu/entities/menu-item.entity';
 import { Order } from './../src/modules/orders/entities/order.entity';
+import { GeoapifyService } from './../src/modules/orders/geoapify.service';
 import { Sauce } from './../src/modules/sauces/entities/sauce.entity';
 import { Setting } from './../src/modules/settings/entities/setting.entity';
 import { Address } from './../src/modules/users/entities/address.entity';
@@ -113,6 +116,26 @@ describe('Orders (e2e)', () => {
     })
       .overrideGuard(ThrottlerGuard)
       .useValue({ canActivate: () => true })
+      // Rate limit de GET /orders/geocode: se valida en geocode-throttle.e2e-spec.ts.
+      .overrideGuard(UserThrottlerGuard)
+      .useValue({ canActivate: () => true })
+      // Sin red real: Geoapify tiene rate limit compartido con la app y el CI no
+      // tiene API key. Stub con la respuesta real verificada para Jr. Carabaya 250.
+      .overrideProvider(GeoapifyService)
+      .useValue({
+        geocode: (text: string) =>
+          text === '__QA_503__'
+            ? Promise.reject(
+                new ServiceUnavailableException(
+                  'El servicio de geocodificación no está disponible, intenta de nuevo en unos segundos',
+                ),
+              )
+            : Promise.resolve(
+                text.startsWith('Jr. Carabaya 250')
+                  ? ([-12.0466994, -77.03041] as [number, number])
+                  : null,
+              ),
+      })
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -1656,6 +1679,109 @@ describe('Orders (e2e)', () => {
       expect(snapshotAfter).toBe(snapshotBefore);
       expect(snapshotAfter).toContain('Av. Los Álamos 123');
       expect(snapshotAfter).not.toContain('Av. CAMBIADA');
+    });
+  });
+
+  describe('GET /orders/geocode', () => {
+    const geocode = (address?: string, token?: string) => {
+      const req = request(app.getHttpServer()).get('/orders/geocode');
+      if (address !== undefined) req.query({ address });
+      if (token) req.set('Authorization', `Bearer ${token}`);
+      return req;
+    };
+
+    it('con token + dirección válida → 200 { success, data: [lat, lng] }', async () => {
+      const res = await geocode('Jr. Carabaya 250, Lima', clientAToken);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        success: true,
+        data: [-12.0466994, -77.03041],
+      });
+    });
+
+    it('sin token → 401', async () => {
+      const res = await geocode('Jr. Carabaya 250, Lima');
+
+      expect(res.status).toBe(401);
+    });
+
+    it('sin param address → 400', async () => {
+      const res = await geocode(undefined, clientAToken);
+
+      expect(res.status).toBe(400);
+      expect((res.body as ErrorResponse).success).toBe(false);
+    });
+
+    it('address solo espacios → 400 "Dirección es requerida"', async () => {
+      const res = await geocode('   ', clientAToken);
+
+      expect(res.status).toBe(400);
+      expect((res.body as ErrorResponse).message).toBe(
+        'Dirección es requerida',
+      );
+    });
+
+    it('dirección inexistente → 400 "Dirección no encontrada"', async () => {
+      const res = await geocode('xyzabc123notreal', clientAToken);
+
+      expect(res.status).toBe(400);
+      expect((res.body as ErrorResponse).message).toBe(
+        'Dirección no encontrada: "xyzabc123notreal"',
+      );
+    });
+
+    it('address > 200 caracteres → 400', async () => {
+      const res = await geocode('a'.repeat(201), clientAToken);
+
+      expect(res.status).toBe(400);
+    });
+
+    it('QA — proveedor caído → 503 con mensaje en español (no se reescribe a 400)', async () => {
+      const res = await geocode('__QA_503__', clientAToken);
+
+      expect(res.status).toBe(503);
+      expect((res.body as ErrorResponse).success).toBe(false);
+      expect((res.body as ErrorResponse).message).toMatch(
+        /geocodificación no está disponible/,
+      );
+    });
+
+    it('QA — address repetido (array) → 400; param extra → 400', async () => {
+      const arr = await request(app.getHttpServer())
+        .get('/orders/geocode?address=a&address=b')
+        .set('Authorization', `Bearer ${clientAToken}`);
+      expect(arr.status).toBe(400);
+
+      const extra = await request(app.getHttpServer())
+        .get('/orders/geocode')
+        .query({ address: 'Jr. Carabaya 250, Lima', foo: 'x' })
+        .set('Authorization', `Bearer ${clientAToken}`);
+      expect(extra.status).toBe(400);
+    });
+
+    it('QA — address de exactamente 200 caracteres pasa el DTO y llega al servicio', async () => {
+      const res = await geocode('a'.repeat(200), clientAToken);
+
+      expect(res.status).toBe(400);
+      expect((res.body as ErrorResponse).message).toMatch(
+        /^Dirección no encontrada/,
+      );
+    });
+
+    it('QA — GET /orders/:id intacto: UUID inválido → 400 de ParseUUIDPipe, no de geocode', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/orders/not-a-uuid')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).not.toMatch(/Dirección/);
+    });
+
+    it('no choca con GET /orders/:id (admin tampoco recibe 400 de ParseUUIDPipe)', async () => {
+      const res = await geocode('Jr. Carabaya 250, Lima', adminToken);
+
+      expect(res.status).toBe(200);
     });
   });
 });

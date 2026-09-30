@@ -42,6 +42,10 @@ export const validationSchema = Joi.object({
   // whatsapp_business_number). Se deja opcional como fallback si la tabla está vacía.
   WHATSAPP_BUSINESS_NUMBER: Joi.string().optional(),
 
+  // Geoapify (GET /orders/geocode). Opcional: sin key la app arranca igual y
+  // solo ese endpoint responde 503; el resto de la API no depende de ella.
+  GEOAPIFY_API_KEY: Joi.string().optional(),
+
   // Cloudinary (subida de imágenes del menú)
   CLOUDINARY_CLOUD_NAME: Joi.string().required(),
   CLOUDINARY_API_KEY: Joi.string().required(),
