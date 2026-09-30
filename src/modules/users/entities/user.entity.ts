@@ -42,7 +42,7 @@ export class User {
   googleId: string | null;
 
   @Column({ type: 'varchar', nullable: true })
-  phone: string;
+  phone: string | null;
 
   /**
    * Token de Firebase Cloud Messaging del dispositivo actual.

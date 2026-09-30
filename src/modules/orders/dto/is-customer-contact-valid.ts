@@ -3,20 +3,7 @@ import {
   ValidatorConstraint,
   ValidatorConstraintInterface,
 } from 'class-validator';
-import { normalizePeruMobile } from '../../../common/utils/phone.util';
 import type { CreateOrderAdminDto } from './create-order-admin.dto';
-
-/** customerPhone debe ser un celular peruano (se normaliza a 51XXXXXXXXX en el service). */
-@ValidatorConstraint({ name: 'isPeruMobile', async: false })
-export class IsPeruMobile implements ValidatorConstraintInterface {
-  validate(value: unknown): boolean {
-    return typeof value === 'string' && normalizePeruMobile(value) !== null;
-  }
-
-  defaultMessage(): string {
-    return 'customerPhone debe ser un celular peruano de 9 dígitos (ej. 987654321)';
-  }
-}
 
 /**
  * Con `customerId` el contacto sale del cliente registrado: mandar además

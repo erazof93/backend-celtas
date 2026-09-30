@@ -201,6 +201,13 @@ export class UsersController {
     description: 'Usuarios por página (default 10, máx 100)',
   })
   @ApiQuery({
+    name: 'search',
+    required: false,
+    example: '987 654',
+    description:
+      'Busca por nombre o email (contiene, sin distinguir mayúsculas) o por teléfono: se comparan solo los dígitos, así "987 654", "+51 987654" y "987-654" encuentran 51987654321. El teléfono se busca desde 3 dígitos. Máx. 100 caracteres.',
+  })
+  @ApiQuery({
     name: 'sortBy',
     required: false,
     enum: ['totalSpent', 'createdAt'],

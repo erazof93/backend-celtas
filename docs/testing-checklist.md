@@ -2899,3 +2899,45 @@ registra la confirmación del admin.
       "El pedido está cancelado: no corresponde mandarle WhatsApp".
 - [ ] Si la fila del cupón se borra después (DELETE del cupón o cascada al borrar el usuario), el mensaje rearmado muestra
       "Cupón" sin código y ya no coincide con el `whatsappUrl` original. Es aceptable, pero no tiene test.
+
+## Teléfonos internacionales (`normalizePhone`, E.164 sin "+") + búsqueda `GET /users?search=`
+
+- [x] **Compilación**: `pnpm run build` sin errores.
+- [x] **Unit**: 666/666 (incluye `phone.util.spec.ts`, users/orders service con normalización).
+- [x] **E2E**: 559/559 al inicio de la auditoría; `users.e2e-spec.ts` 87/87 después de agregar 10 tests de QA.
+- [x] **Barrido de `phone` en `src/`**: toda escritura pasa por `normalizePhone` (`UsersService.create`
+      para registro, `updateProfile`, `createOrderByAdmin`). El login con Google no escribe `phone`.
+      Settings (número del negocio) queda fuera de alcance. No quedan usos de `user.phone` que asuman
+      que no es nulo (`getWhatsappLinks`/`createOrderByAdmin` usan `order.user?.phone` → `normalizePhone`,
+      que acepta null). `normalizePeruMobile`/`IsPeruMobile` ya no se referencian en ningún lado.
+- [x] **Casos borde de `normalizePhone`** (probados contra `dist`): dígitos árabe-índicos o de ancho
+      completo y "＋" de ancho completo → null; NBSP y tabs/saltos de línea se tratan como separadores;
+      fijo `+51 1…` / `0051 1…` → null; `00 51 987…` → 51987…; `++51…`, `+0051…`, `051…`, `0987…` → null;
+      15 dígitos se aceptan y 16 no; 1000 dígitos → null (la regex es lineal, sin ReDoS).
+- [x] **Mensaje de error** en español y el mismo en DTO y service (`INVALID_PHONE_MESSAGE`).
+- [x] **Inyección SQL en `search`**: `ILike` y `Raw` usan parámetros (`:phoneDigits`); el alias del `Raw`
+      lo pone TypeORM y solo recibe dígitos. E2E con `' OR '1'='1`, `'; DROP TABLE users; --`,
+      `9' OR 1=1 --` → 200, no devuelve a todos y la tabla sigue intacta.
+- [x] `search` vacío o solo espacios → no filtra (mismo `meta.total`) (e2e). Mutación: quitar el trim
+      → 1 test falla.
+- [x] `%` y `_` se buscan como literales (e2e). Mutación: escapar solo `%` → falla el test de `_`.
+      Antes el `_` no tenía test.
+- [x] `search` repetido (array) → 400; más de 100 caracteres → 400.
+- [x] **Seguridad**: `GET /users?search=` sin token → 401, con rol cliente → 403; los resultados no
+      incluyen `password` (e2e).
+- [x] **Contrato de respuestas**: el diff no toca serialización ni campos de orders/users; lo único
+      que cambia es el formato de `phone`/`customerPhone` (51…).
+- [x] **Swagger**: `search` aparece una sola vez en GET /users, es opcional, y las descripciones de
+      `RegisterDto.phone`, `UpdateProfileDto.phone` y `CreateOrderAdminDto.customerPhone` explican el
+      formato (e2e sobre `SwaggerModule.createDocument`).
+- [x] Compatibilidad con celtas-app (lectura): el registro manda `null` si el teléfono está vacío,
+      así que el 400 nuevo para `""` no afecta a la app.
+- [ ] El registro de la app no valida el teléfono en el cliente: un número que antes se guardaba tal
+      cual (ej. 8 dígitos) ahora devuelve 400 en `/auth/register`. Es el cambio esperado, pero habría
+      que confirmar que la pantalla de registro muestra el `message` del backend.
+- [ ] Si la búsqueda mezcla letras y 3 o más dígitos (ej. `ana123`), también trae usuarios cuyo
+      teléfono contiene `123` (es un OR). Es por diseño, pero puede agregar ruido.
+- [ ] Los teléfonos legacy guardados con formato libre no se migran: `getWhatsappLinks` los normaliza
+      al leerlos, pero `GET /users` y `/users/me` los siguen mostrando sin normalizar.
+- [ ] celtas-admin (`CustomerPicker.tsx`) todavía filtra los clientes en el navegador y no usa
+      `?search=`.

@@ -123,11 +123,51 @@ describe('Auth (e2e)', () => {
     );
   });
 
+  const phoneEmail = `qa-phone-${suffix}@test.com`;
+  const badPhoneEmail = `qa-bad-phone-${suffix}@test.com`;
+
   afterAll(async () => {
     await usersRepo.delete({ email: localEmail });
     await usersRepo.delete({ email: googleEmail });
     await usersRepo.delete({ email: newGoogleEmail });
+    await usersRepo.delete({ email: phoneEmail });
+    await usersRepo.delete({ email: badPhoneEmail });
     await app.close();
+  });
+
+  it('POST /auth/register guarda el teléfono normalizado (código de país + número, sin +)', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({
+        email: phoneEmail,
+        password,
+        fullName: 'QA Teléfono',
+        phone: '+58 412 999 9999',
+      })
+      .expect(201);
+
+    expect((res.body as AuthTokensResponse).data.user.phone).toBe(
+      '584129999999',
+    );
+    const saved = await usersRepo.findOneByOrFail({ email: phoneEmail });
+    expect(saved.phone).toBe('584129999999');
+  });
+
+  it('POST /auth/register con teléfono inválido → 400 y no crea el usuario', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({
+        email: badPhoneEmail,
+        password,
+        fullName: 'QA Teléfono malo',
+        phone: '01 234 5678',
+      })
+      .expect(400);
+
+    expect((res.body as { message: string }).message).toContain(
+      'con + y código de país si es extranjero',
+    );
+    expect(await usersRepo.findOneBy({ email: badPhoneEmail })).toBeNull();
   });
 
   it('POST /auth/register crea usuario y NO expone el password en la respuesta', async () => {

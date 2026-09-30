@@ -7,6 +7,7 @@ import { Reflector } from '@nestjs/core';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { App } from 'supertest/types';
@@ -161,10 +162,54 @@ describe('Users (e2e)', () => {
         .expect(200);
       const data = (res.body as Envelope).data as Record<string, unknown>;
       expect(data.fullName).toBe('Cliente Alpha');
-      expect(data.phone).toBe('+51911111111');
+      // Se guarda normalizado: código de país + número, sin + (formato de wa.me).
+      expect(data.phone).toBe('51911111111');
       expect(data.email).toBe(clientAEmail); // el email no cambia
       expect(JSON.stringify(res.body)).not.toContain(password);
     });
+
+    it('acepta celular extranjero con + y lo guarda con su código de país', async () => {
+      const res = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({ phone: '+58 412-999-9999' })
+        .expect(200);
+
+      expect((res.body as Envelope).data).toMatchObject({
+        phone: '584129999999',
+      });
+    });
+
+    it('re-enviar el teléfono tal como lo devuelve la API (51...) no falla', async () => {
+      const res = await request(app.getHttpServer())
+        .patch('/users/me')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({ phone: '51911111111' })
+        .expect(200);
+
+      expect((res.body as Envelope).data).toMatchObject({
+        phone: '51911111111',
+      });
+    });
+
+    it.each([
+      ['extranjero sin +', '55 11 99999-9999'],
+      ['fijo de Lima', '01 234 5678'],
+      ['letras', 'abc123'],
+    ])(
+      'teléfono inválido (%s) → 400 con mensaje en español',
+      async (_l, phone) => {
+        const res = await request(app.getHttpServer())
+          .patch('/users/me')
+          .set('Authorization', `Bearer ${clientAToken}`)
+          .send({ phone })
+          .expect(400);
+
+        expect((res.body as { message: string }).message).toContain(
+          'con + y código de país si es extranjero',
+        );
+      },
+    );
 
     it('rechaza intentar cambiar role (400)', async () => {
       const res = await request(app.getHttpServer())
@@ -837,5 +882,214 @@ describe('Users (e2e)', () => {
         .expect(400);
       expect((res.body as ErrorResponse).statusCode).toBe(400);
     });
+  });
+  describe('GET /users?search= (nombre, email o teléfono por dígitos)', () => {
+    // Números derivados del suffix: únicos por corrida, sin chocar con otros datos.
+    const s8 = String(suffix).slice(-8);
+    const legacyEmail = `qa-users-search-legacy-${suffix}@test.com`;
+    const foreignEmail = `qa-users-search-foreign-${suffix}@test.com`;
+    const legacyName = `QaBusqueda${suffix} Legacy`;
+    const ids: Record<string, string> = {};
+
+    interface UsersPage {
+      items: { id: string; email: string }[];
+      meta: { total: number };
+    }
+    const search = (q: string) =>
+      request(app.getHttpServer())
+        .get('/users')
+        .query({ search: q, limit: 100 })
+        .set('Authorization', `Bearer ${adminToken}`);
+    const foundIds = (res: { body: unknown }) =>
+      ((res.body as Envelope).data as UsersPage).items.map((u) => u.id);
+
+    beforeAll(async () => {
+      // Insertados directo al repo: el legacy simula un teléfono guardado ANTES de
+      // la normalización, con formato libre ("+51 9xx-xxx-xxx").
+      const legacy = await usersRepo.save(
+        usersRepo.create({
+          email: legacyEmail,
+          fullName: legacyName,
+          provider: UserProvider.LOCAL,
+          phone: `+51 9${s8.slice(0, 2)}-${s8.slice(2, 5)}-${s8.slice(5)}`,
+        } as Partial<User>),
+      );
+      const foreign = await usersRepo.save(
+        usersRepo.create({
+          email: foreignEmail,
+          fullName: `QaBusqueda${suffix} Foreign`,
+          provider: UserProvider.LOCAL,
+          phone: `58412${s8}`,
+        } as Partial<User>),
+      );
+      ids.legacy = legacy.id;
+      ids.foreign = foreign.id;
+    });
+
+    afterAll(async () => {
+      await usersRepo.delete({ email: legacyEmail });
+      await usersRepo.delete({ email: foreignEmail });
+    });
+
+    it('por nombre parcial, sin distinguir mayúsculas', async () => {
+      const res = await search(`qabusqueda${suffix} leg`).expect(200);
+
+      expect(foundIds(res)).toEqual([ids.legacy]);
+    });
+
+    it('por email parcial', async () => {
+      const res = await search(`search-foreign-${suffix}`).expect(200);
+
+      expect(foundIds(res)).toEqual([ids.foreign]);
+    });
+
+    it('por teléfono con espacios: encuentra el guardado con formato libre (legacy)', async () => {
+      const res = await search(`9${s8.slice(0, 2)} ${s8.slice(2, 5)}`).expect(
+        200,
+      );
+
+      expect(foundIds(res)).toContain(ids.legacy);
+    });
+
+    it('por teléfono con +51 y guiones: se comparan solo los dígitos', async () => {
+      const res = await search(`+51 9${s8.slice(0, 2)}-${s8.slice(2)}`).expect(
+        200,
+      );
+
+      expect(foundIds(res)).toContain(ids.legacy);
+    });
+
+    it('por teléfono extranjero (+58)', async () => {
+      const res = await search(`+58 412 ${s8}`).expect(200);
+
+      expect(foundIds(res)).toContain(ids.foreign);
+    });
+
+    it('con menos de 3 dígitos no busca por teléfono ("QaBusqueda" + 1 dígito no trae a nadie)', async () => {
+      const res = await search(`zz${s8.slice(-1)}`).expect(200);
+
+      expect(foundIds(res)).not.toContain(ids.legacy);
+      expect(foundIds(res)).not.toContain(ids.foreign);
+    });
+
+    it('% y _ se buscan literales (no son comodines que traigan a todos)', async () => {
+      const res = await search('%').expect(200);
+      const all = await request(app.getHttpServer())
+        .get('/users')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(
+        ((res.body as Envelope).data as UsersPage).meta.total,
+      ).toBeLessThan(((all.body as Envelope).data as UsersPage).meta.total);
+      expect(foundIds(res)).not.toContain(ids.legacy);
+    });
+
+    it('search de más de 100 caracteres → 400', async () => {
+      await search('a'.repeat(101)).expect(400);
+    });
+
+    it('combina con la paginación: meta.total cuenta solo los que coinciden', async () => {
+      const res = await search(`QaBusqueda${suffix}`).expect(200);
+
+      expect(((res.body as Envelope).data as UsersPage).meta.total).toBe(2);
+    });
+
+    // --- QA: casos borde del filtro ---
+    const totalOf = (res: { body: unknown }) =>
+      ((res.body as Envelope).data as UsersPage).meta.total;
+
+    it.each([
+      ['vacío', ''],
+      ['solo espacios', '   '],
+    ])('search %s no filtra (mismo total que sin search)', async (_l, q) => {
+      const all = await request(app.getHttpServer())
+        .get('/users')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const res = await search(q).expect(200);
+
+      expect(totalOf(res)).toBe(totalOf(all));
+    });
+
+    it('"_" se busca literal (no es comodín de un carácter)', async () => {
+      const res = await search('_').expect(200);
+
+      expect(foundIds(res)).not.toContain(ids.legacy);
+      expect(foundIds(res)).not.toContain(ids.foreign);
+    });
+
+    it.each([["' OR '1'='1"], ["'; DROP TABLE users; --"], ["9' OR 1=1 --"]])(
+      'intento de inyección SQL %p → 200 sin traer a todos',
+      async (payload) => {
+        const all = await request(app.getHttpServer())
+          .get('/users')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(200);
+        const res = await search(payload).expect(200);
+
+        expect(totalOf(res)).toBeLessThan(totalOf(all));
+        expect(foundIds(res)).not.toContain(ids.legacy);
+        // La tabla sigue viva y los datos intactos.
+        expect(await usersRepo.findOneBy({ id: ids.legacy })).not.toBeNull();
+      },
+    );
+
+    it('search repetido (array) → 400', async () => {
+      await request(app.getHttpServer())
+        .get('/users?search=abc&search=def')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400);
+    });
+
+    it('los resultados de search nunca exponen password', async () => {
+      const res = await search(`QaBusqueda${suffix}`).expect(200);
+      const items = ((res.body as Envelope).data as UsersPage).items;
+
+      expect(items.length).toBeGreaterThan(0);
+      for (const item of items) expect(item).not.toHaveProperty('password');
+    });
+
+    it('search sin token → 401 y con rol cliente → 403', async () => {
+      await request(app.getHttpServer())
+        .get('/users')
+        .query({ search: 'QaBusqueda' })
+        .expect(401);
+      await request(app.getHttpServer())
+        .get('/users')
+        .query({ search: 'QaBusqueda' })
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(403);
+    });
+  });
+
+  it('Swagger: GET /users documenta `search` una sola vez y los campos phone describen el formato', () => {
+    const doc = SwaggerModule.createDocument(
+      app,
+      new DocumentBuilder().build(),
+    );
+    const params = (doc.paths['/users']?.get?.parameters ?? []) as {
+      name: string;
+      in: string;
+      required?: boolean;
+    }[];
+    const searchParams = params.filter(
+      (p) => p.name === 'search' && p.in === 'query',
+    );
+    expect(searchParams).toHaveLength(1);
+    expect(searchParams[0].required).toBeFalsy();
+
+    const schemas = (doc.components?.schemas ?? {}) as Record<
+      string,
+      { properties?: Record<string, { description?: string }> }
+    >;
+    for (const [dto, field] of [
+      ['RegisterDto', 'phone'],
+      ['UpdateProfileDto', 'phone'],
+      ['CreateOrderAdminDto', 'customerPhone'],
+    ]) {
+      const desc = schemas[dto]?.properties?.[field]?.description ?? '';
+      expect(desc).toContain('código de país');
+    }
   });
 });

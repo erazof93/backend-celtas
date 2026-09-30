@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { INVALID_PHONE_MESSAGE } from '../../common/utils/phone.util';
 import { SortOrder, UsersSortBy } from './dto/query-users.dto';
 import { User, UserRole } from './entities/user.entity';
 import { UsersService } from './users.service';
@@ -77,13 +78,47 @@ describe('UsersService', () => {
         phone: '+51999999999',
       });
 
+      // Se guarda normalizado (código de país + número, sin +): formato de wa.me.
       expect(repo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           fullName: 'Juan Carlos',
-          phone: '+51999999999',
+          phone: '51999999999',
         }),
       );
       expect(result).toBe(updated);
+    });
+
+    it.each([
+      ['peruano sin prefijo', '999 555 123', '51999555123'],
+      ['extranjero con +', '+58 412 999 9999', '584129999999'],
+    ])(
+      'normaliza el teléfono (%s) antes de guardar',
+      async (_label, input, expected) => {
+        repo.findOne.mockResolvedValue(makeUser());
+        repo.save.mockImplementation((u: User) => Promise.resolve(u));
+
+        const result = await service.updateProfile('user-1', { phone: input });
+
+        expect(result.phone).toBe(expected);
+      },
+    );
+
+    it('phone null sigue borrando el teléfono', async () => {
+      repo.findOne.mockResolvedValue({ ...makeUser(), phone: '51999999999' });
+      repo.save.mockImplementation((u: User) => Promise.resolve(u));
+
+      const result = await service.updateProfile('user-1', { phone: null });
+
+      expect(result.phone).toBeNull();
+    });
+
+    it('teléfono no normalizable → 400 (defensa en profundidad del DTO)', async () => {
+      repo.findOne.mockResolvedValue(makeUser());
+
+      await expect(
+        service.updateProfile('user-1', { phone: '55 11 99999-9999' }),
+      ).rejects.toThrow(new BadRequestException(INVALID_PHONE_MESSAGE));
+      expect(repo.save).not.toHaveBeenCalled();
     });
 
     it('no toca fullName ni phone si no vienen en el payload', async () => {

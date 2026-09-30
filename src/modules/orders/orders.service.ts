@@ -17,7 +17,7 @@ import {
   Repository,
 } from 'typeorm';
 import { haversineDistanceMeters } from '../../common/utils/geo.util';
-import { normalizePeruMobile } from '../../common/utils/phone.util';
+import { normalizePhone } from '../../common/utils/phone.util';
 import { CouponsService } from '../coupons/coupons.service';
 import { MenuItem } from '../menu/entities/menu-item.entity';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -68,7 +68,7 @@ export interface WhatsappLink {
 
 export interface WhatsappLinks {
   orderId: string;
-  /** Link al cliente ("CONFIRMA TU PEDIDO"); null si no hay un celular peruano válido. */
+  /** Link al cliente ("CONFIRMA TU PEDIDO"); null si no hay un celular válido (ver normalizePhone). */
   customer: WhatsappLink | null;
   /** Link al número del negocio ("NUEVO PEDIDO"), siempre presente. */
   store: WhatsappLink;
@@ -170,13 +170,13 @@ export class OrdersService {
         dto,
         customerName: null,
         customerPhone: null,
-        whatsappRecipient: normalizePeruMobile(customer.phone),
+        whatsappRecipient: normalizePhone(customer.phone),
       });
     }
 
     // El DTO ya exige ambos sin customerId; esto cubre "   " (IsNotEmpty lo deja pasar).
     const customerName = dto.customerName?.trim();
-    const customerPhone = normalizePeruMobile(dto.customerPhone);
+    const customerPhone = normalizePhone(dto.customerPhone);
     if (!customerName || !customerPhone) {
       throw new BadRequestException(
         'Un pedido sin cliente requiere customerName y customerPhone',
@@ -559,7 +559,7 @@ export class OrdersService {
     const customerPhone =
       order.userId === null
         ? order.customerPhone
-        : normalizePeruMobile(order.user?.phone);
+        : normalizePhone(order.user?.phone);
     const storePhone = await this.settingsService.getWhatsappNumber();
 
     return {

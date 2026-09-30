@@ -1876,6 +1876,22 @@ describe('OrdersService', () => {
       expect(settingsService.getWhatsappNumber).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['venezolano', '+58 412 999 9999', '584129999999'],
+      ['brasileño con 00', '0055 11 99999-9999', '5511999999999'],
+    ])(
+      'anónimo con celular %s: se guarda con su código de país y el whatsappUrl apunta ahí',
+      async (_label, input, expected) => {
+        const result = await service.createOrderByAdmin({
+          ...anonDto,
+          customerPhone: input,
+        });
+
+        expect(result.customerPhone).toBe(expected);
+        expect(parseWhatsapp(result.whatsappUrl).number).toBe(expected);
+      },
+    );
+
     it('NO se bloquea por horario: crea el pedido aunque el local esté cerrado', async () => {
       settingsService.isOpenNow.mockResolvedValue({
         open: false,
@@ -2041,7 +2057,7 @@ describe('OrdersService', () => {
 
     it.each([
       ['nombre solo espacios', { customerName: '   ' }],
-      ['celular no peruano', { customerPhone: '12345' }],
+      ['celular inválido', { customerPhone: '12345' }],
     ])(
       'anónimo con %s → 400 (defensa en profundidad si el DTO lo dejara pasar)',
       async (_label, override) => {

@@ -5,7 +5,11 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DeepPartial, Repository } from 'typeorm';
+import { DeepPartial, FindOptionsWhere, ILike, Raw, Repository } from 'typeorm';
+import {
+  INVALID_PHONE_MESSAGE,
+  normalizePhone,
+} from '../../common/utils/phone.util';
 import { QueryUsersDto, SortOrder, UsersSortBy } from './dto/query-users.dto';
 import { User, UserRole } from './entities/user.entity';
 
@@ -20,7 +24,7 @@ export interface CreateUserData {
 
 export interface UpdateProfileData {
   fullName?: string;
-  phone?: string;
+  phone?: string | null;
 }
 
 export interface PaginatedUsers {
@@ -73,7 +77,7 @@ export class UsersService {
       fullName: data.fullName,
       provider: data.provider,
       googleId: data.googleId ?? null,
-      phone: data.phone ?? null,
+      phone: data.phone ? this.normalizePhoneOrReject(data.phone) : null,
     } as DeepPartial<User>);
     return this.usersRepository.save(user);
   }
@@ -101,9 +105,54 @@ export class UsersService {
       user.fullName = data.fullName;
     }
     if (data.phone !== undefined) {
-      user.phone = data.phone;
+      // null sigue borrando el teléfono (el DTO lo permite con @IsOptional).
+      user.phone =
+        data.phone === null ? null : this.normalizePhoneOrReject(data.phone);
     }
     return this.usersRepository.save(user);
+  }
+
+  /**
+   * Teléfono tal como se guarda (código de país + número, sin +: 51XXXXXXXXX,
+   * 584129999999…), el formato que exige wa.me. Los DTOs ya validan con
+   * `IsPhone`; esto es la defensa en profundidad para cualquier otro caller.
+   */
+  private normalizePhoneOrReject(phone: string): string {
+    const normalized = normalizePhone(phone);
+    if (!normalized) {
+      throw new BadRequestException(INVALID_PHONE_MESSAGE);
+    }
+    return normalized;
+  }
+
+  /**
+   * `?search=` de GET /users: nombre o email que CONTENGAN el texto (ILIKE), o
+   * teléfono que contenga sus dígitos. El teléfono se compara solo por dígitos en
+   * ambos lados (`regexp_replace`), así también encuentra los guardados antes de
+   * la normalización con formato libre ("+51 999-555-123"). Desde 3 dígitos, para
+   * que "a1" no traiga a todos los que tengan un 1 en el teléfono.
+   */
+  private buildSearchWhere(
+    search: string | undefined,
+  ): FindOptionsWhere<User>[] | undefined {
+    if (!search) return undefined;
+    // % y _ son comodines de LIKE: se escapan para que "search=%" no traiga a todos.
+    const like = `%${search.replace(/[\\%_]/g, '\\$&')}%`;
+    const conditions: FindOptionsWhere<User>[] = [
+      { fullName: ILike(like) },
+      { email: ILike(like) },
+    ];
+    const digits = search.replace(/\D/g, '');
+    if (digits.length >= 3) {
+      conditions.push({
+        phone: Raw(
+          (alias) =>
+            `regexp_replace(${alias}, '\\D', '', 'g') LIKE :phoneDigits`,
+          { phoneDigits: `%${digits}%` },
+        ),
+      });
+    }
+    return conditions;
   }
 
   /**
@@ -143,6 +192,7 @@ export class UsersService {
       'ASC' | 'DESC';
 
     const [items, total] = await this.usersRepository.findAndCount({
+      where: this.buildSearchWhere(query.search),
       take: limit,
       skip: (page - 1) * limit,
       order: { [sortColumn]: direction },

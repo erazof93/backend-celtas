@@ -1823,10 +1823,33 @@ describe('Orders (e2e)', () => {
       );
     });
 
+    it('anónimo con celular extranjero (+58) → 201, guardado como 584129999999', async () => {
+      const res = await createManual(
+        adminToken,
+        withItemA({ ...anonBody, customerPhone: '+58 412 999 9999' }),
+      );
+
+      expect(res.status).toBe(201);
+      expect(data(res).customerPhone).toBe('584129999999');
+      expect(waNumber(data(res).whatsappUrl)).toBe('584129999999');
+    });
+
+    it('anónimo con extranjero SIN + → 400 con el mensaje que pide el código de país', async () => {
+      const res = await createManual(
+        adminToken,
+        withItemA({ ...anonBody, customerPhone: '58 412 999 9999' }),
+      );
+
+      expect(res.status).toBe(400);
+      expect((res.body as ErrorResponse).message).toContain(
+        'con + y código de país si es extranjero',
+      );
+    });
+
     it.each([
       ['sin customerName', { customerName: undefined }],
       ['sin customerPhone', { customerPhone: undefined }],
-      ['celular no peruano', { customerPhone: '12345' }],
+      ['celular inválido', { customerPhone: '12345' }],
     ])('anónimo %s → 400', async (_label, override) => {
       const res = await createManual(
         adminToken,

@@ -45,7 +45,7 @@ export class Order {
   @Column({ type: 'varchar', length: 100, nullable: true })
   customerName: string | null;
 
-  /** Celular del pedido manual anónimo, normalizado a dígitos con código de país (51...). */
+  /** Celular del pedido manual anónimo, normalizado por normalizePhone: código de país + número, sin + (51XXXXXXXXX, 58...). */
   @Column({ type: 'varchar', length: 20, nullable: true })
   customerPhone: string | null;
 

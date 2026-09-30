@@ -1,6 +1,14 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import {
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 /** Columnas por las que se puede ordenar GET /users (whitelist, evita inyección de columna). */
 export enum UsersSortBy {
@@ -37,6 +45,20 @@ export class QueryUsersDto {
   @Min(1, { message: 'El límite mínimo es 1' })
   @Max(100, { message: 'El límite máximo es 100' })
   limit?: number = 10;
+
+  @ApiPropertyOptional({
+    example: '987 654',
+    description:
+      'Nombre, email o teléfono (el teléfono se compara solo por dígitos).',
+    maxLength: 100,
+  })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsString({ message: 'search debe ser texto' })
+  @MaxLength(100, { message: 'search no puede superar los 100 caracteres' })
+  search?: string;
 
   @ApiPropertyOptional({
     enum: UsersSortBy,

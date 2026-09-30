@@ -109,7 +109,7 @@ export class OrdersController {
   @ApiOperation({
     summary: 'Links de WhatsApp de un pedido: cliente y tienda (solo admin)',
     description:
-      'El backend NO envía mensajes: devuelve links wa.me que el admin abre desde el panel. Se rearman desde el snapshot del pedido con el número del negocio actual. `customer` ("CONFIRMA TU PEDIDO") sale de customerPhone (anónimo) o del teléfono del cliente; es null si no hay un celular peruano válido. `store` ("NUEVO PEDIDO") siempre viene. Tras mandarlo, el panel llama a POST /orders/admin/:orderId/whatsapp-sent.',
+      'El backend NO envía mensajes: devuelve links wa.me que el admin abre desde el panel. Se rearman desde el snapshot del pedido con el número del negocio actual. `customer` ("CONFIRMA TU PEDIDO") sale de customerPhone (anónimo) o del teléfono del cliente; es null si no hay un celular válido (peruano o extranjero con código de país). `store` ("NUEVO PEDIDO") siempre viene. Tras mandarlo, el panel llama a POST /orders/admin/:orderId/whatsapp-sent.',
   })
   @ApiParam({ name: 'orderId', description: 'UUID del pedido' })
   @ApiResponse({

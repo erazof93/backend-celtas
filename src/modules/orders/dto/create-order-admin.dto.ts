@@ -8,11 +8,9 @@ import {
   Validate,
   ValidateIf,
 } from 'class-validator';
+import { IsPhone } from '../../../common/validators/is-phone';
 import { CreateOrderDto } from './create-order.dto';
-import {
-  IsContactExclusiveWithCustomer,
-  IsPeruMobile,
-} from './is-customer-contact-valid';
+import { IsContactExclusiveWithCustomer } from './is-customer-contact-valid';
 
 /**
  * Pedido manual cargado por el admin (ej. pedido telefónico). Mismos campos que
@@ -52,10 +50,10 @@ export class CreateOrderAdminDto extends CreateOrderDto {
   @ApiPropertyOptional({
     example: '987654321',
     description:
-      'Celular peruano de contacto (9 dígitos, acepta +51/espacios/guiones). Obligatorio si no hay customerId. El whatsappUrl del pedido apunta a este número.',
+      'Celular de contacto. Peruano: 9 dígitos (acepta +51/espacios/guiones). Extranjero: con + o 00 y código de país (ej. +58 412 999 9999). Se guarda normalizado (código de país + número, sin +). Obligatorio si no hay customerId. El whatsappUrl del pedido apunta a este número.',
   })
   @ValidateIf((dto: CreateOrderAdminDto) => !dto.customerId)
   @IsString({ message: 'customerPhone debe ser texto' })
-  @Validate(IsPeruMobile)
+  @Validate(IsPhone)
   customerPhone?: string;
 }

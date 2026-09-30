@@ -643,6 +643,28 @@ celtas-backend/
   `createdAt` — también afecta `GET /orders/:id`); si el cupón se borra después, el mensaje
   rearmado muestra "Cupón" sin código. **Pendiente en `celtas-admin`**: botones de los links +
   "Ya lo envié" y `whatsappSentAt` en el tipo `Order`.
+- [x] **Teléfonos internacionales normalizados + `GET /users?search=`.** El spec apuntaba a un
+  módulo `customers` inexistente (los clientes son `users`), 2 de sus 4 tests fallaban contra su
+  propia función y dejaba al peruano sin `51` (rompía wa.me). Decisiones del usuario: formato
+  guardado **E.164 sin "+"** (código de país + número, lo que exige wa.me); sin "+"/"00" **solo
+  Perú** (no se adivina el país). `common/utils/phone.util.ts` → `normalizePhone()` (reemplaza a
+  `normalizePeruMobile`) + `INVALID_PHONE_MESSAGE`; `common/validators/is-phone.ts` → `IsPhone`
+  (reemplaza a `IsPeruMobile`). Reglas: "+"/"00" → E.164 8–15 dígitos, +51 solo celulares; sin
+  prefijo → `9XXXXXXXX` → `51…`, o `519XXXXXXXX` tal cual (formato ya guardado: la app re-envía lo
+  que recibe). Aplicado en `POST /orders/admin` (customerPhone + links de WhatsApp), `POST
+  /auth/register` y `PATCH /users/me` (DTO + `UsersService.create`/`updateProfile`; `phone: null`
+  sigue borrando). `User.phone` tipado `string | null` (la columna ya era nullable, sin
+  migración). `GET /users?search=` (admin): nombre/email `ILIKE` o teléfono comparado SOLO por
+  dígitos con `regexp_replace` (desde 3 dígitos; encuentra también los guardados con formato
+  libre), `%`/`_` escapados, trim, máx 100. Compatibilidad con `celtas-app` verificada en su
+  código (checkout valida `^9\d{8}$`; perfil reenvía el `51…` guardado; errores con `e.message`);
+  cambio visible: el perfil muestra `51987654321`. `@tester`: **LISTO** — 666 unit + 569 e2e;
+  inyección SQL en `search` probada (parametrizado); mutaciones (sin escape de `%`/`_`, sin
+  `regexp_replace`, sin trim) rompen tests. Riesgos no bloqueantes: teléfonos viejos con formato
+  libre NO se migraron (se ven sin normalizar en `GET /users` y `/users/me`); `search` mezclado
+  (`ana123`) también trae teléfonos con `123` (OR por diseño); teléfono no único entre usuarios;
+  `celtas-admin` (`CustomerPicker.tsx`) todavía filtra clientes en el navegador en vez de usar
+  `?search=`.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)

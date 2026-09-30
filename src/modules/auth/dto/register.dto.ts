@@ -5,7 +5,9 @@ import {
   IsOptional,
   IsString,
   MinLength,
+  Validate,
 } from 'class-validator';
+import { IsPhone } from '../../../common/validators/is-phone';
 
 export class RegisterDto {
   @ApiProperty({
@@ -29,10 +31,12 @@ export class RegisterDto {
   fullName: string;
 
   @ApiPropertyOptional({
-    example: '+51999999999',
-    description: 'Teléfono (opcional)',
+    example: '987654321',
+    description:
+      'Celular (opcional). Peruano: 9 dígitos (acepta +51/espacios/guiones). Extranjero: con + o 00 y código de país (ej. +58 412 999 9999). Se guarda normalizado: código de país + número, sin + (51987654321).',
   })
   @IsOptional()
-  @IsString()
+  @IsString({ message: 'El teléfono debe ser texto' })
+  @Validate(IsPhone)
   phone?: string;
 }
