@@ -2792,3 +2792,69 @@ regla de negocio (enforcement de `maxSelectable`/`required`) ya se corrigió.
       "como máximo 1"; con max ≥ 2 se guarda el nombre dos veces. Mismo comportamiento que `sauceIds`.
 - [ ] La respuesta de `GET /menu` no tiene schema Swagger (ni para papas ni para salsas/bebidas);
       los campos nuevos solo están documentados en los DTOs de escritura.
+
+## Pedido manual del admin (`POST /orders/admin`, pedidos anónimos con `userId` null)
+
+Auditoría `@tester` sobre cambios sin commitear (migración `1790787155985-AllowAnonymousManualOrders`).
+
+- [x] **Build / unit / e2e**: `pnpm run build` OK; unit 621/621; e2e 528/528 (520 + 8 tests `QA:`
+      nuevos en `test/orders.e2e-spec.ts`, bloque `POST /orders/admin (pedido manual)`).
+- [x] **Migración**: `migration:run` → "No migrations are pending"; `migration:generate --dryrun` →
+      "No changes in database schema" (sin drift). `down()` aborta si hay pedidos con `userId` NULL.
+- [x] **POST /orders (cliente) sin cambios**: 409 por horario (unit), whatsapp al negocio con
+      "NUEVO PEDIDO" (e2e). Un cliente que manda `customerId`/`customerName`/`customerPhone` en
+      `POST /orders` → 400 por `forbidNonWhitelisted`, sin crear pedido `[QA]`.
+- [x] **Seguridad**: sin token → 401; token cliente → 403 sin crear nada; un cliente no ve un
+      pedido anónimo (`GET /orders/:id` → 403) ni lo recibe en `GET /orders/me` `[QA]`; anónimo con
+      `addressId` → 400; con `customerId`, `addressId` de OTRO cliente → 404 sin crear nada `[QA]`.
+- [x] **Negocio**: anónimo → `userId` null, celular normalizado `51...`, total del backend,
+      whatsappUrl al celular del cliente con "CONFIRMA TU PEDIDO"; sin chequeo de horario; con
+      `customerId` el cupón/dirección se validan contra el cliente; anónimo con cupón → 400 con
+      mensaje propio `[QA]`; ciclo pendiente→entregado setea `deliveredAt` sin tocar `totalSpent`,
+      cupón automático, estrellas ni push; cancelar un anónimo pendiente → 200 `[QA]`.
+- [x] **Dashboard admin**: un anónimo entregado SUMA en `revenue` de `/admin/dashboard/summary` y
+      en `top-products` (las queries no hacen join con `users`) `[QA]`. Coupons cron y rewards
+      filtran por `userId` explícito → excluyen anónimos correctamente.
+- [x] **Contrato DTO / mensajes en español**: sin items / items vacío / sin dirección / sin
+      customerName / sin customerPhone / celular no peruano / `customerPhone` numérico /
+      `customerId` no UUID / `customerId` + contacto / nombre de solo espacios → 400 con mensajes en
+      español; `customerId` inexistente → 404 "Cliente no encontrado".
+- [x] **Mutaciones** (backup + restore, md5 verificado): quitar el guard de cupón anónimo, quitar
+      el filtro `userId` del lookup de `addressId`, relajar `findOne` para anónimos, y meter
+      `innerJoin('order.user')` en el revenue del dashboard → cada uno rompe su test.
+- [x] **Swagger**: `POST /orders/admin` con summary, bearer, respuestas 201/400/401/403/404/409 y
+      schema `CreateOrderAdminDto` (hereda `addressId`, `addressSnapshot`, `items`, `couponCode` +
+      `customerId`, `customerName`, `customerPhone`; `required: [items]`).
+
+**Riesgos / pendientes:**
+
+- [x] **(RESUELTO, ver re-auditoría) BLOQUEANTE para deploy (contrato con `celtas-admin`)**: el panel asume `order.userId` y
+      `order.user` no nulos — `OrdersPage.tsx:165` (`order.userId.slice(...)`),
+      `OrderDetailDialog.tsx:157` (`order?.user.phone`) y `:197` (`order.userId.slice(...)`).
+      Con un solo pedido anónimo en prod la lista de pedidos del panel lanza TypeError. Hay que
+      actualizar el panel (y su tipo `Order.user`) antes o junto con el deploy del backend.
+- [x] (RESUELTO: 400 si no es `cliente`) `customerId` acepta cualquier usuario, incluido un admin.
+- [ ] Anónimo con `rewardRedemptionId` solo cubierto en unit (e2e requiere premio real).
+- [x] (RESUELTO: 0 pedidos NULL) Quedó 1 pedido con `userId` NULL en la BD local tras las corridas; no se pudo inspeccionar
+      su origen (consulta a BD denegada en la sesión de QA). Revisar a mano.
+
+### Re-auditoría (bloqueante `celtas-admin` + validación de rol en `customerId`)
+
+- [x] **Build / unit / e2e**: `pnpm run build` OK; unit 622/622 (29 suites); e2e completo
+      529/529 (18 suites); `test/orders.e2e-spec.ts` 139/139.
+- [x] **`customerId` de una cuenta admin → 400** "customerId debe ser una cuenta de cliente, no de
+      administrador" (unit + e2e, el e2e confirma que `orders.count()` no cambia). `UserRole` solo
+      tiene `cliente`/`admin`, así que `role !== CLIENTE` equivale a "es admin" y el mensaje es exacto.
+- [x] **Mutación** (backup + restore, md5 `8090db46…` idéntico antes/después): desactivar el chequeo
+      de rol → unit falla y el e2e falla con `Expected: 400 / Received: 201`.
+- [x] **Limpieza de pedidos anónimos**: `createManual` registra en `anonOrderIds` todo 201 con
+      `userId === null`; BD local antes/después de orders e2e, de la mutación y del e2e completo:
+      `orders=3, userId NULL=0`. El pendiente "1 pedido con `userId` NULL" queda cerrado (lo
+      borró la sesión principal, era un fixture propio).
+- [x] **Bloqueante de contrato con `celtas-admin`: RESUELTO** — ver la sección "Pedido manual del
+      admin — null-safety de `userId`/`user`" en `celtas-admin/docs/testing-checklist.md`.
+- [ ] (fuera de alcance, no bloquea) Después del e2e completo la tabla `users` pasó de 500 a 504; con
+      solo `orders.e2e-spec` se mantiene en 500, así que lo deja otra suite. No se inspeccionaron las
+      filas (se denegó la consulta de datos de usuario en la sesión de QA). Revisar a mano qué suite
+      no limpia sus usuarios.
+- [ ] Anónimo con `rewardRedemptionId` sigue cubierto solo por unit tests (sin cambios).

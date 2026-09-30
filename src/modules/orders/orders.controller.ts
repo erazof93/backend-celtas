@@ -25,6 +25,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserThrottlerGuard } from '../../common/guards/user-throttler.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from '../users/entities/user.entity';
+import { CreateOrderAdminDto } from './dto/create-order-admin.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { EstimateDeliveryFeeDto } from './dto/estimate-delivery-fee.dto';
 import { GeocodeAddressDto } from './dto/geocode-address.dto';
@@ -70,6 +71,34 @@ export class OrdersController {
   })
   create(@Req() req: AuthenticatedRequest, @Body() dto: CreateOrderDto) {
     return this.ordersService.create(req.user.userId, dto);
+  }
+
+  @Post('admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Crear un pedido manual (solo admin)',
+    description:
+      'Para pedidos tomados fuera de la app (ej. por teléfono). Mismo cálculo que POST /orders (precios snapshot, delivery por distancia, cupón, premios), pero NO se bloquea por horario de atención. Con customerId se asocia a ese cliente (addressId/cupón/premios se validan contra él); sin customerId es anónimo: customerName + customerPhone obligatorios y dirección solo por addressSnapshot (para calcular el delivery, incluir latitude/longitude en el JSON, ej. con GET /orders/geocode). El whatsappUrl apunta al celular del cliente con el resumen para confirmar (si el cliente registrado no tiene celular válido, al número del negocio). Un pedido anónimo entregado no suma totalSpent, estrellas ni cupones.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Pedido creado en "pendiente" con whatsappUrl al cliente',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Payload inválido, producto no disponible, falta contacto/dirección, o addressId/cupón/premio en un pedido anónimo',
+  })
+  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
+  @ApiResponse({ status: 403, description: 'El usuario no es admin' })
+  @ApiResponse({
+    status: 404,
+    description: 'Cliente, producto o dirección no encontrados',
+  })
+  @ApiResponse({ status: 409, description: 'El cupón ya fue usado' })
+  createOrderByAdmin(@Body() dto: CreateOrderAdminDto) {
+    return this.ordersService.createOrderByAdmin(dto);
   }
 
   @Post('estimate-delivery-fee')

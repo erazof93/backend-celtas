@@ -1810,6 +1810,261 @@ describe('OrdersService', () => {
     });
   });
 
+  describe('createOrderByAdmin (pedido manual del admin)', () => {
+    const customerId = '55555555-5555-4555-8555-555555555555';
+    const rewardRedemptionId = '44444444-4444-4444-8444-444444444444';
+    const snapshot = JSON.stringify({
+      fullAddress: 'Av. Los Héroes 500',
+      district: 'San Juan de Miraflores',
+      latitude: -12.1631,
+      longitude: -76.97,
+    });
+    const anonDto = {
+      customerName: 'Juan Pérez',
+      customerPhone: '987 654 321',
+      addressSnapshot: snapshot,
+      items: [{ menuItemId, quantity: 2 }],
+    };
+    let manager: { create: jest.Mock; save: jest.Mock };
+
+    /** Mensaje de WhatsApp decodificado + número destino del whatsappUrl. */
+    const parseWhatsapp = (url: string) => {
+      const parsed = new URL(url);
+      return {
+        number: parsed.pathname.slice(1),
+        text: parsed.searchParams.get('text') ?? '',
+      };
+    };
+
+    beforeEach(() => {
+      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+      orderItemsRepo.create.mockImplementation(passthrough);
+      manager = {
+        create: jest.fn((_entity: unknown, value: unknown) => value),
+        save: jest.fn((_entity: unknown, value: unknown) =>
+          Promise.resolve(value),
+        ),
+      };
+      dataSource.transaction.mockImplementation(
+        (cb: (m: typeof manager) => Promise<unknown>) => cb(manager),
+      );
+    });
+
+    it('anónimo: userId null, contacto guardado (celular normalizado a 51...) y total calculado en el backend', async () => {
+      const result = await service.createOrderByAdmin(anonDto);
+
+      expect(result.userId).toBeNull();
+      expect(result.customerName).toBe('Juan Pérez');
+      expect(result.customerPhone).toBe('51987654321');
+      expect(result.status).toBe(OrderStatus.PENDIENTE);
+      // 2 × 24.9 = 49.8 + delivery (coords == store_location → primer tramo, S/2).
+      expect(result.total).toBe(51.8);
+      expect(result.addressSnapshot).toBe(snapshot);
+    });
+
+    it('anónimo: whatsappUrl al celular del CLIENTE con encabezado "CONFIRMA TU PEDIDO"', async () => {
+      const result = await service.createOrderByAdmin(anonDto);
+
+      const { number, text } = parseWhatsapp(result.whatsappUrl);
+      expect(number).toBe('51987654321');
+      expect(text).toContain('*CONFIRMA TU PEDIDO #');
+      expect(text).not.toContain('NUEVO PEDIDO');
+      expect(settingsService.getWhatsappNumber).not.toHaveBeenCalled();
+    });
+
+    it('NO se bloquea por horario: crea el pedido aunque el local esté cerrado', async () => {
+      settingsService.isOpenNow.mockResolvedValue({
+        open: false,
+        message: 'Cerrado',
+      });
+
+      const result = await service.createOrderByAdmin(anonDto);
+
+      expect(result.status).toBe(OrderStatus.PENDIENTE);
+      expect(settingsService.isOpenNow).not.toHaveBeenCalled();
+    });
+
+    it('con customerId: asocia el pedido al cliente, sin customerName/Phone, y valida su addressId contra ÉL', async () => {
+      usersRepo.findOne.mockResolvedValue({
+        id: customerId,
+        role: UserRole.CLIENTE,
+        phone: '+51 912-345-678',
+      });
+      addressesRepo.findOne.mockResolvedValue(
+        seedAddress({ userId: customerId }),
+      );
+
+      const result = await service.createOrderByAdmin({
+        customerId,
+        addressId,
+        items: [{ menuItemId, quantity: 1 }],
+      });
+
+      expect(result.userId).toBe(customerId);
+      expect(result.customerName).toBeNull();
+      expect(result.customerPhone).toBeNull();
+      expect(addressesRepo.findOne).toHaveBeenCalledWith({
+        where: { id: addressId, userId: customerId },
+      });
+      expect(parseWhatsapp(result.whatsappUrl).number).toBe('51912345678');
+    });
+
+    it('con customerId sin celular válido: whatsappUrl cae al número del negocio ("NUEVO PEDIDO")', async () => {
+      usersRepo.findOne.mockResolvedValue({
+        id: customerId,
+        role: UserRole.CLIENTE,
+        phone: null,
+      });
+
+      const result = await service.createOrderByAdmin({
+        customerId,
+        addressSnapshot: snapshot,
+        items: [{ menuItemId, quantity: 1 }],
+      });
+
+      const { number, text } = parseWhatsapp(result.whatsappUrl);
+      expect(number).toBe('51999999999');
+      expect(text).toContain('*NUEVO PEDIDO #');
+    });
+
+    it('con customerId: el cupón se valida con el userId del CLIENTE (no del admin)', async () => {
+      usersRepo.findOne.mockResolvedValue({
+        id: customerId,
+        role: UserRole.CLIENTE,
+      });
+      couponsService.applyToOrder.mockResolvedValue({
+        discountedTotal: 44.82,
+        coupon: { id: 'c-1', code: 'A1B2C3D4' },
+      });
+
+      await service.createOrderByAdmin({
+        customerId,
+        addressSnapshot: snapshot,
+        couponCode: 'A1B2C3D4',
+        items: [{ menuItemId, quantity: 2 }],
+      });
+
+      expect(couponsService.applyToOrder).toHaveBeenCalledWith(
+        expect.anything(),
+        { code: 'A1B2C3D4', userId: customerId, subtotal: 49.8 },
+      );
+    });
+
+    it('customerId de una cuenta admin → 400, sin crear nada', async () => {
+      usersRepo.findOne.mockResolvedValue({
+        id: customerId,
+        role: UserRole.ADMIN,
+      });
+
+      await expect(
+        service.createOrderByAdmin({
+          customerId,
+          addressSnapshot: snapshot,
+          items: [{ menuItemId, quantity: 1 }],
+        }),
+      ).rejects.toThrow(
+        new BadRequestException(
+          'customerId debe ser una cuenta de cliente, no de administrador',
+        ),
+      );
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('customerId inexistente → 404 "Cliente no encontrado", sin crear nada', async () => {
+      usersRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.createOrderByAdmin({
+          customerId,
+          addressSnapshot: snapshot,
+          items: [{ menuItemId, quantity: 1 }],
+        }),
+      ).rejects.toThrow(new NotFoundException('Cliente no encontrado'));
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('anónimo con addressId → 400 (sin userId el where no filtraría por dueño)', async () => {
+      await expect(
+        service.createOrderByAdmin({ ...anonDto, addressId }),
+      ).rejects.toThrow(
+        new BadRequestException(
+          'Un pedido sin cliente no puede usar addressId: envía la dirección en addressSnapshot',
+        ),
+      );
+      expect(addressesRepo.findOne).not.toHaveBeenCalled();
+    });
+
+    it('anónimo con couponCode → 400, sin tocar el módulo de cupones', async () => {
+      await expect(
+        service.createOrderByAdmin({ ...anonDto, couponCode: 'A1B2C3D4' }),
+      ).rejects.toThrow(
+        new BadRequestException('Un pedido sin cliente no puede usar cupones'),
+      );
+      expect(couponsService.applyToOrder).not.toHaveBeenCalled();
+    });
+
+    it('anónimo con rewardRedemptionId → 400, sin tocar el módulo de premios', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({ redeemableWithStars: true }),
+      ]);
+
+      await expect(
+        service.createOrderByAdmin({
+          ...anonDto,
+          items: [{ menuItemId, quantity: 1, rewardRedemptionId }],
+        }),
+      ).rejects.toThrow(
+        new BadRequestException(
+          'Un pedido sin cliente no puede canjear premios',
+        ),
+      );
+      expect(rewardsService.validateForOrder).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('sin dirección → 400 (misma regla que POST /orders)', async () => {
+      await expect(
+        service.createOrderByAdmin({
+          ...anonDto,
+          addressSnapshot: undefined,
+        }),
+      ).rejects.toThrow(
+        new BadRequestException(
+          'Debes indicar una dirección (addressId o addressSnapshot)',
+        ),
+      );
+    });
+
+    it.each([
+      ['nombre solo espacios', { customerName: '   ' }],
+      ['celular no peruano', { customerPhone: '12345' }],
+    ])(
+      'anónimo con %s → 400 (defensa en profundidad si el DTO lo dejara pasar)',
+      async (_label, override) => {
+        await expect(
+          service.createOrderByAdmin({ ...anonDto, ...override }),
+        ).rejects.toThrow(
+          new BadRequestException(
+            'Un pedido sin cliente requiere customerName y customerPhone',
+          ),
+        );
+      },
+    );
+
+    it('avisa a los admins con push igual que un pedido de la app', async () => {
+      usersRepo.find.mockResolvedValue([{ id: 'admin-1' }]);
+
+      const result = await service.createOrderByAdmin(anonDto);
+
+      expect(notificationsService.sendPushNotification).toHaveBeenCalledWith(
+        'admin-1',
+        expect.objectContaining({
+          data: { orderId: result.id, status: OrderStatus.PENDIENTE },
+        }),
+      );
+    });
+  });
+
   describe('geocodeAddress', () => {
     it('dirección válida → [lat, lng] (texto recortado antes de enviarlo)', async () => {
       geoapifyService.geocode.mockResolvedValue([-12.0466994, -77.03041]);
@@ -2340,6 +2595,61 @@ describe('OrdersService', () => {
       await expect(
         service.updateStatus('one-1', { status: OrderStatus.CANCELADO }),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    describe('pedido manual anónimo (userId null)', () => {
+      const anonOrder = (status: OrderStatus) =>
+        seedOrder({ userId: null, status, customerPhone: '51987654321' });
+
+      it('en_camino → entregado: se entrega (deliveredAt) sin buscar usuario ni tocar totalSpent', async () => {
+        const manager = setupTransaction(
+          anonOrder(OrderStatus.EN_CAMINO),
+          null as unknown as User,
+        );
+
+        const result = await service.updateStatus('one-1', {
+          status: OrderStatus.ENTREGADO,
+        });
+
+        expect(result.status).toBe(OrderStatus.ENTREGADO);
+        expect(result.deliveredAt).toBeInstanceOf(Date);
+        expect(manager.findOne).not.toHaveBeenCalledWith(
+          User,
+          expect.anything(),
+        );
+        expect(manager.save).not.toHaveBeenCalledWith(User, expect.anything());
+      });
+
+      it('entregado: no genera cupón, no recalcula estrellas, no manda push al "cliente"', async () => {
+        setupTransaction(
+          anonOrder(OrderStatus.EN_CAMINO),
+          null as unknown as User,
+        );
+
+        await service.updateStatus('one-1', { status: OrderStatus.ENTREGADO });
+
+        expect(couponsService.checkAndGenerateForUser).not.toHaveBeenCalled();
+        expect(rewardsService.recalculateForUser).not.toHaveBeenCalled();
+        expect(
+          notificationsService.sendPushNotification,
+        ).not.toHaveBeenCalled();
+      });
+
+      it('pendiente → confirmado: transiciona sin push', async () => {
+        setupTransaction(
+          anonOrder(OrderStatus.PENDIENTE),
+          null as unknown as User,
+        );
+
+        const result = await service.updateStatus('one-1', {
+          status: OrderStatus.CONFIRMADO,
+        });
+
+        expect(result.status).toBe(OrderStatus.CONFIRMADO);
+        expect(
+          notificationsService.sendPushNotification,
+        ).not.toHaveBeenCalled();
+      });
     });
 
     it('incrementa totalSpent al pasar a entregado (caso numérico real)', async () => {

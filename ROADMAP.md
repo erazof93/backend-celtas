@@ -593,6 +593,36 @@ celtas-backend/
   storage en memoria (OK con una instancia en Render free; con varias haría falta Redis); los
   400 del DTO consumen cupo (guards antes que pipes); el 429 reusa el `errorMessage` genérico de
   `AuthModule`; multi-cuenta multiplica el cupo.
+- [x] **Pedido manual del admin: `POST /orders/admin` (solo admin), con cliente o anónimo.**
+  Para pedidos tomados fuera de la app (ej. por teléfono). **Migración**
+  `AllowAnonymousManualOrders`: `orders.userId` nullable + `customerName` varchar(100) y
+  `customerPhone` varchar(20) nullable; `down()` revisado a mano — aborta con mensaje claro si ya
+  hay pedidos con `userId` NULL (no borra datos). `create()` se partió en chequeo de horario +
+  `placeOrder()` (núcleo común: precios snapshot, delivery, cupón, premios, transacción, push a
+  admins) — el spec original guardaba `dto.items` directo y aceptaba `deliveryFee` del cliente,
+  se descartó. Decisiones del usuario: anónimo = `userId` null + `customerName`/`customerPhone`
+  obligatorios (celular peruano, normalizado a `51XXXXXXXXX` por `common/utils/phone.util.ts`);
+  el admin **salta el horario de atención**; `whatsappUrl` → `wa.me/<celular del cliente>` con
+  encabezado "CONFIRMA TU PEDIDO" (fallback al número del negocio si el cliente registrado no
+  tiene celular válido); `customerId` solo de rol `cliente` (admin → 400). DTO
+  `CreateOrderAdminDto` con constraint classes (`IsPeruMobile`, `IsContactExclusiveWithCustomer`:
+  customerName/Phone junto a customerId → 400). Anónimo + `addressId`/`couponCode`/
+  `rewardRedemptionId` → 400, validado en `placeOrder` junto a cada uso (con `userId` null,
+  `where: { userId: undefined }` NO filtraría por dueño y aceptaría la dirección de cualquier
+  cliente). `updateStatus` con `userId` null: `entregado` setea `deliveredAt` pero salta
+  `totalSpent`/cupón/estrellas/push (antes daba 404 "Usuario del pedido no encontrado"). Las
+  métricas del dashboard SÍ incluyen los anónimos entregados (sin join con users). Barrido: el
+  tipo `string | null` hizo que `tsc` marcara los 4 usos de `updateStatus` y ningún otro módulo.
+  Guard: `@UseGuards(JwtAuthGuard, RolesGuard)` — el spec traía `@Roles` sin `RolesGuard`, que no
+  restringe nada. **Contraparte en `celtas-admin`** (mismo cambio, desplegar JUNTOS): `Order.userId`/
+  `user` nullables + `orderCustomer()`; antes `OrdersPage.tsx:165` (`order.userId.slice`) tumbaba la
+  lista entera con un solo pedido anónimo. `@tester`: **LISTO** (tras un NO LISTO por el panel) —
+  622 unit + 529 e2e backend, 363 vitest panel; mutaciones (sin `RolesGuard`, sin guard de
+  `addressId` anónimo, sin chequeo de rol, lectura directa de `order.user.phone`/`userId.slice`)
+  rompen tests. Riesgos no bloqueantes: premio en pedido anónimo cubierto solo en unit; el panel
+  no se probó en navegador real contra pedidos anónimos (solo jsdom); sin columna "creado por"
+  (qué admin cargó el pedido). Hallazgo ajeno a esta tarea: `banners.e2e-spec.ts` y
+  `notifications.e2e-spec.ts` dejan 2 usuarios de prueba cada uno por corrida en la BD local.
 
 ### 5. Módulo Coupons
 - [x] Entidad `Coupon` (código, tipo de descuento, monto/%, expiración, usado, userId)

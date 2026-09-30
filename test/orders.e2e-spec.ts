@@ -88,6 +88,9 @@ describe('Orders (e2e)', () => {
   let itemBId: string;
   let addressId: string;
   const sauceIds: string[] = [];
+  // Pedidos manuales anónimos (userId null): el afterAll borra por userId, así
+  // que estos se borran aparte, ANTES de los productos (FK de order_items).
+  const anonOrderIds: string[] = [];
 
   const suffix = Date.now();
   const clientAEmail = `qa-orders-a-${suffix}@test.com`;
@@ -254,6 +257,9 @@ describe('Orders (e2e)', () => {
       // Los order_items se borran en cascada al eliminar los orders.
       await ordersRepo.delete(ids.map((id) => ({ userId: id })));
       await addressesRepo.delete(ids.map((id) => ({ userId: id })));
+    }
+    if (anonOrderIds.length > 0) {
+      await ordersRepo.delete(anonOrderIds);
     }
     await itemsRepo.delete({ categoryId });
     if (sauceIds.length > 0) {
@@ -1679,6 +1685,441 @@ describe('Orders (e2e)', () => {
       expect(snapshotAfter).toBe(snapshotBefore);
       expect(snapshotAfter).toContain('Av. Los Álamos 123');
       expect(snapshotAfter).not.toContain('Av. CAMBIADA');
+    });
+  });
+
+  describe('POST /orders/admin (pedido manual)', () => {
+    interface ManualOrderData extends OrderData {
+      userId: string;
+      customerName: string | null;
+      customerPhone: string | null;
+      deliveredAt: string | null;
+    }
+
+    // Sin coordenadas → deliveryFee 0 (no bloquea): total = solo los productos.
+    const snapshot = JSON.stringify({
+      alias: 'Pedido telefónico',
+      fullAddress: 'Jr. Los Pinos 456',
+      district: 'San Juan de Miraflores',
+    });
+    const anonBody = {
+      customerName: 'Juan Pérez',
+      customerPhone: '+51 987 654 321',
+      addressSnapshot: snapshot,
+      items: [{ menuItemId: '', quantity: 2 }],
+    };
+
+    // Registra TODO pedido anónimo que se cree por acá (también si un test que
+    // espera 401/403/400 recibe 201 por una regresión): el afterAll lo borra.
+    // Sin esto, un fallo dejaba basura con userId NULL en la BD local.
+    const createManual = async (token: string | null, body: object) => {
+      const req = request(app.getHttpServer()).post('/orders/admin');
+      if (token) req.set('Authorization', `Bearer ${token}`);
+      const res = await req.send(body);
+      const created = (res.body as Partial<Envelope>).data as
+        { id?: string; userId?: string | null } | undefined;
+      if (res.status === 201 && created?.id && created.userId === null) {
+        anonOrderIds.push(created.id);
+      }
+      return res;
+    };
+    const withItemA = <T extends { items: object[] }>(body: T) => ({
+      ...body,
+      items: [{ menuItemId: itemAId, quantity: 2 }],
+    });
+    const data = (res: { body: unknown }) =>
+      (res.body as Envelope).data as ManualOrderData;
+    const waNumber = (url: string) => new URL(url).pathname.slice(1);
+
+    // Dirección propia de clientA: el `addressId` compartido lo borra un test
+    // anterior ("el snapshot sobrevive al borrado de la dirección"). Tiene que
+    // EXISTIR para que "anónimo con addressId → 400" pruebe algo real: con el
+    // check roto, el lookup sin dueño la encontraría y daría 201.
+    let ownAddressId: string;
+    beforeAll(async () => {
+      const addr = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send({
+          alias: 'Trabajo',
+          fullAddress: 'Av. San Juan 789',
+          reference: 'Oficina 2',
+          district: 'San Juan de Miraflores',
+        })
+        .expect(201);
+      ownAddressId = ((addr.body as Envelope).data as { id: string }).id;
+    });
+
+    it('anónimo → 201: userId null, contacto normalizado, total del backend, whatsappUrl al cliente', async () => {
+      const res = await createManual(adminToken, withItemA(anonBody));
+
+      expect(res.status).toBe(201);
+      const order = data(res);
+      expect(order.userId).toBeNull();
+      expect(order.customerName).toBe('Juan Pérez');
+      expect(order.customerPhone).toBe('51987654321');
+      expect(order.status).toBe('pendiente');
+      expect(order.total).toBe(49.8);
+      expect(order.addressSnapshot).toBe(snapshot);
+      expect(order.items).toHaveLength(1);
+      expect(order.items[0]).toMatchObject({
+        name: 'Clásica',
+        unitPrice: 24.9,
+        quantity: 2,
+      });
+      expect(waNumber(order.whatsappUrl)).toBe('51987654321');
+      expect(decodeURIComponent(order.whatsappUrl)).toContain(
+        '*CONFIRMA TU PEDIDO #',
+      );
+    });
+
+    it('con customerId → 201: pedido del cliente, con su addressId, sin customerName/Phone', async () => {
+      const res = await createManual(adminToken, {
+        customerId: clientAId,
+        addressId: ownAddressId,
+        items: [{ menuItemId: itemBId, quantity: 1 }],
+      });
+
+      expect(res.status).toBe(201);
+      const order = data(res);
+      expect(order.userId).toBe(clientAId);
+      expect(order.customerName).toBeNull();
+      expect(order.customerPhone).toBeNull();
+      expect(order.addressSnapshot).toContain('Av. San Juan 789');
+      // Aparece en el historial del cliente como cualquier pedido suyo.
+      const mine = await request(app.getHttpServer())
+        .get('/orders/me')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(200);
+      expect(
+        ((mine.body as Envelope).data as { id: string }[]).map((o) => o.id),
+      ).toContain(order.id);
+    });
+
+    it('sin items → 400', async () => {
+      const res = await createManual(adminToken, {
+        ...anonBody,
+        items: undefined,
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('items vacío → 400', async () => {
+      const res = await createManual(adminToken, { ...anonBody, items: [] });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('sin dirección → 400', async () => {
+      const res = await createManual(
+        adminToken,
+        withItemA({ ...anonBody, addressSnapshot: undefined }),
+      );
+
+      expect(res.status).toBe(400);
+      expect((res.body as ErrorResponse).message).toBe(
+        'Debes indicar una dirección (addressId o addressSnapshot)',
+      );
+    });
+
+    it.each([
+      ['sin customerName', { customerName: undefined }],
+      ['sin customerPhone', { customerPhone: undefined }],
+      ['celular no peruano', { customerPhone: '12345' }],
+    ])('anónimo %s → 400', async (_label, override) => {
+      const res = await createManual(
+        adminToken,
+        withItemA({ ...anonBody, ...override }),
+      );
+
+      expect(res.status).toBe(400);
+    });
+
+    it('customerId + customerName → 400 (contacto ambiguo)', async () => {
+      const res = await createManual(
+        adminToken,
+        withItemA({ ...anonBody, customerId: clientAId }),
+      );
+
+      expect(res.status).toBe(400);
+      expect((res.body as ErrorResponse).message).toContain(
+        'customerName y customerPhone solo se envían en pedidos sin customerId',
+      );
+    });
+
+    it('anónimo con addressId → 400 (no puede usar direcciones de ningún cliente)', async () => {
+      const res = await createManual(
+        adminToken,
+        withItemA({
+          ...anonBody,
+          addressSnapshot: undefined,
+          addressId: ownAddressId,
+        }),
+      );
+
+      expect(res.status).toBe(400);
+      expect((res.body as ErrorResponse).message).toBe(
+        'Un pedido sin cliente no puede usar addressId: envía la dirección en addressSnapshot',
+      );
+    });
+
+    it('customerId de una cuenta admin → 400, sin crear nada', async () => {
+      const admin = await usersRepo.findOneByOrFail({ email: adminEmail });
+      const before = await ordersRepo.count();
+
+      const res = await createManual(adminToken, {
+        customerId: admin.id,
+        addressSnapshot: snapshot,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      });
+
+      expect(res.status).toBe(400);
+      expect((res.body as ErrorResponse).message).toBe(
+        'customerId debe ser una cuenta de cliente, no de administrador',
+      );
+      expect(await ordersRepo.count()).toBe(before);
+    });
+
+    it('customerId inexistente → 404', async () => {
+      const res = await createManual(
+        adminToken,
+        withItemA({
+          customerId: '99999999-9999-4999-8999-999999999999',
+          addressSnapshot: snapshot,
+          items: [],
+        }),
+      );
+
+      expect(res.status).toBe(404);
+      expect((res.body as ErrorResponse).message).toBe('Cliente no encontrado');
+    });
+
+    it('token de cliente (no admin) → 403, sin crear nada', async () => {
+      const before = await ordersRepo.count();
+      const res = await createManual(clientAToken, withItemA(anonBody));
+
+      expect(res.status).toBe(403);
+      expect(await ordersRepo.count()).toBe(before);
+    });
+
+    it('sin token → 401', async () => {
+      const res = await createManual(null, withItemA(anonBody));
+
+      expect(res.status).toBe(401);
+    });
+
+    it('el anónimo se lista y se ve en detalle (admin) con user null, sin romper', async () => {
+      const id = anonOrderIds[0];
+      const list = await request(app.getHttpServer())
+        .get('/orders')
+        .query({ limit: 100 })
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const listed = (
+        (list.body as Envelope).data as { items: ManualOrderData[] }
+      ).items.find((o) => o.id === id);
+      expect(listed).toBeDefined();
+      expect(listed?.user ?? null).toBeNull();
+
+      const detail = await request(app.getHttpServer())
+        .get(`/orders/${id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      expect(data(detail).customerName).toBe('Juan Pérez');
+    });
+
+    it('un cliente no puede ver el pedido anónimo (403)', async () => {
+      await request(app.getHttpServer())
+        .get(`/orders/${anonOrderIds[0]}`)
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(403);
+    });
+
+    it('el anónimo recorre pendiente → confirmado → en_camino → entregado (deliveredAt, sin 404 de usuario)', async () => {
+      const id = anonOrderIds[0];
+      for (const status of ['confirmado', 'en_camino', 'entregado']) {
+        const res = await request(app.getHttpServer())
+          .patch(`/orders/${id}/status`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ status });
+        expect(res.status).toBe(200);
+      }
+      const saved = await ordersRepo.findOneByOrFail({ id });
+      expect(saved.status).toBe('entregado');
+      expect(saved.deliveredAt).toBeInstanceOf(Date);
+    });
+
+    // ── Auditoría QA ─────────────────────────────────────────────────────────
+    const advanceToDelivered = async (id: string) => {
+      for (const status of ['confirmado', 'en_camino', 'entregado']) {
+        await request(app.getHttpServer())
+          .patch(`/orders/${id}/status`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ status })
+          .expect(200);
+      }
+    };
+    const todayRevenue = async () => {
+      const res = await request(app.getHttpServer())
+        .get('/admin/dashboard/summary')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      return ((res.body as Envelope).data as { revenue: number }).revenue;
+    };
+    const todayQtyOfItemA = async () => {
+      const res = await request(app.getHttpServer())
+        .get('/admin/dashboard/top-products')
+        .query({ limit: 50 })
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const rows = (
+        (res.body as Envelope).data as {
+          items: { menuItemId: string; quantity: number }[];
+        }
+      ).items;
+      return rows.find((r) => r.menuItemId === itemAId)?.quantity ?? 0;
+    };
+
+    it('QA: el anónimo entregado SUMA en las ventas del dashboard (revenue + top-products) y no toca el totalSpent de ningún cliente', async () => {
+      const created = await createManual(adminToken, withItemA(anonBody));
+      expect(created.status).toBe(201);
+      const order = data(created);
+      const clientBefore = await usersRepo.findOneByOrFail({ id: clientAId });
+      const revenueBefore = await todayRevenue();
+      const qtyBefore = await todayQtyOfItemA();
+
+      await advanceToDelivered(order.id);
+
+      const revenueAfter = await todayRevenue();
+      expect(revenueAfter - revenueBefore).toBeCloseTo(order.total, 2);
+      expect((await todayQtyOfItemA()) - qtyBefore).toBe(2);
+      const clientAfter = await usersRepo.findOneByOrFail({ id: clientAId });
+      expect(clientAfter.totalSpent).toBe(clientBefore.totalSpent);
+    });
+
+    it('QA: con customerId, el admin NO puede usar la dirección de OTRO cliente → 404, sin crear nada', async () => {
+      const addrB = await request(app.getHttpServer())
+        .post('/users/me/addresses')
+        .set('Authorization', `Bearer ${clientBToken}`)
+        .send({
+          alias: 'Casa B',
+          fullAddress: 'Calle Ajena 1',
+          district: 'San Juan de Miraflores',
+        })
+        .expect(201);
+      const addrBId = ((addrB.body as Envelope).data as { id: string }).id;
+      const before = await ordersRepo.count();
+
+      const res = await createManual(adminToken, {
+        customerId: clientAId,
+        addressId: addrBId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      });
+
+      expect(res.status).toBe(404);
+      expect(await ordersRepo.count()).toBe(before);
+    });
+
+    it('QA: anónimo con couponCode → 400 con el mensaje propio (no el de CouponsService)', async () => {
+      const res = await createManual(
+        adminToken,
+        withItemA({ ...anonBody, couponCode: 'A1B2C3D4' }),
+      );
+
+      expect(res.status).toBe(400);
+      expect((res.body as ErrorResponse).message).toBe(
+        'Un pedido sin cliente no puede usar cupones',
+      );
+    });
+
+    it('QA: un cliente NO puede colar customerId/customerName en POST /orders (400, sin crear nada)', async () => {
+      const before = await ordersRepo.count();
+      const res = await request(app.getHttpServer())
+        .post('/orders')
+        .set('Authorization', `Bearer ${clientBToken}`)
+        .send({
+          customerId: clientAId,
+          customerName: 'Otro',
+          customerPhone: '987654321',
+          addressSnapshot: snapshot,
+          items: [{ menuItemId: itemAId, quantity: 1 }],
+        });
+
+      expect(res.status).toBe(400);
+      expect(await ordersRepo.count()).toBe(before);
+    });
+
+    it('QA: mensajes de validación en español (customerName faltante, customerPhone numérico, customerId no UUID)', async () => {
+      const missingName = await createManual(
+        adminToken,
+        withItemA({ ...anonBody, customerName: undefined }),
+      );
+      expect(missingName.status).toBe(400);
+      expect((missingName.body as ErrorResponse).message).toContain(
+        'customerName es obligatorio en un pedido sin cliente',
+      );
+
+      const numericPhone = await createManual(
+        adminToken,
+        withItemA({ ...anonBody, customerPhone: 987654321 }),
+      );
+      expect(numericPhone.status).toBe(400);
+      expect((numericPhone.body as ErrorResponse).message).toContain(
+        'customerPhone debe ser texto',
+      );
+
+      const badId = await createManual(
+        adminToken,
+        withItemA({
+          customerId: 'no-es-uuid',
+          addressSnapshot: snapshot,
+          items: [],
+        }),
+      );
+      expect(badId.status).toBe(400);
+      expect((badId.body as ErrorResponse).message).toContain(
+        'customerId debe ser un UUID válido',
+      );
+    });
+
+    it('QA: nombre de solo espacios → 400 (defensa del service)', async () => {
+      const res = await createManual(
+        adminToken,
+        withItemA({ ...anonBody, customerName: '   ' }),
+      );
+
+      expect(res.status).toBe(400);
+    });
+
+    it('QA: el anónimo se puede cancelar desde pendiente (sin cupón/premio que reactivar)', async () => {
+      const created = await createManual(adminToken, withItemA(anonBody));
+      expect(created.status).toBe(201);
+      const id = data(created).id;
+
+      await request(app.getHttpServer())
+        .patch(`/orders/${id}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'cancelado' })
+        .expect(200);
+      const saved = await ordersRepo.findOneByOrFail({ id });
+      expect(saved.status).toBe('cancelado');
+      expect(saved.deliveredAt).toBeNull();
+    });
+
+    it('QA: el anónimo NO aparece en GET /orders/me de ningún cliente', async () => {
+      for (const token of [clientAToken, clientBToken]) {
+        const mine = await request(app.getHttpServer())
+          .get('/orders/me')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        const ids = ((mine.body as Envelope).data as { id: string }[]).map(
+          (o) => o.id,
+        );
+        for (const anonId of anonOrderIds) {
+          expect(ids).not.toContain(anonId);
+        }
+      }
     });
   });
 

@@ -25,13 +25,29 @@ export class Order {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  /**
+   * Cliente dueño del pedido. Nullable: un pedido manual del admin
+   * (POST /orders/admin) puede ser anónimo — en ese caso el contacto vive en
+   * `customerName`/`customerPhone` y no suma totalSpent/estrellas/cupones.
+   */
   @Index()
-  @Column({ type: 'uuid' })
-  userId: string;
+  @Column({ type: 'uuid', nullable: true })
+  userId: string | null;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
+  @ManyToOne(() => User, { onDelete: 'CASCADE', nullable: true })
   @JoinColumn({ name: 'userId' })
-  user: User;
+  user: User | null;
+
+  /**
+   * Contacto de un pedido manual anónimo (sin `userId`), para que el repartidor
+   * tenga a quién llamar. Null en todos los pedidos con cliente registrado.
+   */
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  customerName: string | null;
+
+  /** Celular del pedido manual anónimo, normalizado a dígitos con código de país (51...). */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  customerPhone: string | null;
 
   @Column({ type: 'enum', enum: OrderStatus, default: OrderStatus.PENDIENTE })
   status: OrderStatus;

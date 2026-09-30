@@ -17,6 +17,7 @@ import {
   Repository,
 } from 'typeorm';
 import { haversineDistanceMeters } from '../../common/utils/geo.util';
+import { normalizePeruMobile } from '../../common/utils/phone.util';
 import { CouponsService } from '../coupons/coupons.service';
 import { MenuItem } from '../menu/entities/menu-item.entity';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -25,6 +26,7 @@ import { RewardsService } from '../rewards/rewards.service';
 import { DeliveryFeeTier, SettingsService } from '../settings/settings.service';
 import { Address } from '../users/entities/address.entity';
 import { User, UserRole } from '../users/entities/user.entity';
+import { CreateOrderAdminDto } from './dto/create-order-admin.dto';
 import { CreateOrderDto, CreateOrderItemDto } from './dto/create-order.dto';
 import { EstimateDeliveryByCoordsDto } from './dto/estimate-delivery-by-coords.dto';
 import { EstimateDeliveryFeeDto } from './dto/estimate-delivery-fee.dto';
@@ -100,10 +102,94 @@ export class OrdersService {
       );
     }
 
+    return this.placeOrder({
+      userId,
+      dto,
+      customerName: null,
+      customerPhone: null,
+      whatsappRecipient: null,
+    });
+  }
+
+  /**
+   * Pedido manual cargado por el admin (POST /orders/admin), ej. uno tomado por
+   * teléfono. Mismo cálculo que `create()` (precios snapshot, delivery, cupón,
+   * premios, transacción) vía `placeOrder`, con tres diferencias:
+   * - NO se bloquea por horario: el admin decide (ej. pedido tomado al cierre).
+   * - Con `customerId` se asocia a ese cliente; sin él es anónimo (userId null,
+   *   contacto en customerName/customerPhone).
+   * - El whatsappUrl apunta al CELULAR DEL CLIENTE (para mandarle el resumen a
+   *   confirmar), no al negocio. Si el cliente registrado no tiene un celular
+   *   válido, cae al número del negocio como en `create()`.
+   */
+  async createOrderByAdmin(dto: CreateOrderAdminDto): Promise<Order> {
+    if (dto.customerId) {
+      const customer = await this.usersRepository.findOne({
+        where: { id: dto.customerId },
+      });
+      if (!customer) {
+        throw new NotFoundException('Cliente no encontrado');
+      }
+      // Evita sumar totalSpent/estrellas/cupones a una cuenta admin por error
+      // al elegir el cliente en el panel.
+      if (customer.role !== UserRole.CLIENTE) {
+        throw new BadRequestException(
+          'customerId debe ser una cuenta de cliente, no de administrador',
+        );
+      }
+      return this.placeOrder({
+        userId: customer.id,
+        dto,
+        customerName: null,
+        customerPhone: null,
+        whatsappRecipient: normalizePeruMobile(customer.phone),
+      });
+    }
+
+    // El DTO ya exige ambos sin customerId; esto cubre "   " (IsNotEmpty lo deja pasar).
+    const customerName = dto.customerName?.trim();
+    const customerPhone = normalizePeruMobile(dto.customerPhone);
+    if (!customerName || !customerPhone) {
+      throw new BadRequestException(
+        'Un pedido sin cliente requiere customerName y customerPhone',
+      );
+    }
+    return this.placeOrder({
+      userId: null,
+      dto,
+      customerName,
+      customerPhone,
+      whatsappRecipient: customerPhone,
+    });
+  }
+
+  /**
+   * Núcleo común de `create()` y `createOrderByAdmin()`: dirección → delivery →
+   * items con precios snapshot → transacción (cupón + premios + pedido) → push a
+   * los admins. `userId` null = pedido manual anónimo: addressId, cupón y premios
+   * pertenecen a una cuenta, así que se rechazan con 400 (validado acá, junto a
+   * cada uso, para que ningún caller pueda saltárselo).
+   */
+  private async placeOrder(params: {
+    userId: string | null;
+    dto: CreateOrderDto;
+    customerName: string | null;
+    customerPhone: string | null;
+    /** Celular (51XXXXXXXXX) al que apunta el whatsappUrl; null = número del negocio. */
+    whatsappRecipient: string | null;
+  }): Promise<Order> {
+    const { userId, dto, customerName, customerPhone, whatsappRecipient } =
+      params;
+
     const addressSnapshot = await this.resolveAddressSnapshot(userId, dto);
     const { deliveryFee, isFarOrder } =
       await this.resolveDelivery(addressSnapshot);
     const { items, rewardClaims } = await this.buildItems(dto.items);
+    if (!userId && rewardClaims.length > 0) {
+      throw new BadRequestException(
+        'Un pedido sin cliente no puede canjear premios',
+      );
+    }
     const subtotal = this.round2(
       items.reduce((sum, item) => sum + item.subtotal, 0),
     );
@@ -118,6 +204,11 @@ export class OrdersService {
         null;
       let discountAmount = 0;
       if (dto.couponCode) {
+        if (!userId) {
+          throw new BadRequestException(
+            'Un pedido sin cliente no puede usar cupones',
+          );
+        }
         const applied = await this.couponsService.applyToOrder(manager, {
           code: dto.couponCode,
           userId,
@@ -137,6 +228,8 @@ export class OrdersService {
         menuItemId: string;
       }[] = [];
       for (const claim of rewardClaims) {
+        // Ya rechazado arriba si no hay userId; el guard estrecha el tipo.
+        if (!userId) break;
         const redemption = await this.rewardsService.validateForOrder(manager, {
           rewardRedemptionId: claim.rewardRedemptionId,
           userId,
@@ -148,6 +241,8 @@ export class OrdersService {
       const order = manager.create(Order, {
         id: orderId,
         userId,
+        customerName,
+        customerPhone,
         status: OrderStatus.PENDIENTE,
         addressSnapshot,
         total,
@@ -163,6 +258,7 @@ export class OrdersService {
         deliveryFee,
         discountAmount,
         coupon?.code ?? null,
+        whatsappRecipient,
       );
 
       const saved = await manager.save(Order, order);
@@ -315,14 +411,18 @@ export class OrdersService {
         }
 
         if (dto.status === OrderStatus.ENTREGADO) {
-          const user = await manager.findOne(User, {
-            where: { id: order.userId },
-          });
-          if (!user) {
-            throw new NotFoundException('Usuario del pedido no encontrado');
+          // Pedido manual anónimo (userId null): no hay a quién sumarle totalSpent,
+          // pero la entrega se registra igual (deliveredAt → ventas del dashboard).
+          if (order.userId) {
+            const user = await manager.findOne(User, {
+              where: { id: order.userId },
+            });
+            if (!user) {
+              throw new NotFoundException('Usuario del pedido no encontrado');
+            }
+            user.totalSpent = this.round2(user.totalSpent + order.total);
+            await manager.save(User, user);
           }
-          user.totalSpent = this.round2(user.totalSpent + order.total);
-          await manager.save(User, user);
           // Marca la entrega real: las ventas del dashboard se miden con esta fecha.
           order.deliveredAt = new Date();
         }
@@ -330,11 +430,15 @@ export class OrdersService {
         return manager.save(Order, order);
       })
       .then(async (saved) => {
+        // Pedido manual anónimo: sin cliente no hay cupón, estrellas ni push.
+        const userId = saved.userId;
+        if (!userId) return saved;
+
         // Disparo directo del módulo de cupones tras el commit (el cron es el respaldo).
         // Si falla, no debe romper la respuesta del PATCH: la entrega ya quedó registrada.
         if (saved.status === OrderStatus.ENTREGADO) {
           try {
-            await this.couponsService.checkAndGenerateForUser(saved.userId);
+            await this.couponsService.checkAndGenerateForUser(userId);
           } catch (err) {
             this.logger.error(
               `No se pudo generar el cupón automático para el usuario ${saved.userId}`,
@@ -342,7 +446,7 @@ export class OrdersService {
             );
           }
           try {
-            await this.rewardsService.recalculateForUser(saved.userId);
+            await this.rewardsService.recalculateForUser(userId);
           } catch (err) {
             this.logger.error(
               `No se pudo recalcular las estrellas del usuario ${saved.userId}`,
@@ -354,7 +458,7 @@ export class OrdersService {
         // Notifica al cliente el nuevo estado de su pedido. sendPushNotification
         // nunca lanza (ver contrato en NotificationsService): no hace falta
         // try/catch aquí, no rompe la respuesta del PATCH.
-        await this.notificationsService.sendPushNotification(saved.userId, {
+        await this.notificationsService.sendPushNotification(userId, {
           title: `Tu pedido está ${this.statusLabel(saved.status)}`,
           body: `El estado de tu pedido #${saved.id} cambió a "${this.statusLabel(saved.status)}".`,
           data: { orderId: saved.id, status: saved.status },
@@ -444,10 +548,17 @@ export class OrdersService {
 
   /** Dirección del pedido: siempre termina en un snapshot JSON, nunca en una referencia viva. */
   private async resolveAddressSnapshot(
-    userId: string,
+    userId: string | null,
     dto: CreateOrderDto,
   ): Promise<string> {
     if (dto.addressId) {
+      // Sin userId, `where: { userId: undefined }` NO filtraría por dueño y
+      // aceptaría la dirección de cualquier cliente: se rechaza explícitamente.
+      if (!userId) {
+        throw new BadRequestException(
+          'Un pedido sin cliente no puede usar addressId: envía la dirección en addressSnapshot',
+        );
+      }
       const address = await this.addressesRepository.findOne({
         where: { id: dto.addressId, userId },
       });
@@ -937,10 +1048,15 @@ export class OrdersService {
     deliveryFee: number,
     discountAmount: number,
     couponCode: string | null,
+    /** Celular del cliente (pedido manual del admin); null = número del negocio. */
+    recipient: string | null = null,
   ): Promise<string> {
     // El número vive en la tabla settings (gestionable desde el panel). Si la tabla
     // está vacía, SettingsService cae al valor de .env y loguea un warning.
-    const number = await this.settingsService.getWhatsappNumber();
+    const number =
+      recipient ?? (await this.settingsService.getWhatsappNumber());
+    // Al negocio le llega un pedido nuevo; al cliente, el resumen a confirmar.
+    const heading = recipient ? 'CONFIRMA TU PEDIDO' : 'NUEVO PEDIDO';
     const itemsText = items
       .map((item) => {
         // null = no aplica (sin sufijo); [] = "Sin salsas" elegido a propósito;
@@ -979,7 +1095,7 @@ export class OrdersService {
       discountAmount > 0
         ? `\n🎟️ *Cupón (${couponCode}):* -S/ ${discountAmount.toFixed(2)}`
         : '';
-    const message = `📌 *NUEVO PEDIDO #${orderId.slice(0, 8).toUpperCase()}*
+    const message = `📌 *${heading} #${orderId.slice(0, 8).toUpperCase()}*
 
 🛒 *Detalle:*
 ${itemsText}
