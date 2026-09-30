@@ -69,6 +69,20 @@ export class CreateOrderItemDto {
   extraPortionIds?: string[];
 
   @ApiPropertyOptional({
+    type: [String],
+    example: ['3fa85f64-5717-4562-b3fc-2c963f66afa6'],
+    description:
+      'UUIDs de los tipos de papas elegidos para este ítem (ej. fritas o al hilo; deben estar entre los que el producto ofrece en GET /menu → friesTypes). Mismo tri-state que sauceIds: omitido = no aplica, [] explícito = ninguno. null → 400.',
+  })
+  @IsOptionalNonNullable()
+  @IsArray({ message: 'friesTypeIds debe ser una lista' })
+  @IsUUID('4', {
+    each: true,
+    message: 'Cada friesTypeId debe ser un UUID válido',
+  })
+  friesTypeIds?: string[];
+
+  @ApiPropertyOptional({
     example: 'Sin cebolla, bien cocida',
     description:
       'Comentario libre opcional para este ítem (se aplica a las `quantity` unidades del ítem, no una nota por unidad individual). Vacío o solo espacios se trata como ausente.',

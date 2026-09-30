@@ -92,6 +92,14 @@ export class OrderItem {
   comment: string | null;
 
   /**
+   * Nombres de los tipos de papas elegidos (ej. ["Papas al hilo"]), snapshot al
+   * crear el pedido — mismo criterio y tri-state que `selectedSauces`: `null` = no
+   * aplica / no se mandó; `[]` = el cliente eligió explícitamente ninguno.
+   */
+  @Column({ type: 'text', array: true, nullable: true })
+  selectedFriesTypes: string[] | null;
+
+  /**
    * `(unitPrice + suma de precios de selectedBeverages + suma de precios de
    * selectedExtraPortions) * quantity`, calculado en el backend. Las
    * bebidas/porciones extras suman su precio aunque el ítem sea un premio

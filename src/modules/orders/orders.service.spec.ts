@@ -925,6 +925,89 @@ describe('OrdersService', () => {
       );
     });
 
+    // [QA] Fija el texto EXACTO de los mensajes de grupo previos a "tipo de papas":
+    // el refactor de validateGroupSelection a label {one, many} no debe cambiarlos.
+    it.each([
+      [
+        'salsa requerida',
+        {
+          sauces: [{ id: 's1', name: 'Mayo' }],
+          sauceGroupRequired: true,
+        },
+        {},
+        'El producto "Celtas Clásica" requiere elegir al menos una salsa',
+      ],
+      [
+        'salsa máximo',
+        {
+          sauces: [
+            { id: 's1', name: 'Mayo' },
+            { id: 's2', name: 'Ají' },
+          ],
+          sauceGroupMaxSelectable: 1,
+        },
+        { sauceIds: ['s1', 's2'] },
+        'El producto "Celtas Clásica" permite elegir como máximo 1 salsa(s)',
+      ],
+      [
+        'bebida requerida',
+        {
+          beverages: [{ id: 'b1', name: 'Coca', price: 5 }],
+          beverageGroupRequired: true,
+        },
+        {},
+        'El producto "Celtas Clásica" requiere elegir al menos una bebida',
+      ],
+      [
+        'bebida máximo',
+        {
+          beverages: [
+            { id: 'b1', name: 'Coca', price: 5 },
+            { id: 'b2', name: 'Inca', price: 5 },
+          ],
+          beverageGroupMaxSelectable: 1,
+        },
+        { beverageIds: ['b1', 'b2'] },
+        'El producto "Celtas Clásica" permite elegir como máximo 1 bebida(s)',
+      ],
+      [
+        'porción extra requerida',
+        {
+          extraPortions: [{ id: 'e1', name: 'Queso', price: 3 }],
+          extraPortionsGroupRequired: true,
+        },
+        {},
+        'El producto "Celtas Clásica" requiere elegir al menos una porción extra',
+      ],
+      [
+        'porción extra máximo',
+        {
+          extraPortions: [
+            { id: 'e1', name: 'Queso', price: 3 },
+            { id: 'e2', name: 'Tocino', price: 4 },
+          ],
+          extraPortionsGroupMaxSelectable: 1,
+        },
+        { extraPortionIds: ['e1', 'e2'] },
+        'El producto "Celtas Clásica" permite elegir como máximo 1 porción extra(s)',
+      ],
+    ])(
+      '[QA] mensaje exacto sin cambios: %s',
+      async (_label, overrides, item, expectedMessage) => {
+        menuItemsRepo.find.mockResolvedValue([menuMenuItem(overrides)]);
+
+        const error: unknown = await service
+          .create(userId, {
+            addressId,
+            items: [{ menuItemId, quantity: 1, ...item }],
+          })
+          .catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(BadRequestException);
+        expect((error as BadRequestException).message).toBe(expectedMessage);
+      },
+    );
+
     it('grupo de bebidas obligatorio (required=true) + beverageIds omitido → 400', async () => {
       menuItemsRepo.find.mockResolvedValue([
         menuMenuItem({
@@ -1193,6 +1276,154 @@ describe('OrdersService', () => {
           items: [{ menuItemId, quantity: 1, sauceIds: [] }],
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('create — tipo de papas (friesTypeIds)', () => {
+    const FRITAS = {
+      id: 'fries-fritas',
+      name: 'Papas fritas',
+      isDefault: true,
+    };
+    const HILO = { id: 'fries-hilo', name: 'Papas al hilo', isDefault: false };
+    const burgerWithFries = (
+      overrides: Partial<
+        Pick<MenuItem, 'friesTypeGroupRequired' | 'friesTypeGroupMaxSelectable'>
+      > = {},
+    ) =>
+      menuMenuItem({
+        friesTypes: [FRITAS, HILO] as MenuItem['friesTypes'],
+        friesTypeGroupRequired: false,
+        friesTypeGroupMaxSelectable: 1,
+        ...overrides,
+      });
+    const order = (item: Record<string, unknown>) =>
+      service.create(userId, {
+        addressId,
+        items: [{ menuItemId, quantity: 1, ...item }],
+      });
+    const whatsappText = (url: string) =>
+      decodeURIComponent(url.replace('https://wa.me/51999999999?text=', ''));
+
+    beforeEach(() => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      orderItemsRepo.create.mockImplementation(passthrough);
+      ordersRepo.create.mockImplementation(passthrough);
+      ordersRepo.save.mockImplementation(passthrough);
+      dataSource.transaction.mockImplementation(
+        (cb: (m: { create: jest.Mock; save: jest.Mock }) => Promise<unknown>) =>
+          cb({
+            create: jest.fn((_entity: unknown, value: unknown) => value),
+            save: jest.fn((_entity: unknown, value: unknown) =>
+              Promise.resolve(value),
+            ),
+          }),
+      );
+    });
+
+    it('friesTypeIds válido → snapshot con el nombre y línea "(Papas: …)" en WhatsApp; no cambia el precio', async () => {
+      menuItemsRepo.find.mockResolvedValue([burgerWithFries()]);
+
+      const result = await order({ friesTypeIds: [HILO.id] });
+
+      expect(result.items[0].selectedFriesTypes).toEqual(['Papas al hilo']);
+      expect(result.items[0].subtotal).toBe(24.9);
+      expect(whatsappText(result.whatsappUrl)).toContain(
+        '1x Celtas Clásica (Papas: Papas al hilo)',
+      );
+    });
+
+    it('friesTypeIds omitido (app vieja) + grupo NO obligatorio → 201, snapshot null y sin línea de papas', async () => {
+      menuItemsRepo.find.mockResolvedValue([burgerWithFries()]);
+
+      const result = await order({});
+
+      expect(result.items[0].selectedFriesTypes).toBeNull();
+      expect(whatsappText(result.whatsappUrl)).not.toContain('Papas:');
+    });
+
+    it('friesTypeIds: [] explícito → snapshot [] (no null)', async () => {
+      menuItemsRepo.find.mockResolvedValue([burgerWithFries()]);
+
+      const result = await order({ friesTypeIds: [] });
+
+      expect(result.items[0].selectedFriesTypes).toEqual([]);
+    });
+
+    it('tipo que el producto no ofrece → 400', async () => {
+      menuItemsRepo.find.mockResolvedValue([burgerWithFries()]);
+
+      await expect(order({ friesTypeIds: ['fries-otro'] })).rejects.toThrow(
+        'El producto "Celtas Clásica" no ofrece el tipo de papas seleccionado',
+      );
+    });
+
+    it.each([
+      ['omitido', {}],
+      ['[] explícito', { friesTypeIds: [] }],
+    ])('friesTypeGroupRequired + %s → 400', async (_label, item) => {
+      menuItemsRepo.find.mockResolvedValue([
+        burgerWithFries({ friesTypeGroupRequired: true }),
+      ]);
+
+      await expect(order(item)).rejects.toThrow(
+        'El producto "Celtas Clásica" requiere elegir al menos un tipo de papas',
+      );
+    });
+
+    it('friesTypeGroupMaxSelectable=1 + fritas y al hilo → 400', async () => {
+      menuItemsRepo.find.mockResolvedValue([burgerWithFries()]);
+
+      await expect(
+        order({ friesTypeIds: [FRITAS.id, HILO.id] }),
+      ).rejects.toThrow('permite elegir como máximo 1 tipo(s) de papas');
+    });
+
+    it('[QA] friesTypeIds: [] explícito → WhatsApp sin línea de papas (ni "Papas: )" vacío)', async () => {
+      menuItemsRepo.find.mockResolvedValue([burgerWithFries()]);
+
+      const result = await order({ friesTypeIds: [] });
+      const text = whatsappText(result.whatsappUrl);
+
+      expect(text).not.toContain('Papas:');
+      expect(text).not.toContain('null');
+      expect(text).toContain('  • 1x Celtas Clásica\n');
+    });
+
+    it('[QA] WhatsApp: papas justo después del nombre, antes de salsas y nota; respeta el orden enviado', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          friesTypes: [FRITAS, HILO] as MenuItem['friesTypes'],
+          friesTypeGroupRequired: false,
+          friesTypeGroupMaxSelectable: 2,
+          sauces: [{ id: 'sauce-mayo', name: 'Mayonesa' }],
+        }),
+      ]);
+
+      const result = await order({
+        friesTypeIds: [HILO.id, FRITAS.id],
+        sauceIds: ['sauce-mayo'],
+        comment: 'Bien cocida',
+      });
+
+      expect(result.items[0].selectedFriesTypes).toEqual([
+        'Papas al hilo',
+        'Papas fritas',
+      ]);
+      expect(whatsappText(result.whatsappUrl)).toContain(
+        '  • 1x Celtas Clásica (Papas: Papas al hilo, Papas fritas) (Salsas: Mayonesa) — Nota: Bien cocida',
+      );
+    });
+
+    it('producto sin tipos de papas: friesTypeGroupRequired no aplica (no hay nada que elegir)', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          friesTypes: [] as MenuItem['friesTypes'],
+          friesTypeGroupRequired: true,
+        }),
+      ]);
+
+      await expect(order({})).resolves.toBeDefined();
     });
   });
 

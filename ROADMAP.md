@@ -278,6 +278,33 @@ celtas-backend/
       Veredicto final **LISTO**: 471/471 unit (25/25 suites), 380/380 e2e (14/14 suites, incluye
       26/26 de `menu.e2e-spec.ts` re-verificados post-migración), build/lint limpios. Detalle
       completo en `docs/testing-checklist.md`, sección "Bebidas y Porciones Extras".
+- [x] **Selector de tipo de papas (`FriesType`: "Papas fritas" / "Papas al hilo").**
+      Antes solo existía como texto en la descripción de las hamburguesas ("Con papas fritas o al
+      hilo"); el cliente no podía elegir salvo en el comentario libre. Módulo nuevo `fries-types`
+      calcado de `sauces` (sin precio): tabla `fries_types` (`name` único, `isDefault`), CRUD admin
+      en `/fries-types`, a lo sumo un default (marcar uno desmarca el resto). `MenuItem` gana
+      `friesTypes` (`ManyToMany`, join `menu_item_fries_types`) + `friesTypeGroupRequired`/
+      `friesTypeGroupMaxSelectable`. **`friesTypeGroupRequired` default `false` a propósito**: la
+      app Flutter publicada no manda `friesTypeIds`; con `true`, asignar tipos a un producto
+      rechazaría (400) todos sus pedidos hasta actualizar la app — el admin lo activa por producto.
+      `GET /menu` expone `friesTypes: {id,name,isDefault}[]` (default primero) + config.
+      `CreateOrderItemDto.friesTypeIds` (tri-state como `sauceIds`, `null` → 400),
+      `OrderItem.selectedFriesTypes` (`text[]`, snapshot de nombres), línea "(Papas: …)" en
+      WhatsApp. Seed en `FriesTypesService.onModuleInit` **solo si la tabla está vacía** (no por
+      nombre: un tipo borrado/renombrado por el admin no resucita en el próximo deploy).
+      `validateGroupSelection` ahora recibe la etiqueta con artículo/plural (`{one, many}`): el
+      template fijo producía "al menos una tipo de papas"; los mensajes de salsa/bebida/extra
+      quedaron idénticos (fijados por tests). Gotchas de `sauces` aplicados: entidad agregada a la
+      lista manual de `src/data-source.ts`; `remove()` limpia `menu_item_fries_types` antes de
+      borrar (FK inversa ON DELETE NO ACTION). Migración `CreateFriesTypeEntity` generada, revisada,
+      run→revert→run OK y "No changes" después. Auditado por `@tester`: **LISTO** — 581/581 unit
+      (27 suites), 487/487 e2e (17 suites), build/lint limpios; seed idempotente probado contra BD
+      real, default único bajo 40 rondas de PATCH concurrentes. Riesgos no bloqueantes (default
+      único sin índice parcial en BD, puede quedar en 0 bajo una intercalación rara; borrar todos
+      los tipos → el seed los recrea al arrancar) en `docs/testing-checklist.md`, sección "Tipos
+      de papas". **Pendiente en los clientes**: `celtas-admin` (gestionar `/fries-types` y asignar
+      `friesTypeIds` al producto) y `celtas-app` (selector preseleccionando `isDefault` y enviar
+      `friesTypeIds`); recién después activar `friesTypeGroupRequired` en las hamburguesas.
 
 ### 4. Módulo Orders
 - [x] Entidad `Order` + `OrderItem`

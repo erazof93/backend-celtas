@@ -29,6 +29,8 @@ import { CreateRewardMilestoneDto } from './../src/modules/rewards/dto/create-re
 import { CreateStarPromotionDto } from './../src/modules/rewards/dto/create-star-promotion.dto';
 import { UpdateRewardMilestoneDto } from './../src/modules/rewards/dto/update-reward-milestone.dto';
 import { UpdateStarPromotionDto } from './../src/modules/rewards/dto/update-star-promotion.dto';
+import { CreateFriesTypeDto } from './../src/modules/fries-types/dto/create-fries-type.dto';
+import { UpdateFriesTypeDto } from './../src/modules/fries-types/dto/update-fries-type.dto';
 import { CreateSauceDto } from './../src/modules/sauces/dto/create-sauce.dto';
 import { UpdateSauceDto } from './../src/modules/sauces/dto/update-sauce.dto';
 import { CreateAddressDto } from './../src/modules/users/dto/create-address.dto';
@@ -252,6 +254,14 @@ describe('null en campos de escritura nunca da 500 (e2e)', () => {
         CreateSauceDto,
         UpdateSauceDto,
         () => ({ name: `Null salsa ${uniq()}` }),
+      ],
+      [
+        'fries-types',
+        'fries_types',
+        '/fries-types',
+        CreateFriesTypeDto,
+        UpdateFriesTypeDto,
+        () => ({ name: `Null papas ${uniq()}` }),
       ],
       [
         'beverages',

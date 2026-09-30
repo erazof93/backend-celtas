@@ -7,6 +7,7 @@ import { Beverage } from '../beverages/entities/beverage.entity';
 import { ExtraPortion } from '../extra-portions/entities/extra-portion.entity';
 import { ExtraPortionsService } from '../extra-portions/extra-portions.service';
 import { Sauce } from '../sauces/entities/sauce.entity';
+import { FriesTypesService } from '../fries-types/fries-types.service';
 import { SaucesService } from '../sauces/sauces.service';
 import { Category } from './entities/category.entity';
 import { MenuItem } from './entities/menu-item.entity';
@@ -54,6 +55,7 @@ describe('MenuService', () => {
     remove: jest.Mock;
   };
   let saucesService: { findByIds: jest.Mock };
+  let friesTypesService: { findByIds: jest.Mock };
   let beveragesService: { findByIds: jest.Mock };
   let extraPortionsService: { findByIds: jest.Mock };
 
@@ -98,6 +100,9 @@ describe('MenuService', () => {
       extraPortionsGroupRequired: false,
       extraPortionsGroupMaxSelectable: 1,
       extraPortionsAllowWithout: true,
+      friesTypes: [],
+      friesTypeGroupRequired: false,
+      friesTypeGroupMaxSelectable: 1,
       ...overrides,
     }) as MenuItem;
 
@@ -148,6 +153,7 @@ describe('MenuService', () => {
       remove: jest.fn(),
     };
     saucesService = { findByIds: jest.fn() };
+    friesTypesService = { findByIds: jest.fn() };
     beveragesService = { findByIds: jest.fn() };
     extraPortionsService = { findByIds: jest.fn() };
     const module: TestingModule = await Test.createTestingModule({
@@ -156,6 +162,7 @@ describe('MenuService', () => {
         { provide: getRepositoryToken(Category), useValue: categoriesRepo },
         { provide: getRepositoryToken(MenuItem), useValue: itemsRepo },
         { provide: SaucesService, useValue: saucesService },
+        { provide: FriesTypesService, useValue: friesTypesService },
         { provide: BeveragesService, useValue: beveragesService },
         { provide: ExtraPortionsService, useValue: extraPortionsService },
       ],
@@ -184,7 +191,12 @@ describe('MenuService', () => {
       expect(categoriesRepo.find).toHaveBeenCalledWith({
         where: { active: true },
         relations: {
-          items: { sauces: true, beverages: true, extraPortions: true },
+          items: {
+            sauces: true,
+            beverages: true,
+            extraPortions: true,
+            friesTypes: true,
+          },
         },
         order: { sortOrder: 'ASC', name: 'ASC' },
       });
@@ -355,6 +367,37 @@ describe('MenuService', () => {
       expect(result[0].items[0].beverageGroupMaxSelectable).toBe(2);
       expect(result[0].items[0].extraPortionsGroupRequired).toBe(true);
       expect(result[0].items[0].extraPortionsGroupMaxSelectable).toBe(3);
+    });
+
+    it('expone friesTypes con isDefault, default primero, y la config de grupo', async () => {
+      const item = seedItem({
+        friesTypes: [
+          { id: 'f-hilo', name: 'Papas al hilo', isDefault: false },
+          { id: 'f-fritas', name: 'Papas fritas', isDefault: true },
+        ] as MenuItem['friesTypes'],
+        friesTypeGroupRequired: true,
+        friesTypeGroupMaxSelectable: 1,
+      });
+      categoriesRepo.find.mockResolvedValue([seedCategory({ items: [item] })]);
+
+      const result = await service.findPublicMenu();
+
+      expect(result[0].items[0].friesTypes).toEqual([
+        { id: 'f-fritas', name: 'Papas fritas', isDefault: true },
+        { id: 'f-hilo', name: 'Papas al hilo', isDefault: false },
+      ]);
+      expect(result[0].items[0].friesTypeGroupRequired).toBe(true);
+      expect(result[0].items[0].friesTypeGroupMaxSelectable).toBe(1);
+    });
+
+    it('producto sin tipos de papas → friesTypes [] (la app no muestra el selector)', async () => {
+      categoriesRepo.find.mockResolvedValue([
+        seedCategory({ items: [seedItem()] }),
+      ]);
+
+      const result = await service.findPublicMenu();
+
+      expect(result[0].items[0].friesTypes).toEqual([]);
     });
 
     it('expone sauceGroupMaxSelectable=null (sin límite) tal cual, sin convertirlo a número', async () => {
@@ -684,6 +727,39 @@ describe('MenuService', () => {
       expect(result.extraPortionsAllowWithout).toBeUndefined();
     });
 
+    it('asigna los tipos de papas indicados por friesTypeIds', async () => {
+      categoriesRepo.findOne.mockResolvedValue(seedCategory());
+      itemsRepo.create.mockImplementation(passthrough);
+      itemsRepo.save.mockImplementation(passthrough);
+      const friesTypes = [{ id: 'f-fritas', name: 'Papas fritas' }];
+      friesTypesService.findByIds.mockResolvedValue(friesTypes);
+
+      const result = await service.createItem({
+        name: 'Celta',
+        price: 15,
+        categoryId: catId,
+        friesTypeIds: ['f-fritas'],
+        friesTypeGroupRequired: true,
+      });
+
+      expect(friesTypesService.findByIds).toHaveBeenCalledWith(['f-fritas']);
+      expect(result.friesTypes).toEqual(friesTypes);
+      expect(result.friesTypeGroupRequired).toBe(true);
+      // friesTypeIds no es columna: no debe llegar a create()
+      const [createArg] = itemsRepo.create.mock.calls[0] as [object];
+      expect(createArg).not.toHaveProperty('friesTypeIds');
+    });
+
+    it('sin friesTypeIds no consulta el catálogo de papas', async () => {
+      categoriesRepo.findOne.mockResolvedValue(seedCategory());
+      itemsRepo.create.mockImplementation(passthrough);
+      itemsRepo.save.mockImplementation(passthrough);
+
+      await service.createItem({ name: 'Celta', price: 15, categoryId: catId });
+
+      expect(friesTypesService.findByIds).not.toHaveBeenCalled();
+    });
+
     it('crea el producto con sauceGroupMaxSelectable=null explícito (sin límite)', async () => {
       categoriesRepo.findOne.mockResolvedValue(seedCategory());
       itemsRepo.create.mockImplementation(passthrough);
@@ -714,6 +790,7 @@ describe('MenuService', () => {
           sauces: true,
           beverages: true,
           extraPortions: true,
+          friesTypes: true,
         },
         order: { createdAt: 'DESC' },
       });
@@ -848,6 +925,26 @@ describe('MenuService', () => {
       expect(result.sauceAllowWithout).toBe(false);
       expect(result.beverageAllowWithout).toBe(false);
       expect(result.extraPortionsAllowWithout).toBe(false);
+    });
+
+    it('sin friesTypeIds en el PATCH deja los tipos de papas intactos; con [] los quita', async () => {
+      const assigned = [{ id: 'f-fritas', name: 'Papas fritas' }];
+      itemsRepo.findOne.mockResolvedValue(
+        seedItem({ friesTypes: assigned as MenuItem['friesTypes'] }),
+      );
+      itemsRepo.save.mockImplementation(passthrough);
+
+      const untouched = await service.updateItem('item-1', { name: 'Otra' });
+      expect(friesTypesService.findByIds).not.toHaveBeenCalled();
+      expect(untouched.friesTypes).toEqual(assigned);
+
+      itemsRepo.findOne.mockResolvedValue(
+        seedItem({ friesTypes: assigned as MenuItem['friesTypes'] }),
+      );
+      friesTypesService.findByIds.mockResolvedValue([]);
+      const cleared = await service.updateItem('item-1', { friesTypeIds: [] });
+      expect(friesTypesService.findByIds).toHaveBeenCalledWith([]);
+      expect(cleared.friesTypes).toEqual([]);
     });
 
     it('PATCH con sauceGroupMaxSelectable=null quita el límite (merge copia null, solo ignora undefined)', async () => {

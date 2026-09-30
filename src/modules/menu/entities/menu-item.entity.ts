@@ -12,6 +12,7 @@ import {
 } from 'typeorm';
 import { Beverage } from '../../beverages/entities/beverage.entity';
 import { ExtraPortion } from '../../extra-portions/entities/extra-portion.entity';
+import { FriesType } from '../../fries-types/entities/fries-type.entity';
 import { Sauce } from '../../sauces/entities/sauce.entity';
 import { Category } from './category.entity';
 
@@ -220,6 +221,38 @@ export class MenuItem {
     default: true,
   })
   extraPortionsAllowWithout: boolean;
+
+  /**
+   * Tipos de papas que este producto ofrece (ej. fritas / al hilo), del catálogo
+   * global de `fries_types`. Vacío = el producto no muestra el selector. Relación
+   * en vivo (a diferencia de `OrderItem.selectedFriesTypes`, que es snapshot).
+   * Mismo patrón que `sauces`.
+   */
+  @ManyToMany(() => FriesType, (friesType) => friesType.menuItems)
+  @JoinTable({
+    name: 'menu_item_fries_types',
+    joinColumn: { name: 'menuItemId', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'friesTypeId', referencedColumnName: 'id' },
+  })
+  friesTypes: FriesType[];
+
+  /**
+   * Si el cliente está obligado a elegir un tipo de papas. Default false (no true)
+   * a propósito: la app Flutter ya publicada no conoce `friesTypeIds`, y con true
+   * asignar tipos a un producto rechazaría (400) todos sus pedidos hasta que la app
+   * se actualice. El admin lo activa por producto cuando la app ya lo soporte. Sin
+   * efecto si `friesTypes` está vacío.
+   */
+  @Column({
+    name: 'fries_type_group_required',
+    type: 'boolean',
+    default: false,
+  })
+  friesTypeGroupRequired: boolean;
+
+  /** Máximo de tipos de papas elegibles (default 1: fritas O al hilo). */
+  @Column({ name: 'fries_type_group_max_selectable', type: 'int', default: 1 })
+  friesTypeGroupMaxSelectable: number;
 
   @CreateDateColumn()
   createdAt: Date;

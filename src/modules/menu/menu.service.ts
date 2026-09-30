@@ -7,6 +7,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { QueryFailedError, Repository } from 'typeorm';
 import { BeveragesService } from '../beverages/beverages.service';
 import { ExtraPortionsService } from '../extra-portions/extra-portions.service';
+import { FriesTypesService } from '../fries-types/fries-types.service';
 import { SaucesService } from '../sauces/sauces.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { CreateMenuItemDto } from './dto/create-menu-item.dto';
@@ -38,6 +39,9 @@ export interface PublicMenuCategory {
     extraPortionsGroupRequired: boolean;
     extraPortionsGroupMaxSelectable: number;
     extraPortionsAllowWithout: boolean;
+    friesTypes: { id: string; name: string; isDefault: boolean }[];
+    friesTypeGroupRequired: boolean;
+    friesTypeGroupMaxSelectable: number;
   }[];
 }
 
@@ -55,6 +59,7 @@ export class MenuService {
     @InjectRepository(MenuItem)
     private readonly itemsRepository: Repository<MenuItem>,
     private readonly saucesService: SaucesService,
+    private readonly friesTypesService: FriesTypesService,
     private readonly beveragesService: BeveragesService,
     private readonly extraPortionsService: ExtraPortionsService,
   ) {}
@@ -75,7 +80,12 @@ export class MenuService {
     const categories = await this.categoriesRepository.find({
       where: { active: true },
       relations: {
-        items: { sauces: true, beverages: true, extraPortions: true },
+        items: {
+          sauces: true,
+          beverages: true,
+          extraPortions: true,
+          friesTypes: true,
+        },
       },
       order: { sortOrder: 'ASC', name: 'ASC' },
     });
@@ -106,6 +116,9 @@ export class MenuService {
               extraPortionsGroupRequired,
               extraPortionsGroupMaxSelectable,
               extraPortionsAllowWithout,
+              friesTypes,
+              friesTypeGroupRequired,
+              friesTypeGroupMaxSelectable,
             }) => ({
               id,
               name,
@@ -174,6 +187,20 @@ export class MenuService {
               extraPortionsGroupRequired,
               extraPortionsGroupMaxSelectable,
               extraPortionsAllowWithout,
+              // Default primero (la app lo preselecciona), luego alfabético.
+              friesTypes: (friesTypes ?? [])
+                .sort(
+                  (a, b) =>
+                    Number(b.isDefault) - Number(a.isDefault) ||
+                    a.name.localeCompare(b.name),
+                )
+                .map(({ id: friesTypeId, name: friesTypeName, isDefault }) => ({
+                  id: friesTypeId,
+                  name: friesTypeName,
+                  isDefault,
+                })),
+              friesTypeGroupRequired,
+              friesTypeGroupMaxSelectable,
             }),
           )
           .sort((a, b) => a.name.localeCompare(b.name)),
@@ -241,7 +268,8 @@ export class MenuService {
     // sauceIds/beverageIds/extraPortionIds no son columnas propias de MenuItem
     // (son las relaciones ManyToMany): se separan del resto del DTO antes de
     // `create` y se resuelven aparte.
-    const { sauceIds, beverageIds, extraPortionIds, ...rest } = dto;
+    const { sauceIds, beverageIds, extraPortionIds, friesTypeIds, ...rest } =
+      dto;
     const item = this.itemsRepository.create(rest);
     if (sauceIds !== undefined) {
       item.sauces = await this.saucesService.findByIds(sauceIds);
@@ -252,6 +280,9 @@ export class MenuService {
     if (extraPortionIds !== undefined) {
       item.extraPortions =
         await this.extraPortionsService.findByIds(extraPortionIds);
+    }
+    if (friesTypeIds !== undefined) {
+      item.friesTypes = await this.friesTypesService.findByIds(friesTypeIds);
     }
     return this.runSaveWithUniqueFallback(
       this.itemsRepository.save(item),
@@ -266,6 +297,7 @@ export class MenuService {
         sauces: true,
         beverages: true,
         extraPortions: true,
+        friesTypes: true,
       },
       order: { createdAt: 'DESC' },
     });
@@ -279,6 +311,7 @@ export class MenuService {
         sauces: true,
         beverages: true,
         extraPortions: true,
+        friesTypes: true,
       },
     });
     if (!item) {
@@ -287,7 +320,8 @@ export class MenuService {
     if (dto.categoryId !== undefined) {
       await this.ensureCategory(dto.categoryId);
     }
-    const { sauceIds, beverageIds, extraPortionIds, ...rest } = dto;
+    const { sauceIds, beverageIds, extraPortionIds, friesTypeIds, ...rest } =
+      dto;
     // merge (no Object.assign): solo aplica los campos definidos del DTO. Con
     // Object.assign, los campos ausentes del PATCH (undefined) pisaban los valores
     // ya cargados de la entidad y la respuesta salía incompleta.
@@ -305,6 +339,9 @@ export class MenuService {
     if (extraPortionIds !== undefined) {
       item.extraPortions =
         await this.extraPortionsService.findByIds(extraPortionIds);
+    }
+    if (friesTypeIds !== undefined) {
+      item.friesTypes = await this.friesTypesService.findByIds(friesTypeIds);
     }
     return this.runSaveWithUniqueFallback(
       this.itemsRepository.save(item),

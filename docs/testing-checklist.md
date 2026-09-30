@@ -2652,3 +2652,66 @@ regla de negocio (enforcement de `maxSelectable`/`required`) ya se corrigió.
       `beverage_group_required`/`extra_portions_group_required` inexistentes).
 - [x] **`pnpm run test:e2e` completo: 380/380 verde (14/14 suites)** — sin regresiones en otros
       módulos (orders, coupons, rewards, etc.) tras aplicar el schema nuevo.
+
+## Tipos de papas (catálogo `FriesType` + selector fritas / al hilo por producto)
+
+> Feature calcada del patrón `Sauce` (sin precio). Módulo nuevo `fries-types` (CRUD admin
+> `/fries-types`, seed en `onModuleInit` solo si la tabla está vacía, a lo sumo un `isDefault`),
+> `MenuItem.friesTypes` (ManyToMany `menu_item_fries_types`) + `friesTypeGroupRequired` (default
+> FALSE a propósito: la app Flutter publicada no manda `friesTypeIds`) y
+> `friesTypeGroupMaxSelectable` (default 1), `OrderItem.selectedFriesTypes` (`text[]`, snapshot de
+> nombres, tri-state) y línea `(Papas: …)` en WhatsApp. `validateGroupSelection` pasó a recibir
+> label `{ one, many }`. Migración `CreateFriesTypeEntity1790741660809`.
+>
+> **Auditado por `@tester` (2026-09-29). Veredicto: LISTO.**
+
+- [x] `pnpm run build`: limpio. `eslint` sobre los archivos tocados: limpio.
+- [x] `pnpm run test`: 581/581 (27 suites) — 573 de la sesión principal + 8 agregados en la
+      auditoría (`[QA]` en `orders.service.spec.ts`).
+- [x] `pnpm run test:e2e`: 487/487 (17 suites) — 469 de la sesión principal + 18 agregados en
+      la auditoría (`[QA]` en `test/fries-types.e2e-spec.ts`).
+- [x] **Mensajes de salsa/bebida/porción extra sin cambios** tras el refactor a `{ one, many }`:
+      6 tests `[QA] mensaje exacto sin cambios` fijan el texto completo ("al menos una salsa",
+      "como máximo 1 salsa(s)", ídem bebida / porción extra). Pasan contra el código de `HEAD`
+      (pre-refactor, corrido en un worktree temporal) y contra el nuevo; mutación en la copia del
+      worktree (quitar "una") → 3 fallan. Antes solo "como máximo 1 salsa(s)" estaba fijado.
+- [x] **Seed idempotente**: unit (count > 0 → no siembra) + e2e contra BD real `[QA]`: renombrar
+      "Papas al hilo" y re-ejecutar `onModuleInit` → no resucita el nombre ni duplica filas.
+- [x] **Default único bajo concurrencia**: 40 rondas de 2 `update(isDefault: true)` en paralelo
+      + 2 `create(isDefault: true)` en paralelo contra la BD local → siempre exactamente 1 default
+      (spec temporal, no versionada). Ver riesgo teórico abajo.
+- [x] **Tri-state `friesTypeIds`**: omitido → `null`, `[]` → `[]`, ids → nombres; `null` → 400
+      (orders y menu items); no-lista / no-UUID → 400; id no ofrecido → 400; UUID inexistente en
+      menu item → 404.
+- [x] **Contrato DTO**: `name` >100 / numérico / ausente, `isDefault` string / null, campo
+      desconocido → 400; `friesTypeGroupMaxSelectable` 0 / 1.5 / null → 400;
+      `friesTypeGroupRequired` string → 400. `null-fields.e2e-spec.ts` cubre los DTOs nuevos por
+      metadata.
+- [x] **WhatsApp**: `(Papas: …)` justo después del nombre, antes de `(Salsas: …)` y de la nota;
+      respeta el orden enviado por el cliente; con `null` o `[]` no aparece la línea (ni
+      "Papas: )" ni "null").
+- [x] **Seguridad**: GET/POST/PATCH/DELETE `/fries-types` → 401 sin token, 403 con rol cliente.
+      No expone datos de usuario.
+- [x] **Migración**: tabla nueva + join nueva + 2 columnas `NOT NULL DEFAULT` + 1 columna nullable,
+      sin UPDATE/DELETE de datos (segura para Supabase). `migration:generate` después → "No changes"
+      (sin drift). `data-source.ts` incluye `FriesType`.
+- [x] **Swagger**: `/fries-types` (tag `fries-types`, bearer, respuestas 200/201/400/401/403/404/409),
+      `CreateFriesTypeDto`/`UpdateFriesTypeDto`, y `friesTypeIds`/`friesTypeGroupRequired`/
+      `friesTypeGroupMaxSelectable` en `CreateMenuItemDto`/`UpdateMenuItemDto`/`CreateOrderItemDto`.
+- [x] **BD local tras la auditoría**: `business_hours_schedule`, `business_manual_closed(_reason)`,
+      `store_location`, `fries_types`, categorías, productos, pedidos y `menu_item_fries_types`
+      idénticos a la foto previa. (Las suites `banners`/`notifications` dejan 2 usuarios `qa-*` cada
+      una por corrida — problema previo, no de esta feature; se borraron los de esta auditoría.)
+
+**Riesgos / pendientes no bloqueantes:**
+
+- [ ] Default único sin garantía a nivel BD (sin índice único parcial ni transacción): una
+      intercalación save A → save B → clear(A) → clear(B) puede dejar **0** defaults (nunca 2). No
+      se reprodujo en 40 rondas; impacto bajo (la app simplemente no preselecciona).
+- [ ] Si el admin borra **todos** los tipos, el siguiente arranque vuelve a sembrar "Papas fritas"
+      y "Papas al hilo" (la condición es "tabla vacía").
+- [ ] `PATCH { isDefault: false }` sobre el único default deja el catálogo sin default (permitido).
+- [ ] `friesTypeIds` con ids duplicados (`[hilo, hilo]`) no se deduplican: con max 1 → 400
+      "como máximo 1"; con max ≥ 2 se guarda el nombre dos veces. Mismo comportamiento que `sauceIds`.
+- [ ] La respuesta de `GET /menu` no tiene schema Swagger (ni para papas ni para salsas/bebidas);
+      los campos nuevos solo están documentados en los DTOs de escritura.

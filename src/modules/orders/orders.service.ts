@@ -595,7 +595,12 @@ export class OrdersService {
     const ids = items.map((item) => item.menuItemId);
     const menuItems = await this.menuItemsRepository.find({
       where: { id: In(ids) },
-      relations: { sauces: true, beverages: true, extraPortions: true },
+      relations: {
+        sauces: true,
+        beverages: true,
+        extraPortions: true,
+        friesTypes: true,
+      },
     });
     const byId = new Map(menuItems.map((menuItem) => [menuItem.id, menuItem]));
 
@@ -656,7 +661,7 @@ export class OrdersService {
           : selectedSauces.map((name) => ({ name })),
         menuItem.sauceGroupRequired,
         menuItem.sauceGroupMaxSelectable,
-        'salsa',
+        { one: 'una salsa', many: 'salsa(s)' },
       );
       const offeredBeverages = this.resolveBeveragePrices(menuItem);
       const selectedBeverages = this.resolveSelectedPriced(
@@ -671,7 +676,7 @@ export class OrdersService {
         selectedBeverages,
         menuItem.beverageGroupRequired,
         menuItem.beverageGroupMaxSelectable,
-        'bebida',
+        { one: 'una bebida', many: 'bebida(s)' },
       );
       const selectedExtraPortions = this.resolveSelectedPriced(
         menuItem.extraPortions,
@@ -685,7 +690,18 @@ export class OrdersService {
         selectedExtraPortions,
         menuItem.extraPortionsGroupRequired,
         menuItem.extraPortionsGroupMaxSelectable,
-        'porción extra',
+        { one: 'una porción extra', many: 'porción extra(s)' },
+      );
+      const selectedFriesTypes = this.resolveSelectedFriesTypes(menuItem, item);
+      this.validateGroupSelection(
+        menuItem.name,
+        menuItem.friesTypes,
+        selectedFriesTypes === null
+          ? null
+          : selectedFriesTypes.map((name) => ({ name })),
+        menuItem.friesTypeGroupRequired,
+        menuItem.friesTypeGroupMaxSelectable,
+        { one: 'un tipo de papas', many: 'tipo(s) de papas' },
       );
       const comment = this.resolveComment(item);
       // Las bebidas/porciones extras suman su precio aunque `unitPrice` sea 0 por
@@ -710,11 +726,38 @@ export class OrdersService {
           selectedSauces,
           selectedBeverages,
           selectedExtraPortions,
+          selectedFriesTypes,
           comment,
         }),
       );
     }
     return { items: result, rewardClaims };
+  }
+
+  /**
+   * Valida `friesTypeIds` contra los tipos de papas que el producto ofrece (400 si
+   * no está en su lista) y devuelve el SNAPSHOT de nombres. Mismo tri-state que
+   * `resolveSelectedSauces`: omitido → `null`; `[]` → `[]`; con ids → nombres.
+   */
+  private resolveSelectedFriesTypes(
+    menuItem: MenuItem,
+    item: CreateOrderItemDto,
+  ): string[] | null {
+    if (item.friesTypeIds === undefined) {
+      return null;
+    }
+    const offeredById = new Map(
+      (menuItem.friesTypes ?? []).map((type) => [type.id, type.name]),
+    );
+    return item.friesTypeIds.map((friesTypeId) => {
+      const name = offeredById.get(friesTypeId);
+      if (!name) {
+        throw new BadRequestException(
+          `El producto "${menuItem.name}" no ofrece el tipo de papas seleccionado`,
+        );
+      }
+      return name;
+    });
   }
 
   /**
@@ -824,14 +867,15 @@ export class OrdersService {
     selected: { name: string }[] | null,
     groupRequired: boolean,
     groupMaxSelectable: number | null,
-    itemLabel: string,
+    // Con artículo y plural propios: "una salsa" pero "un tipo de papas".
+    itemLabel: { one: string; many: string },
   ): void {
     if (!offered || offered.length === 0) {
       return;
     }
     if (groupRequired && (selected === null || selected.length === 0)) {
       throw new BadRequestException(
-        `El producto "${menuItemName}" requiere elegir al menos una ${itemLabel}`,
+        `El producto "${menuItemName}" requiere elegir al menos ${itemLabel.one}`,
       );
     }
     // `null` = sin límite (hoy solo `sauceGroupMaxSelectable` puede serlo).
@@ -841,7 +885,7 @@ export class OrdersService {
       selected.length > groupMaxSelectable
     ) {
       throw new BadRequestException(
-        `El producto "${menuItemName}" permite elegir como máximo ${groupMaxSelectable} ${itemLabel}(s)`,
+        `El producto "${menuItemName}" permite elegir como máximo ${groupMaxSelectable} ${itemLabel.many}`,
       );
     }
   }
@@ -864,6 +908,7 @@ export class OrdersService {
       selectedSauces: string[] | null;
       selectedBeverages: { name: string; price: number }[] | null;
       selectedExtraPortions: { name: string; price: number }[] | null;
+      selectedFriesTypes: string[] | null;
       comment: string | null;
     }[],
     total: number,
@@ -900,8 +945,12 @@ export class OrdersService {
                 .map((e) => `${e.name} +S/${e.price.toFixed(2)}`)
                 .join(', ')})`
             : '';
+        const friesTypes =
+          item.selectedFriesTypes && item.selectedFriesTypes.length > 0
+            ? ` (Papas: ${item.selectedFriesTypes.join(', ')})`
+            : '';
         const comment = item.comment === null ? '' : ` — Nota: ${item.comment}`;
-        return `  • ${item.quantity}x ${item.name}${sauces}${beverages}${extraPortions}${comment}`;
+        return `  • ${item.quantity}x ${item.name}${friesTypes}${sauces}${beverages}${extraPortions}${comment}`;
       })
       .join('\n');
     // Desglose para que el dueño pueda verificar el monto sin abrir el panel admin:

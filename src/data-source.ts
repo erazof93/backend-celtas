@@ -13,6 +13,7 @@ import { Order } from './modules/orders/entities/order.entity';
 import { RewardMilestone } from './modules/rewards/entities/reward-milestone.entity';
 import { RewardRedemption } from './modules/rewards/entities/reward-redemption.entity';
 import { StarPromotion } from './modules/rewards/entities/star-promotion.entity';
+import { FriesType } from './modules/fries-types/entities/fries-type.entity';
 import { Sauce } from './modules/sauces/entities/sauce.entity';
 import { Setting } from './modules/settings/entities/setting.entity';
 import { Address } from './modules/users/entities/address.entity';
@@ -59,6 +60,7 @@ export const AppDataSource = new DataSource({
     Order,
     OrderItem,
     Sauce,
+    FriesType,
     Beverage,
     ExtraPortion,
     Coupon,

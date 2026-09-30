@@ -208,4 +208,36 @@ export class CreateMenuItemDto {
   @IsOptionalNonNullable()
   @IsBoolean({ message: 'extraPortionsAllowWithout debe ser true o false' })
   extraPortionsAllowWithout?: boolean;
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['3fa85f64-5717-4562-b3fc-2c963f66afa6'],
+    description:
+      'UUIDs de los tipos de papas que ofrece el producto (catálogo /fries-types). Vacío u omitido al crear = sin selector. En PATCH, omitido = no se toca; [] = quita todos.',
+  })
+  @IsOptionalNonNullable()
+  @IsArray({ message: 'friesTypeIds debe ser una lista' })
+  @IsUUID('4', {
+    each: true,
+    message: 'Cada friesTypeId debe ser un UUID válido',
+  })
+  friesTypeIds?: string[];
+
+  @ApiPropertyOptional({
+    example: false,
+    description:
+      'Si el cliente está obligado a elegir un tipo de papas (default false). Sin efecto si friesTypeIds queda vacío.',
+  })
+  @IsOptionalNonNullable()
+  @IsBoolean({ message: 'friesTypeGroupRequired debe ser true o false' })
+  friesTypeGroupRequired?: boolean;
+
+  @ApiPropertyOptional({
+    example: 1,
+    description: 'Máximo de tipos de papas elegibles (default 1)',
+  })
+  @IsOptionalNonNullable()
+  @IsInt({ message: 'friesTypeGroupMaxSelectable debe ser un número entero' })
+  @Min(1, { message: 'friesTypeGroupMaxSelectable debe ser al menos 1' })
+  friesTypeGroupMaxSelectable?: number;
 }
