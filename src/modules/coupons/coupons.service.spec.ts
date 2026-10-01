@@ -2,7 +2,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm';
+import { DataSource, FindOperator } from 'typeorm';
 import { Order } from '../orders/entities/order.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import {
@@ -73,17 +73,36 @@ describe('CouponsService', () => {
     spent?: string;
   }) => {
     const manager = {
-      findOne: jest.fn((entity: unknown, query?: { order?: unknown }) => {
-        if (entity === User) return Promise.resolve(options.user ?? null);
-        if (entity === Coupon) {
-          // La consulta de "último cupón" lleva `order`; la de "hay activo" no.
-          if (query?.order) {
-            return Promise.resolve(options.lastCoupon ?? null);
+      findOne: jest.fn(
+        (
+          entity: unknown,
+          query?: {
+            order?: unknown;
+            where?: { expiresAt?: FindOperator<Date> };
+          },
+        ) => {
+          if (entity === User) return Promise.resolve(options.user ?? null);
+          if (entity === Coupon) {
+            // La consulta de "último cupón" lleva `order`; la de "hay activo" no.
+            if (query?.order) {
+              return Promise.resolve(options.lastCoupon ?? null);
+            }
+            // Aplica el filtro `expiresAt: MoreThan(ahora)` como lo haría
+            // Postgres: un cupón vencido no matchea aunque siga `active`.
+            const active = options.hasActive ?? null;
+            const minExpiresAt = query?.where?.expiresAt;
+            if (
+              active &&
+              minExpiresAt?.type === 'moreThan' &&
+              !(active.expiresAt > minExpiresAt.value)
+            ) {
+              return Promise.resolve(null);
+            }
+            return Promise.resolve(active);
           }
-          return Promise.resolve(options.hasActive ?? null);
-        }
-        return Promise.resolve(null);
-      }),
+          return Promise.resolve(null);
+        },
+      ),
       create: jest.fn((_entity: unknown, value: unknown) => value),
       save: jest.fn((_entity: unknown, value: unknown) =>
         Promise.resolve(value),
@@ -691,6 +710,58 @@ describe('CouponsService', () => {
 
       const result = await service.checkAndGenerateForUser(userId);
       expect(result).toBeNull();
+    });
+
+    it('la búsqueda de cupón activo filtra por vigencia (expiresAt > ahora)', async () => {
+      const manager = setupTransaction({
+        user: { id: userId } as User,
+        spent: '200',
+      });
+      const before = Date.now();
+
+      await service.checkAndGenerateForUser(userId);
+
+      const activeQuery = (
+        manager.findOne.mock.calls as [
+          unknown,
+          { order?: unknown; where: Record<string, unknown> },
+        ][]
+      ).find(([entity, query]) => entity === Coupon && !query.order);
+      const expiresAt = activeQuery![1].where.expiresAt as FindOperator<Date>;
+      expect(expiresAt.type).toBe('moreThan');
+      expect(expiresAt.value.getTime()).toBeGreaterThanOrEqual(before);
+      expect(expiresAt.value.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    it('SÍ genera si el cupón automático "active" ya venció (el cron aún no lo marcó expired)', async () => {
+      setupTransaction({
+        user: { id: userId } as User,
+        hasActive: seedCoupon({
+          origin: CouponOrigin.AUTO,
+          status: CouponStatus.ACTIVE,
+          expiresAt: new Date(Date.now() - 60 * 60 * 1000), // venció hace 1 h
+        }),
+        spent: '60',
+      });
+
+      const result = await service.checkAndGenerateForUser(userId);
+
+      expect(result).not.toBeNull();
+      expect(result!.origin).toBe(CouponOrigin.AUTO);
+      expect(result!.status).toBe(CouponStatus.ACTIVE);
+    });
+
+    it('un cupón automático vencido no salta el umbral: con gasto insuficiente no genera', async () => {
+      setupTransaction({
+        user: { id: userId } as User,
+        hasActive: seedCoupon({
+          origin: CouponOrigin.AUTO,
+          expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+        }),
+        spent: '30',
+      });
+
+      await expect(service.checkAndGenerateForUser(userId)).resolves.toBeNull();
     });
 
     it('no genera si el gasto desde el último cupón no supera el umbral', async () => {

@@ -27,6 +27,7 @@ import {
 import {
   Coupon,
   CouponDiscountType,
+  CouponOrigin,
   CouponStatus,
 } from './../src/modules/coupons/entities/coupon.entity';
 import {
@@ -98,6 +99,7 @@ describe('Coupons (e2e)', () => {
   const clientCEmail = `qa-coupons-c-${suffix}@test.com`;
   const adminEmail = `qa-coupons-admin-${suffix}@test.com`;
   const clientC5Email = `qa-coupons-c5-${suffix}@test.com`;
+  const clientC6Email = `qa-coupons-c6-${suffix}@test.com`;
   const password = 'password123';
 
   // Config de cupones automáticos (tabla settings). La suite la fija en un
@@ -255,6 +257,7 @@ describe('Coupons (e2e)', () => {
         { email: `qa-coupons-c3-${suffix}@test.com` },
         { email: `qa-coupons-c4-${suffix}@test.com` },
         { email: clientC5Email },
+        { email: clientC6Email },
       ],
     });
     const ids = users.map((u) => u.id);
@@ -273,6 +276,7 @@ describe('Coupons (e2e)', () => {
     await usersRepo.delete({ email: `qa-coupons-c3-${suffix}@test.com` });
     await usersRepo.delete({ email: `qa-coupons-c4-${suffix}@test.com` });
     await usersRepo.delete({ email: clientC5Email });
+    await usersRepo.delete({ email: clientC6Email });
     await restoreBusinessHours(settingsRepo, businessHoursSnapshot);
     // Restaurar la config automática tal cual estaba antes de la suite.
     await settingsRepo.delete({ key: In(AUTO_KEYS) });
@@ -1329,6 +1333,41 @@ describe('Coupons (e2e)', () => {
           await usersRepo.delete({ id: user.id });
         }
       }
+    });
+
+    it('genera un cupón nuevo aunque haya uno automático "active" ya vencido (antes de que corra el cron)', async () => {
+      const token = await register(clientC6Email, 'Cliente C6');
+      const client = await usersRepo.findOne({
+        where: { email: clientC6Email },
+      });
+      // Cupón automático vencido hace 1 h que el cron todavía no marcó expired.
+      const stale = await couponsRepo.save(
+        couponsRepo.create({
+          userId: client!.id,
+          code: `STL${String(suffix).slice(-5)}`,
+          discountType: CouponDiscountType.PERCENTAGE,
+          discountValue: 10,
+          minPurchaseAmount: null,
+          status: CouponStatus.ACTIVE,
+          origin: CouponOrigin.AUTO,
+          expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+        }),
+      );
+
+      await deliverOrder(token, 3); // 74.7 ≥ 50 desde el cupón vencido
+
+      const res = await request(app.getHttpServer())
+        .get('/coupons/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const auto = ((res.body as Envelope).data as CouponData[]).filter(
+        (c) => c.origin === 'auto',
+      );
+      expect(auto).toHaveLength(2);
+      const fresh = auto.find((c) => c.id !== stale.id);
+      expect(fresh).toBeDefined();
+      expect(fresh!.status).toBe('active');
+      expect(new Date(fresh!.expiresAt).getTime()).toBeGreaterThan(Date.now());
     });
 
     void clientCId;

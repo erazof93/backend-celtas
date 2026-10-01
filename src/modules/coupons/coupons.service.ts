@@ -12,6 +12,7 @@ import {
   DataSource,
   EntityManager,
   FindOptionsWhere,
+  MoreThan,
   Repository,
 } from 'typeorm';
 import { Order, OrderStatus } from '../orders/entities/order.entity';
@@ -339,12 +340,18 @@ export class CouponsService {
         return null;
       }
 
-      // No duplicar: si ya hay un cupón automático activo sin usar, no generar otro.
+      // No duplicar: si ya hay un cupón automático activo, sin usar Y VIGENTE,
+      // no generar otro. El vencimiento se filtra en la query (no en JS sobre
+      // un findOne): solo el cron de la 1 AM pasa a `expired` los vencidos, así
+      // que hasta entonces uno vencido sigue `active` y no debe bloquear; y si
+      // conviven uno vencido y uno vigente, un findOne sin filtro podría
+      // devolver el vencido y generar un duplicado.
       const hasActive = await manager.findOne(Coupon, {
         where: {
           userId,
           status: CouponStatus.ACTIVE,
           origin: CouponOrigin.AUTO,
+          expiresAt: MoreThan(new Date()),
         },
       });
       if (hasActive) {
