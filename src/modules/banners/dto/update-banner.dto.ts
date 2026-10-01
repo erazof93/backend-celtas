@@ -6,7 +6,6 @@ import {
   IsDate,
   IsEnum,
   IsInt,
-  IsNotEmpty,
   IsOptional,
   IsString,
   Max,
@@ -22,11 +21,15 @@ import { BannerActionType } from '../entities/banner.entity';
  * las actualizaciones parciales.
  */
 export class UpdateBannerDto {
-  @ApiPropertyOptional({ example: '2x1 en burgers', description: 'Título' })
-  @IsOptionalNonNullable()
+  @ApiPropertyOptional({
+    example: '2x1 en burgers',
+    type: String,
+    description: 'Título (opcional; null lo borra)',
+    nullable: true,
+  })
+  @IsOptional()
   @IsString({ message: 'El título debe ser texto' })
-  @IsNotEmpty({ message: 'El título no puede estar vacío' })
-  title?: string;
+  title?: string | null;
 
   @ApiPropertyOptional({ description: 'URL de la imagen del banner' })
   @IsOptional()

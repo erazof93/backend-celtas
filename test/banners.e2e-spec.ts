@@ -4,6 +4,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
@@ -482,6 +483,78 @@ describe('Banners (e2e)', () => {
         })
         .expect(400);
       expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('POST sin title → 201 con title null', async () => {
+      const banner = await createBanner({
+        imageUrl: 'https://res.cloudinary.com/celtas-test/banner.jpg',
+      });
+      expect(banner.title).toBeNull();
+    });
+
+    it('rechaza con 400 si title no es texto', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/banners')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ title: 123 })
+        .expect(400);
+      expect((res.body as ErrorResponse).message).toContain(
+        'El título debe ser texto',
+      );
+    });
+
+    it('PATCH title: null → 200 y borra el título', async () => {
+      const created = await createBanner({ title: 'Con título' });
+      const res = await request(app.getHttpServer())
+        .patch(`/banners/${created.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ title: null })
+        .expect(200);
+      expect(((res.body as Envelope).data as Banner).title).toBeNull();
+      const stored = await bannersRepo.findOne({ where: { id: created.id } });
+      expect(stored?.title).toBeNull();
+    });
+
+    it('PATCH sin title conserva el título existente (merge)', async () => {
+      const created = await createBanner({ title: 'Se queda' });
+      const res = await request(app.getHttpServer())
+        .patch(`/banners/${created.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ order: 3 })
+        .expect(200);
+      expect(((res.body as Envelope).data as Banner).title).toBe('Se queda');
+    });
+
+    it('GET /banners/active devuelve banners con title null sin romper', async () => {
+      const created = await createBanner({
+        imageUrl: 'https://res.cloudinary.com/celtas-test/solo-imagen.jpg',
+        active: true,
+      });
+      const res = await request(app.getHttpServer())
+        .get('/banners/active')
+        .expect(200);
+      const found = ((res.body as Envelope).data as Banner[]).find(
+        (b) => b.id === created.id,
+      );
+      expect(found).toBeDefined();
+      expect(found?.title).toBeNull();
+    });
+
+    it('Swagger: title es opcional y nullable en Create/Update', () => {
+      const doc = SwaggerModule.createDocument(
+        app,
+        new DocumentBuilder().build(),
+      );
+      const schemas = doc.components?.schemas ?? {};
+      for (const name of ['CreateBannerDto', 'UpdateBannerDto']) {
+        const schema = schemas[name] as {
+          properties: Record<string, { nullable?: boolean; type?: string }>;
+          required?: string[];
+        };
+        expect(schema.required ?? []).not.toContain('title');
+        expect(schema.properties.title.type).toBe('string');
+        expect(schema.properties.title.nullable).toBe(true);
+      }
     });
 
     it('lista todos los banners (incluye inactivos)', async () => {

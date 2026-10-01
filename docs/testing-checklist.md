@@ -1366,6 +1366,17 @@ veredicto.
 - [x] PATCH parcial de `daysOfWeek`: edita solo el campo enviado; PATCH sin `daysOfWeek` conserva el valor existente (merge, sin `undefined`)
 - [x] Migración `AddDaysOfWeekToBanners`: columna `integer[]` nullable verificada en `information_schema`, registrada en la tabla `migrations`
 
+### Banners — `title` opcional (migración `MakeBannerTitleNullable`)
+
+- [x] `pnpm run build` OK; unit `banners.service.spec` 17/17
+- [x] POST sin `title` → 201 con `title: null`; `title: 123` → 400 "El título debe ser texto"
+- [x] PATCH `title: null` → 200 y queda `null` en BD; PATCH sin `title` conserva el existente (merge)
+- [x] `GET /banners/active` devuelve banners con `title: null` sin error (backend no asume string en servicio/orden/notificaciones)
+- [x] `null-fields` sigue en verde (title null en POST/PATCH → 201/200, nunca 500)
+- [x] ~~**BUG**~~ RESUELTO: Swagger `title` salía `type: "object"` por el union `string | null`; se agregó `type: String` explícito (barrido: también `UpdateProfileDto.phone`) — guardia en `banners.e2e-spec.ts` ("Swagger: title es opcional y nullable")
+- [ ] **RIESGO CONTRATO** `celtas-app` (`Banner.fromJson`: `json['title'] as String`, `required String title`) rompe el carrusel completo con un solo banner de `title: null`; `celtas-admin` (`types.ts` `title: string`, zod `min(1)`) no permite crear sin título
+- [ ] Decisión pendiente: `title: ""` y `"   "` → 201 y se guardan tal cual (no se normalizan a `null`); `POST {}` (sin title ni imagen) → 201 banner vacío
+
 ## Notifications
 
 - [ ] Falla de FCM (token inválido/expirado) no rompe el flujo principal (pedido, cupón, etc.) — se loguea y continúa

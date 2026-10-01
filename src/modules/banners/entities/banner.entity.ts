@@ -29,8 +29,9 @@ export class Banner {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'varchar' })
-  title: string;
+  /** Título opcional (el banner puede ser solo imagen). */
+  @Column({ type: 'varchar', nullable: true })
+  title: string | null;
 
   /** URL de la imagen del banner (Cloudinary). */
   @Column({ type: 'varchar', nullable: true })

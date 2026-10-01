@@ -131,6 +131,14 @@ describe('BannersService', () => {
       expect(result).toBeDefined();
     });
 
+    it('crea un banner sin title (title null)', async () => {
+      const result = await service.create({
+        imageUrl: 'https://res.cloudinary.com/celtas-test/banner.jpg',
+        title: null,
+      });
+      expect(result.title).toBeNull();
+    });
+
     it('rechaza con 400 si startDate >= endDate', async () => {
       await expect(
         service.create({
@@ -187,6 +195,12 @@ describe('BannersService', () => {
       bannersRepo.findOne.mockResolvedValue(seedBanner());
       const result = await service.update('banner-1', { title: 'Nuevo' });
       expect(result.title).toBe('Nuevo');
+    });
+
+    it('permite actualizar title a null', async () => {
+      bannersRepo.findOne.mockResolvedValue(seedBanner());
+      const result = await service.update('banner-1', { title: null });
+      expect(result.title).toBeNull();
     });
   });
 

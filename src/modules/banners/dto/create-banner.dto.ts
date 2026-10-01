@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsArray,
@@ -23,10 +23,15 @@ import { IsBannerDateRangeValid } from './is-banner-date-range-valid';
  * - Si vienen ambas fechas, `startDate` debe ser anterior a `endDate`.
  */
 export class CreateBannerDto {
-  @ApiProperty({ example: '2x1 en burgers', description: 'Título del banner' })
+  @ApiPropertyOptional({
+    example: '2x1 en burgers',
+    type: String,
+    description: 'Título del banner (opcional)',
+    nullable: true,
+  })
+  @IsOptional()
   @IsString({ message: 'El título debe ser texto' })
-  @IsNotEmpty({ message: 'El título es obligatorio' })
-  title: string;
+  title?: string | null;
 
   @ApiPropertyOptional({
     example: 'https://res.cloudinary.com/...',

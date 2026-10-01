@@ -21,6 +21,7 @@ export class UpdateProfileDto {
   fullName?: string;
 
   @ApiPropertyOptional({
+    type: String,
     example: '987654321',
     description:
       'Celular de contacto (opcional; null lo borra). Peruano: 9 dígitos (acepta +51/espacios/guiones). Extranjero: con + o 00 y código de país (ej. +58 412 999 9999). Se guarda normalizado: código de país + número, sin + (51987654321).',
