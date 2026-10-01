@@ -1649,6 +1649,20 @@ el historial y lo que se manda al push.
 - [ ] `limit` se valida como entero entre 1 y 50 (400 si está fuera de rango)
 - [ ] `deliveredAt` se setea en `OrdersService.updateStatus` dentro de la transacción al pasar a `ENTREGADO`
 
+### Métricas del dashboard (`GET /admin/dashboard/metrics`, `/revenue-trend`, `/new-customers`, `top-products?days`) + `orders.source`
+
+- [x] `metrics`, `revenue-trend` y `new-customers` devuelven `401` sin token y `403` con rol `cliente` (e2e + build real en puerto aparte)
+- [x] `orders.source`: `POST /orders` → `app`; `POST /orders/admin` (con `customerId` o anónimo) → `admin`; el cliente NO puede enviar `source` (400 por whitelist)
+- [x] Migración `AddSourceToOrder`: enum NOT NULL default `'app'`, backfill `userId IS NULL → 'admin'`, `down` reversible; `migration:generate` posterior sin cambios
+- [x] `metrics`: `orders = ordersApp + ordersPhone` (creados, todos los estados); `revenue` = entregados por `deliveredAt`; `month.newCustomers` solo rol `cliente`
+- [x] Fronteras en Lima: de noche (UTC ya es el día/mes siguiente) se usa el día y mes de Lima; día 1 a las 00:30 → mes = solo hoy; lunes → semana = hoy; domingo 23:30 → semana del lunes anterior; cruce de año (unit con fake timers)
+- [x] `createdAt` (timestamp sin zona) se convierte con `AT TIME ZONE current_setting('TimeZone')`: un pedido creado 21:30 Lima (02:30 UTC del día siguiente) cuenta en el día de Lima, con Node en Lima y en UTC (e2e corrido con `TZ=UTC`)
+- [x] `revenue-trend`/`new-customers`: N días ascendentes terminando hoy (Lima), días sin movimiento en 0, `total` = suma de `byDay`; `days` 1-90 (400 con 0, 91, `abc`)
+- [x] `top-products?days=N` filtra por los últimos N días; `days` + `from`/`to` → 400 "days no se puede combinar con from/to"; forma `{ items, limit }` sin cambios
+- [x] Swagger: los 3 endpoints con summary, `bearer`, respuestas 200/400/401/403; `days` en `top-products` aparece una sola vez (sin duplicar `@ApiQuery` + DTO)
+- [ ] `top-products?days` excluye ventas entregadas ANTES de la ventana (hoy solo se verifica el rango por unit con mocks, no con datos reales)
+- [ ] Rendimiento: `AT TIME ZONE` sobre `createdAt` impide usar un índice simple en esa columna (irrelevante con el volumen actual)
+
 ---
 
 ## Reporte de auditoría (formato esperado del @tester)

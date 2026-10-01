@@ -821,6 +821,15 @@ celtas-backend/
   `nestjs-celtas` para no repetirlo.
 - [x] Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — 164 unit + 160 e2e, build/lint limpios
 
+### 8.2 Dashboard: métricas por canal y series diarias — ✅ COMPLETO
+- [x] Columna `orders.source` (`app` | `admin`) + migración `AddSourceToOrder` (backfill: `userId IS NULL` → `admin`; los manuales antiguos CON cliente quedaron como `app`, no distinguibles)
+- [x] `GET /admin/dashboard/metrics` (hoy / semana desde el lunes / mes desde el día 1, en Lima; `ordersApp`/`ordersPhone`, revenue entregado, `month.newCustomers`)
+- [x] `GET /admin/dashboard/revenue-trend?days` y `GET /admin/dashboard/new-customers?days` (1-90, días en 0 incluidos)
+- [x] `top-products` acepta `days` (exclusivo con from/to vía `IsDaysExclusiveWithRange`); forma `{ items, limit }` sin cambios
+- [x] **Bug de zona horaria corregido en el dashboard**: `createdAt` es `timestamp` SIN zona (UTC por `now()`); compararlo con un Date de JS dependía de la zona de Node (Postgres ignora el offset al castear). Correcto en Render (UTC), corrido 5h en local (Lima). Ahora se usa `createdAt AT TIME ZONE current_setting('TimeZone')`.
+- [ ] **Pendiente (mismo bug de clase, fuera del dashboard)**: `rewards` lee `order.createdAt` en JS y falla en local después de las 19:00 Lima (e2e "promocionActiva refleja la promo vigente hoy"). Fix de fondo propuesto: parsear/serializar `timestamp` sin zona como UTC en `pg`.
+- [x] Auditado por `@tester`: **LISTO** — 689 unit, e2e dashboard 21/21 (Node en Lima y con TZ=UTC), build limpio
+
 ### 8.1 Settings (número de WhatsApp editable desde el panel) — ✅ COMPLETO
 - [x] Entidad `Setting` (key único, value, description), sembrada al arrancar si no existe
 - [x] `GET /settings/public` (sin auth, whitelist explícita en código, nunca expone todo el key-value)

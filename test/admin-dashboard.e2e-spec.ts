@@ -16,7 +16,10 @@ import { HttpExceptionFilter } from './../src/common/filters/http-exception.filt
 import { TransformInterceptor } from './../src/common/interceptors/transform.interceptor';
 import { Category } from './../src/modules/menu/entities/category.entity';
 import { MenuItem } from './../src/modules/menu/entities/menu-item.entity';
-import { Order } from './../src/modules/orders/entities/order.entity';
+import {
+  Order,
+  OrderSource,
+} from './../src/modules/orders/entities/order.entity';
 import { Setting } from './../src/modules/settings/entities/setting.entity';
 import { Address } from './../src/modules/users/entities/address.entity';
 import {
@@ -55,6 +58,31 @@ interface TopProductsData {
   limit: number;
 }
 
+interface PeriodData {
+  orders: number;
+  revenue: number;
+  ordersApp: number;
+  ordersPhone: number;
+}
+
+interface MetricsData {
+  today: PeriodData;
+  week: PeriodData;
+  month: PeriodData & { newCustomers: number };
+}
+
+interface TrendDay {
+  date: string;
+  revenue: number;
+  ordersApp: number;
+  ordersPhone: number;
+}
+
+interface NewCustomersData {
+  total: number;
+  byDay: { date: string; count: number }[];
+}
+
 /**
  * Dashboard (e2e). Usa FECHAS FIJAS en America/Lima (UTC-5) para que el test sea
  * determinista e independiente de la hora real (evita cruzar la medianoche de Lima).
@@ -80,6 +108,7 @@ describe('Admin Dashboard (e2e)', () => {
   const suffix = Date.now();
   const clientEmail = `qa-dash-client-${suffix}@test.com`;
   const adminEmail = `qa-dash-admin-${suffix}@test.com`;
+  const newCustomerEmail = `qa-dash-new-${suffix}@test.com`;
   const password = 'password123';
 
   // Fechas fijas en Lima (UTC-5).
@@ -113,6 +142,18 @@ describe('Admin Dashboard (e2e)', () => {
         .expect(200);
     }
   };
+
+  /**
+   * Fija `createdAt` (timestamp SIN zona) como lo escribiría `now()` de la BD: en
+   * la zona de la sesión. Con `ordersRepo.update`, pg serializa el Date con el
+   * offset de Node y Postgres lo ignora al castear, así que con Node en Lima el
+   * valor quedaba en hora de Lima y no en la de la sesión (UTC).
+   */
+  const setCreatedAt = (orderId: string, instant: Date) =>
+    ordersRepo.query(
+      `UPDATE "orders" SET "createdAt" = ($1::timestamptz AT TIME ZONE current_setting('TimeZone')) WHERE "id" = $2`,
+      [instant.toISOString(), orderId],
+    );
 
   const getSummary = async (date: string): Promise<SummaryData> => {
     const res = await request(app.getHttpServer())
@@ -227,6 +268,7 @@ describe('Admin Dashboard (e2e)', () => {
     await categoriesRepo.delete({ id: categoryId });
     await usersRepo.delete({ email: clientEmail });
     await usersRepo.delete({ email: adminEmail });
+    await usersRepo.delete({ email: newCustomerEmail });
     await restoreBusinessHours(settingsRepo, businessHoursSnapshot);
     await app.close();
   });
@@ -267,10 +309,8 @@ describe('Admin Dashboard (e2e)', () => {
       });
       const aId = ((orderA.body as Envelope).data as Order).id;
       await markDelivered(aId);
-      await ordersRepo.update(aId, {
-        createdAt: lima(DAY, '10:00:00.000'),
-        deliveredAt: lima(DAY, '11:00:00.000'),
-      });
+      await setCreatedAt(aId, lima(DAY, '10:00:00.000'));
+      await ordersRepo.update(aId, { deliveredAt: lima(DAY, '11:00:00.000') });
 
       // C: cancelado (no debe contar en revenue)
       const orderC = await createOrder({
@@ -283,7 +323,7 @@ describe('Admin Dashboard (e2e)', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ status: 'cancelado' })
         .expect(200);
-      await ordersRepo.update(cId, { createdAt: lima(DAY, '12:00:00.000') });
+      await setCreatedAt(cId, lima(DAY, '12:00:00.000'));
 
       // D: pendiente (no debe contar en revenue)
       const orderD = await createOrder({
@@ -291,7 +331,7 @@ describe('Admin Dashboard (e2e)', () => {
         items: [{ menuItemId: itemAId, quantity: 3 }],
       });
       const dId = ((orderD.body as Envelope).data as Order).id;
-      await ordersRepo.update(dId, { createdAt: lima(DAY, '13:00:00.000') });
+      await setCreatedAt(dId, lima(DAY, '13:00:00.000'));
 
       const data = await getSummary(DAY);
 
@@ -315,10 +355,8 @@ describe('Admin Dashboard (e2e)', () => {
       });
       const eId = ((orderE.body as Envelope).data as Order).id;
       await markDelivered(eId);
-      await ordersRepo.update(eId, {
-        createdAt: lima(PREV, '12:00:00.000'),
-        deliveredAt: lima(DAY, '14:00:00.000'),
-      });
+      await setCreatedAt(eId, lima(PREV, '12:00:00.000'));
+      await ordersRepo.update(eId, { deliveredAt: lima(DAY, '14:00:00.000') });
 
       const dayData = await getSummary(DAY);
       const prevData = await getSummary(PREV);
@@ -340,10 +378,8 @@ describe('Admin Dashboard (e2e)', () => {
       });
       const bId = ((orderB.body as Envelope).data as Order).id;
       await markDelivered(bId);
-      await ordersRepo.update(bId, {
-        createdAt: lima(DAY, '09:00:00.000'),
-        deliveredAt: lima(PREV, '23:59:00.000'),
-      });
+      await setCreatedAt(bId, lima(DAY, '09:00:00.000'));
+      await ordersRepo.update(bId, { deliveredAt: lima(PREV, '23:59:00.000') });
 
       const prevData = await getSummary(PREV);
       const dayData = await getSummary(DAY);
@@ -352,6 +388,27 @@ describe('Admin Dashboard (e2e)', () => {
       expect(prevData.revenue).toBeCloseTo(24.9, 2);
       // B NO debe contar en revenue de DAY (aunque en UTC su deliveredAt sea del DAY).
       expect(dayData.revenue).toBeCloseTo(35.4 + 21.0, 2);
+    });
+
+    it('ordersCount usa el día de Lima de createdAt: creado 21:30 Lima (02:30 UTC del día siguiente) cuenta en ese día', async () => {
+      // Fechas propias para no alterar las aserciones absolutas de DAY/PREV.
+      const NIGHT = '2026-06-15';
+      const NEXT = '2026-06-16';
+      const nightBefore = await getSummary(NIGHT);
+      const nextBefore = await getSummary(NEXT);
+
+      const orderN = await createOrder({
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const nId = ((orderN.body as Envelope).data as Order).id;
+      await setCreatedAt(nId, lima(NIGHT, '21:30:00.000'));
+
+      const nightAfter = await getSummary(NIGHT);
+      const nextAfter = await getSummary(NEXT);
+
+      expect(nightAfter.ordersCount - nightBefore.ordersCount).toBe(1);
+      expect(nextAfter.ordersCount - nextBefore.ordersCount).toBe(0);
     });
   });
 
@@ -381,6 +438,210 @@ describe('Admin Dashboard (e2e)', () => {
         .get('/admin/dashboard/top-products?limit=0')
         .set('Authorization', `Bearer ${adminToken}`)
         .expect(400);
+    });
+  });
+  /**
+   * Endpoints relativos a HOY (metrics, revenue-trend, new-customers): no aceptan
+   * fechas, así que se usa la fecha real de Lima y se compara ANTES vs DESPUÉS de
+   * crear datos (deltas), para no depender de lo que ya haya en la BD local.
+   */
+  describe('métricas relativas a hoy (metrics / revenue-trend / new-customers)', () => {
+    const todayLima = () =>
+      new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
+
+    const getAdmin = async <T>(path: string): Promise<T> => {
+      const res = await request(app.getHttpServer())
+        .get(path)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      return (res.body as Envelope).data as T;
+    };
+
+    it.each([
+      '/admin/dashboard/metrics',
+      '/admin/dashboard/revenue-trend',
+      '/admin/dashboard/new-customers',
+    ])('%s rechaza sin token (401) y con rol cliente (403)', async (path) => {
+      await request(app.getHttpServer()).get(path).expect(401);
+      await request(app.getHttpServer())
+        .get(path)
+        .set('Authorization', `Bearer ${clientToken}`)
+        .expect(403);
+    });
+
+    it.each(['0', '91', 'abc'])(
+      'revenue-trend y new-customers rechazan days=%s (400)',
+      async (days) => {
+        for (const path of ['revenue-trend', 'new-customers']) {
+          await request(app.getHttpServer())
+            .get(`/admin/dashboard/${path}?days=${days}`)
+            .set('Authorization', `Bearer ${adminToken}`)
+            .expect(400);
+        }
+      },
+    );
+
+    it('metrics y revenue-trend separan app vs. teléfono y suman ventas entregadas hoy', async () => {
+      const before = await getAdmin<MetricsData>('/admin/dashboard/metrics');
+      const trendBefore = await getAdmin<TrendDay[]>(
+        '/admin/dashboard/revenue-trend',
+      );
+
+      // Pedido de la app (POST /orders), entregado hoy.
+      const appRes = await createOrder({
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(201);
+      const appOrder = (appRes.body as Envelope).data as Order;
+      await markDelivered(appOrder.id);
+
+      // Pedido cargado por el admin PARA un cliente registrado (antes de la columna
+      // source era indistinguible de uno de la app): debe contar como teléfono.
+      const client = await usersRepo.findOneByOrFail({ email: clientEmail });
+      const adminRes = await request(app.getHttpServer())
+        .post('/orders/admin')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          customerId: client.id,
+          addressSnapshot: JSON.stringify({
+            alias: 'Casa',
+            fullAddress: 'Av. Los Álamos 123',
+            reference: 'Portón verde',
+            district: 'San Juan de Miraflores',
+          }),
+          items: [{ menuItemId: itemBId, quantity: 1 }],
+        })
+        .expect(201);
+      const adminOrder = (adminRes.body as Envelope).data as Order;
+
+      expect(
+        (await ordersRepo.findOneByOrFail({ id: appOrder.id })).source,
+      ).toBe(OrderSource.APP);
+      expect(
+        (await ordersRepo.findOneByOrFail({ id: adminOrder.id })).source,
+      ).toBe(OrderSource.ADMIN);
+
+      const after = await getAdmin<MetricsData>('/admin/dashboard/metrics');
+      for (const period of ['today', 'week', 'month'] as const) {
+        expect(after[period].ordersApp - before[period].ordersApp).toBe(1);
+        expect(after[period].ordersPhone - before[period].ordersPhone).toBe(1);
+        expect(after[period].orders - before[period].orders).toBe(2);
+        expect(after[period].orders).toBe(
+          after[period].ordersApp + after[period].ordersPhone,
+        );
+        // Solo el pedido de la app está entregado: el del admin sigue pendiente.
+        expect(after[period].revenue - before[period].revenue).toBeCloseTo(
+          appOrder.total,
+          2,
+        );
+      }
+
+      const trendAfter = await getAdmin<TrendDay[]>(
+        '/admin/dashboard/revenue-trend',
+      );
+      const todayBefore = trendBefore[trendBefore.length - 1];
+      const todayAfter = trendAfter[trendAfter.length - 1];
+      expect(todayAfter.date).toBe(todayLima());
+      expect(todayAfter.ordersApp - todayBefore.ordersApp).toBe(1);
+      expect(todayAfter.ordersPhone - todayBefore.ordersPhone).toBe(1);
+      expect(todayAfter.revenue - todayBefore.revenue).toBeCloseTo(
+        appOrder.total,
+        2,
+      );
+    });
+
+    it('POST /orders no acepta source del cliente (400): el canal lo fija el endpoint', async () => {
+      await createOrder({
+        addressId,
+        source: 'admin',
+        items: [{ menuItemId: itemAId, quantity: 1 }],
+      }).expect(400);
+    });
+
+    it('revenue-trend devuelve 7 días por defecto, ascendentes y terminando hoy', async () => {
+      const trend = await getAdmin<TrendDay[]>(
+        '/admin/dashboard/revenue-trend',
+      );
+      expect(trend).toHaveLength(7);
+      expect(trend[6].date).toBe(todayLima());
+      const dates = trend.map((d) => d.date);
+      expect([...dates].sort()).toEqual(dates);
+      expect(new Set(dates).size).toBe(7);
+      for (const day of trend) {
+        expect(day.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        expect(typeof day.revenue).toBe('number');
+        expect(typeof day.ordersApp).toBe('number');
+        expect(typeof day.ordersPhone).toBe('number');
+      }
+
+      const three = await getAdmin<TrendDay[]>(
+        '/admin/dashboard/revenue-trend?days=3',
+      );
+      expect(three.map((d) => d.date)).toEqual(dates.slice(4));
+    });
+
+    it('new-customers: últimos 7 días, total = suma por día, y cuenta un registro nuevo hoy', async () => {
+      const before = await getAdmin<NewCustomersData>(
+        '/admin/dashboard/new-customers',
+      );
+      const metricsBefore = await getAdmin<MetricsData>(
+        '/admin/dashboard/metrics',
+      );
+
+      await register(newCustomerEmail, 'Cliente Nuevo Dash');
+
+      const after = await getAdmin<NewCustomersData>(
+        '/admin/dashboard/new-customers',
+      );
+      const metricsAfter = await getAdmin<MetricsData>(
+        '/admin/dashboard/metrics',
+      );
+
+      expect(after.byDay).toHaveLength(7);
+      expect(after.byDay[6].date).toBe(todayLima());
+      expect(after.total).toBe(
+        after.byDay.reduce((sum, day) => sum + day.count, 0),
+      );
+      expect(after.total - before.total).toBe(1);
+      expect(after.byDay[6].count - before.byDay[6].count).toBe(1);
+      expect(
+        metricsAfter.month.newCustomers - metricsBefore.month.newCustomers,
+      ).toBe(1);
+    });
+  });
+
+  describe('GET /admin/dashboard/top-products?days', () => {
+    it('days=7&limit=5 devuelve como máximo 5 productos de los últimos 7 días', async () => {
+      // Asegura al menos una venta entregada hoy.
+      const res = await createOrder({
+        addressId,
+        items: [{ menuItemId: itemAId, quantity: 2 }],
+      }).expect(201);
+      await markDelivered(((res.body as Envelope).data as Order).id);
+
+      const top = await request(app.getHttpServer())
+        .get('/admin/dashboard/top-products?days=7&limit=5')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const data = (top.body as Envelope).data as TopProductsData;
+
+      expect(data.limit).toBe(5);
+      expect(data.items.length).toBeGreaterThan(0);
+      expect(data.items.length).toBeLessThanOrEqual(5);
+      const quantities = data.items.map((i) => i.quantity);
+      for (let i = 1; i < quantities.length; i++) {
+        expect(quantities[i - 1]).toBeGreaterThanOrEqual(quantities[i]);
+      }
+    });
+
+    it('rechaza days combinado con from/to (400)', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/admin/dashboard/top-products?days=7&from=${DAY}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400);
+      expect(JSON.stringify(res.body)).toContain(
+        'days no se puede combinar con from/to',
+      );
     });
   });
 });

@@ -34,7 +34,7 @@ import { QueryOrdersDto } from './dto/query-orders.dto';
 import { GeoapifyService } from './geoapify.service';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrderItem } from './entities/order-item.entity';
-import { Order, OrderStatus } from './entities/order.entity';
+import { Order, OrderSource, OrderStatus } from './entities/order.entity';
 
 /** Transiciones válidas de estado (no se puede saltar ni retroceder). */
 const VALID_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
@@ -133,6 +133,7 @@ export class OrdersService {
     return this.placeOrder({
       userId,
       dto,
+      source: OrderSource.APP,
       customerName: null,
       customerPhone: null,
       whatsappRecipient: null,
@@ -168,6 +169,7 @@ export class OrdersService {
       return this.placeOrder({
         userId: customer.id,
         dto,
+        source: OrderSource.ADMIN,
         customerName: null,
         customerPhone: null,
         whatsappRecipient: normalizePhone(customer.phone),
@@ -185,6 +187,7 @@ export class OrdersService {
     return this.placeOrder({
       userId: null,
       dto,
+      source: OrderSource.ADMIN,
       customerName,
       customerPhone,
       whatsappRecipient: customerPhone,
@@ -201,13 +204,21 @@ export class OrdersService {
   private async placeOrder(params: {
     userId: string | null;
     dto: CreateOrderDto;
+    /** Canal de origen: lo fija el endpoint, nunca el cliente. */
+    source: OrderSource;
     customerName: string | null;
     customerPhone: string | null;
     /** Celular (51XXXXXXXXX) al que apunta el whatsappUrl; null = número del negocio. */
     whatsappRecipient: string | null;
   }): Promise<Order> {
-    const { userId, dto, customerName, customerPhone, whatsappRecipient } =
-      params;
+    const {
+      userId,
+      dto,
+      source,
+      customerName,
+      customerPhone,
+      whatsappRecipient,
+    } = params;
 
     const addressSnapshot = await this.resolveAddressSnapshot(userId, dto);
     const { deliveryFee, isFarOrder } =
@@ -271,6 +282,7 @@ export class OrdersService {
         userId,
         customerName,
         customerPhone,
+        source,
         status: OrderStatus.PENDIENTE,
         addressSnapshot,
         total,

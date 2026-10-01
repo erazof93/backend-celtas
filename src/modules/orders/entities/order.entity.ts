@@ -20,6 +20,14 @@ export enum OrderStatus {
   CANCELADO = 'cancelado',
 }
 
+/** Canal por el que entró el pedido. */
+export enum OrderSource {
+  /** Hecho por el cliente desde la app (POST /orders). */
+  APP = 'app',
+  /** Cargado por el admin desde el panel, ej. tomado por teléfono (POST /orders/admin). */
+  ADMIN = 'admin',
+}
+
 @Entity('orders')
 export class Order {
   @PrimaryGeneratedColumn('uuid')
@@ -51,6 +59,15 @@ export class Order {
 
   @Column({ type: 'enum', enum: OrderStatus, default: OrderStatus.PENDIENTE })
   status: OrderStatus;
+
+  /**
+   * Canal de origen (app vs. cargado por el admin). Lo fija `placeOrder` según el
+   * endpoint; nunca viene del cliente. Los pedidos previos a esta columna se
+   * migraron como `admin` si eran anónimos y `app` en el resto (los manuales
+   * antiguos con cliente registrado no son distinguibles y quedaron como `app`).
+   */
+  @Column({ type: 'enum', enum: OrderSource, default: OrderSource.APP })
+  source: OrderSource;
 
   /**
    * Copia de la dirección AL MOMENTO del pedido (JSON string). No es una FK a Address:
