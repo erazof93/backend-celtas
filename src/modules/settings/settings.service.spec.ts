@@ -1,9 +1,15 @@
+import { BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { CouponDiscountType } from '../coupons/entities/coupon.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Setting } from './entities/setting.entity';
 import {
+  AUTO_COUPON_DISCOUNT_TYPE_KEY,
+  AUTO_COUPON_DISCOUNT_VALUE_KEY,
+  AUTO_COUPON_EXPIRATION_DAYS_KEY,
+  AUTO_COUPON_THRESHOLD_AMOUNT_KEY,
   BUSINESS_HOURS_SCHEDULE_KEY,
   BUSINESS_MANUAL_CLOSED_KEY,
   BUSINESS_MANUAL_CLOSED_REASON_KEY,
@@ -632,6 +638,215 @@ describe('SettingsService', () => {
     it('devuelve false si el value es "false" o la key no existe', async () => {
       settingsRepo.find.mockResolvedValue([]);
       expect(await service.isManuallyClosed()).toBe(false);
+    });
+  });
+
+  describe('cupones automáticos (auto-config)', () => {
+    const autoRows = (overrides: Record<string, string> = {}) => {
+      const values: Record<string, string> = {
+        [AUTO_COUPON_DISCOUNT_TYPE_KEY]: 'percentage',
+        [AUTO_COUPON_DISCOUNT_VALUE_KEY]: '10',
+        [AUTO_COUPON_THRESHOLD_AMOUNT_KEY]: '50',
+        [AUTO_COUPON_EXPIRATION_DAYS_KEY]: '15',
+        ...overrides,
+      };
+      return Object.entries(values).map(([key, value]) =>
+        seedSetting({ key, value }),
+      );
+    };
+
+    describe('onModuleInit', () => {
+      it('siembra las 4 keys desde las env vars (ya validadas por Joi)', async () => {
+        settingsRepo.findOne.mockResolvedValue(null);
+        configService.get.mockImplementation((key: string) => {
+          if (key === 'coupons.autoDiscountType') return 'fixed_amount';
+          if (key === 'coupons.autoDiscountValue') return 5;
+          if (key === 'coupons.thresholdAmount') return 80;
+          if (key === 'coupons.expirationDays') return 20;
+          return undefined;
+        });
+
+        await service.onModuleInit();
+
+        for (const [key, value] of [
+          [AUTO_COUPON_DISCOUNT_TYPE_KEY, 'fixed_amount'],
+          [AUTO_COUPON_DISCOUNT_VALUE_KEY, '5'],
+          [AUTO_COUPON_THRESHOLD_AMOUNT_KEY, '80'],
+          [AUTO_COUPON_EXPIRATION_DAYS_KEY, '20'],
+        ]) {
+          expect(settingsRepo.save).toHaveBeenCalledWith(
+            expect.objectContaining({ key, value }),
+          );
+        }
+      });
+
+      it('sin env vars siembra los defaults históricos (10%, 50, 15 días)', async () => {
+        settingsRepo.findOne.mockResolvedValue(null);
+        configService.get.mockReturnValue(undefined);
+
+        await service.onModuleInit();
+
+        for (const [key, value] of [
+          [AUTO_COUPON_DISCOUNT_TYPE_KEY, 'percentage'],
+          [AUTO_COUPON_DISCOUNT_VALUE_KEY, '10'],
+          [AUTO_COUPON_THRESHOLD_AMOUNT_KEY, '50'],
+          [AUTO_COUPON_EXPIRATION_DAYS_KEY, '15'],
+        ]) {
+          expect(settingsRepo.save).toHaveBeenCalledWith(
+            expect.objectContaining({ key, value }),
+          );
+        }
+      });
+    });
+
+    describe('getAutoCouponConfig', () => {
+      it('devuelve los valores de la BD tipados (números, no strings)', async () => {
+        settingsRepo.find.mockResolvedValue(
+          autoRows({
+            [AUTO_COUPON_DISCOUNT_TYPE_KEY]: 'fixed_amount',
+            [AUTO_COUPON_DISCOUNT_VALUE_KEY]: '150',
+            [AUTO_COUPON_THRESHOLD_AMOUNT_KEY]: '120.5',
+            [AUTO_COUPON_EXPIRATION_DAYS_KEY]: '30',
+          }),
+        );
+        await expect(service.getAutoCouponConfig()).resolves.toEqual({
+          discountType: 'fixed_amount',
+          discountValue: 150,
+          thresholdAmount: 120.5,
+          expirationDays: 30,
+        });
+      });
+
+      it('sin filas cae a los defaults', async () => {
+        settingsRepo.find.mockResolvedValue([]);
+        await expect(service.getAutoCouponConfig()).resolves.toEqual({
+          discountType: 'percentage',
+          discountValue: 10,
+          thresholdAmount: 50,
+          expirationDays: 15,
+        });
+      });
+
+      it('un percentage > 100 editado a mano cae al par default (nunca total negativo)', async () => {
+        settingsRepo.find.mockResolvedValue(
+          autoRows({ [AUTO_COUPON_DISCOUNT_VALUE_KEY]: '150' }),
+        );
+        const config = await service.getAutoCouponConfig();
+        expect(config.discountType).toBe('percentage');
+        expect(config.discountValue).toBe(10);
+      });
+
+      it('un tipo desconocido cae al par default', async () => {
+        settingsRepo.find.mockResolvedValue(
+          autoRows({
+            [AUTO_COUPON_DISCOUNT_TYPE_KEY]: 'FIXED',
+            [AUTO_COUPON_DISCOUNT_VALUE_KEY]: '5',
+          }),
+        );
+        const config = await service.getAutoCouponConfig();
+        expect(config.discountType).toBe('percentage');
+        expect(config.discountValue).toBe(10);
+      });
+
+      it('valores fuera de rango editados a mano caen a su default (no rompen la generación)', async () => {
+        settingsRepo.find.mockResolvedValue(
+          autoRows({
+            [AUTO_COUPON_DISCOUNT_TYPE_KEY]: 'fixed_amount',
+            [AUTO_COUPON_DISCOUNT_VALUE_KEY]: '1000000000',
+            [AUTO_COUPON_THRESHOLD_AMOUNT_KEY]: '1000000000',
+            [AUTO_COUPON_EXPIRATION_DAYS_KEY]: '100000000',
+          }),
+        );
+        await expect(service.getAutoCouponConfig()).resolves.toEqual({
+          discountType: 'percentage',
+          discountValue: 10,
+          thresholdAmount: 50,
+          expirationDays: 15,
+        });
+      });
+
+      it('umbral o días inválidos caen a su default sin tocar el descuento', async () => {
+        settingsRepo.find.mockResolvedValue(
+          autoRows({
+            [AUTO_COUPON_DISCOUNT_VALUE_KEY]: '20',
+            [AUTO_COUPON_THRESHOLD_AMOUNT_KEY]: '-10',
+            [AUTO_COUPON_EXPIRATION_DAYS_KEY]: '2.5',
+          }),
+        );
+        await expect(service.getAutoCouponConfig()).resolves.toEqual({
+          discountType: 'percentage',
+          discountValue: 20,
+          thresholdAmount: 50,
+          expirationDays: 15,
+        });
+      });
+    });
+
+    describe('updateAutoCouponConfig', () => {
+      it('guarda las 4 keys dentro de una transacción y crea las que falten', async () => {
+        const existingType = seedSetting({
+          key: AUTO_COUPON_DISCOUNT_TYPE_KEY,
+          value: 'percentage',
+        });
+        const txManager = {
+          findOne: jest.fn(
+            (_entity: unknown, opts: { where: { key: string } }) =>
+              Promise.resolve(
+                opts.where.key === AUTO_COUPON_DISCOUNT_TYPE_KEY
+                  ? existingType
+                  : null,
+              ),
+          ),
+          create: jest.fn((_entity: unknown, v: Partial<Setting>) => v),
+          save: jest.fn((_entity: unknown, v: Setting) => Promise.resolve(v)),
+        };
+        const transaction = jest.fn(
+          (cb: (m: typeof txManager) => Promise<void>) => cb(txManager),
+        );
+        (settingsRepo as unknown as { manager: unknown }).manager = {
+          transaction,
+        };
+        settingsRepo.find.mockResolvedValue([]);
+
+        await service.updateAutoCouponConfig({
+          discountType: CouponDiscountType.FIXED_AMOUNT,
+          discountValue: 5,
+          thresholdAmount: 80,
+          expirationDays: 20,
+        });
+
+        expect(transaction).toHaveBeenCalledTimes(1);
+        expect(txManager.save).toHaveBeenCalledTimes(4);
+        expect(existingType.value).toBe('fixed_amount');
+        expect(txManager.save).toHaveBeenCalledWith(
+          Setting,
+          expect.objectContaining({
+            key: AUTO_COUPON_THRESHOLD_AMOUNT_KEY,
+            value: '80',
+          }),
+        );
+        expect(txManager.save).toHaveBeenCalledWith(
+          Setting,
+          expect.objectContaining({
+            key: AUTO_COUPON_EXPIRATION_DAYS_KEY,
+            value: '20',
+          }),
+        );
+      });
+    });
+
+    describe('upsert (PATCH /settings genérico)', () => {
+      it.each([
+        AUTO_COUPON_DISCOUNT_TYPE_KEY,
+        AUTO_COUPON_DISCOUNT_VALUE_KEY,
+        AUTO_COUPON_THRESHOLD_AMOUNT_KEY,
+        AUTO_COUPON_EXPIRATION_DAYS_KEY,
+      ])('rechaza la key protegida %s con 400 sin escribir', async (key) => {
+        await expect(service.upsert(key, '150')).rejects.toThrow(
+          BadRequestException,
+        );
+        expect(settingsRepo.save).not.toHaveBeenCalled();
+      });
     });
   });
 });

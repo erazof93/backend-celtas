@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   OnModuleInit,
@@ -13,6 +14,11 @@ import {
   limaWallClockToUtc,
   todayDayOfWeekInLima,
 } from '../../common/utils/lima-time.util';
+import {
+  CouponDiscountType,
+  MAX_AUTO_COUPON_EXPIRATION_DAYS,
+  MAX_COUPON_AMOUNT,
+} from '../coupons/entities/coupon.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Setting } from './entities/setting.entity';
 
@@ -59,6 +65,25 @@ export const SOLES_POR_ESTRELLA_KEY = 'soles_por_estrella';
 export const MIN_APP_VERSION_KEY = 'min_app_version';
 
 /**
+ * Claves de la configuración de cupones automáticos (umbral de gasto). Datos de
+ * negocio del admin — no van en la whitelist pública. Solo se editan vía
+ * `PUT /coupons/auto-config` (validado en conjunto); `PATCH /settings` las
+ * rechaza para que no se pueda guardar, por ejemplo, un `percentage` de 150.
+ */
+export const AUTO_COUPON_DISCOUNT_TYPE_KEY = 'auto_coupon_discount_type';
+export const AUTO_COUPON_DISCOUNT_VALUE_KEY = 'auto_coupon_discount_value';
+export const AUTO_COUPON_THRESHOLD_AMOUNT_KEY = 'auto_coupon_threshold_amount';
+export const AUTO_COUPON_EXPIRATION_DAYS_KEY = 'auto_coupon_expiration_days';
+
+/** Keys que `upsert` (PATCH /settings genérico) rechaza: tienen su endpoint dedicado. */
+const PROTECTED_KEYS: ReadonlySet<string> = new Set([
+  AUTO_COUPON_DISCOUNT_TYPE_KEY,
+  AUTO_COUPON_DISCOUNT_VALUE_KEY,
+  AUTO_COUPON_THRESHOLD_AMOUNT_KEY,
+  AUTO_COUPON_EXPIRATION_DAYS_KEY,
+]);
+
+/**
  * Whitelist de keys que el endpoint público GET /settings/public puede exponer.
  * NUNCA exponer todo el key-value sin filtrar: solo lo que la app cliente necesita.
  */
@@ -90,6 +115,15 @@ const DEFAULT_BUSINESS_HOURS_SCHEDULE: BusinessHoursSchedule = {
   '5': { closed: false, open: '11:00', close: '01:00' },
   '6': { closed: false, open: '11:00', close: '01:00' },
 };
+
+/** Type guard: el string guardado en `settings` es un `CouponDiscountType` válido. */
+function isCouponDiscountType(
+  value: string | undefined,
+): value is CouponDiscountType {
+  return Object.values(CouponDiscountType).includes(
+    value as CouponDiscountType,
+  );
+}
 
 /** Convierte "HH:mm" a minutos desde medianoche. */
 function toMinutes(hhmm: string): number {
@@ -130,6 +164,34 @@ const DEFAULT_SOLES_POR_ESTRELLA = 10;
 
 /** Versión mínima sembrada por defecto: una versión ya publicada, baseline seguro (no bloquea la última). */
 const DEFAULT_MIN_APP_VERSION = '1.0.1+16';
+
+/** Configuración de los cupones automáticos (ver `getAutoCouponConfig`). */
+export interface AutoCouponConfig {
+  discountType: CouponDiscountType;
+  discountValue: number;
+  thresholdAmount: number;
+  expirationDays: number;
+}
+
+/** Defaults históricos (los mismos que aplicaba `configuration.ts` sin env vars). */
+const DEFAULT_AUTO_COUPON_CONFIG: AutoCouponConfig = {
+  discountType: CouponDiscountType.PERCENTAGE,
+  discountValue: 10,
+  thresholdAmount: 50,
+  expirationDays: 15,
+};
+
+/** Descripciones de las keys de cupones automáticos (seed y alta en `updateAutoCouponConfig`). */
+const AUTO_COUPON_DESCRIPTIONS: Record<string, string> = {
+  [AUTO_COUPON_DISCOUNT_TYPE_KEY]:
+    'Tipo de descuento del cupón automático (percentage | fixed_amount) — editar vía PUT /coupons/auto-config',
+  [AUTO_COUPON_DISCOUNT_VALUE_KEY]:
+    'Valor del descuento del cupón automático (% o soles según el tipo) — editar vía PUT /coupons/auto-config',
+  [AUTO_COUPON_THRESHOLD_AMOUNT_KEY]:
+    'Soles gastados en pedidos entregados (desde el último cupón) para generar un cupón automático — editar vía PUT /coupons/auto-config',
+  [AUTO_COUPON_EXPIRATION_DAYS_KEY]:
+    'Días de vigencia del cupón automático desde su generación — editar vía PUT /coupons/auto-config',
+};
 
 /**
  * Módulo Settings: configuración clave-valor gestionada desde el panel admin.
@@ -205,6 +267,40 @@ export class SettingsService implements OnModuleInit {
       DEFAULT_MIN_APP_VERSION,
       'Versión mínima de la app Flutter requerida para operar (formato X.Y.Z+BB) — debajo de esta versión, la app debe bloquear el uso y pedir actualizar',
     );
+
+    // Cupones automáticos: el valor inicial sale de las env vars (ya validadas
+    // por Joi en validation.schema.ts), para que el primer deploy conserve lo
+    // que hoy está configurado en Render. Desde ahí en adelante manda la BD.
+    const autoSeed: [string, string | number | undefined, string | number][] = [
+      [
+        AUTO_COUPON_DISCOUNT_TYPE_KEY,
+        this.configService.get<string | number>('coupons.autoDiscountType'),
+        DEFAULT_AUTO_COUPON_CONFIG.discountType,
+      ],
+      [
+        AUTO_COUPON_DISCOUNT_VALUE_KEY,
+        this.configService.get<string | number>('coupons.autoDiscountValue'),
+        DEFAULT_AUTO_COUPON_CONFIG.discountValue,
+      ],
+      [
+        AUTO_COUPON_THRESHOLD_AMOUNT_KEY,
+        this.configService.get<string | number>('coupons.thresholdAmount'),
+        DEFAULT_AUTO_COUPON_CONFIG.thresholdAmount,
+      ],
+      [
+        AUTO_COUPON_EXPIRATION_DAYS_KEY,
+        this.configService.get<string | number>('coupons.expirationDays'),
+        DEFAULT_AUTO_COUPON_CONFIG.expirationDays,
+      ],
+    ];
+    for (const [key, envValue, fallback] of autoSeed) {
+      await this.seedIfMissing(
+        key,
+        String(envValue ?? fallback),
+        AUTO_COUPON_DESCRIPTIONS[key],
+        envValue !== undefined ? ' (desde .env)' : ' (default)',
+      );
+    }
   }
 
   /** Inserta `key` con `value`/`description` solo si todavía no existe. */
@@ -249,6 +345,12 @@ export class SettingsService implements OnModuleInit {
     value: string,
     description?: string,
   ): Promise<Setting> {
+    if (PROTECTED_KEYS.has(key)) {
+      throw new BadRequestException(
+        `La setting "${key}" no se puede editar desde aquí. Usa PUT /coupons/auto-config`,
+      );
+    }
+
     const existing = await this.settingsRepository.findOne({ where: { key } });
     const previousValue = existing?.value;
 
@@ -398,6 +500,99 @@ export class SettingsService implements OnModuleInit {
     return Number.isFinite(parsed) && parsed > 0
       ? parsed
       : DEFAULT_SOLES_POR_ESTRELLA;
+  }
+
+  /**
+   * Configuración de los cupones automáticos (una sola query). Cada campo que
+   * falte o no sea válido cae a su default y se loguea. El par tipo/valor se
+   * valida junto: un `percentage` > 100 (o un tipo desconocido) cae al par
+   * default completo — nunca se genera un cupón que deje un total negativo
+   * aunque alguien edite la fila a mano en la BD.
+   */
+  async getAutoCouponConfig(): Promise<AutoCouponConfig> {
+    const rows = await this.settingsRepository.find({
+      where: { key: In([...PROTECTED_KEYS]) },
+    });
+    const raw = new Map(rows.map((row) => [row.key, row.value]));
+    const defaults = DEFAULT_AUTO_COUPON_CONFIG;
+
+    const rawType = raw.get(AUTO_COUPON_DISCOUNT_TYPE_KEY);
+    const rawValue = Number(raw.get(AUTO_COUPON_DISCOUNT_VALUE_KEY));
+    const pairIsValid =
+      isCouponDiscountType(rawType) &&
+      Number.isFinite(rawValue) &&
+      rawValue > 0 &&
+      rawValue <= MAX_COUPON_AMOUNT &&
+      !(rawType === CouponDiscountType.PERCENTAGE && rawValue > 100);
+    if (!pairIsValid) {
+      this.logger.warn(
+        'Configuración de descuento de cupones automáticos inválida o ausente, usando default',
+      );
+    }
+    const discountType = pairIsValid ? rawType : defaults.discountType;
+    const discountValue = pairIsValid ? rawValue : defaults.discountValue;
+
+    const threshold = Number(raw.get(AUTO_COUPON_THRESHOLD_AMOUNT_KEY));
+    const thresholdAmount =
+      Number.isFinite(threshold) &&
+      threshold > 0 &&
+      threshold <= MAX_COUPON_AMOUNT
+        ? threshold
+        : defaults.thresholdAmount;
+
+    const days = Number(raw.get(AUTO_COUPON_EXPIRATION_DAYS_KEY));
+    const expirationDays =
+      Number.isInteger(days) &&
+      days >= 1 &&
+      days <= MAX_AUTO_COUPON_EXPIRATION_DAYS
+        ? days
+        : defaults.expirationDays;
+
+    return {
+      discountType,
+      discountValue,
+      thresholdAmount,
+      expirationDays,
+    };
+  }
+
+  /**
+   * Guarda las 4 keys de cupones automáticos en una sola transacción (todo o
+   * nada). La validación de negocio (% ≤ 100, enteros, positivos) vive en
+   * `UpdateAutoCouponConfigDto`. Si alguna fila no existe (BD sin sembrar) se
+   * crea — no se pierde el cambio en silencio. Solo afecta a cupones NUEVOS:
+   * los ya emitidos conservan su tipo/valor/vencimiento.
+   */
+  async updateAutoCouponConfig(
+    config: AutoCouponConfig,
+  ): Promise<AutoCouponConfig> {
+    const values: [string, string][] = [
+      [AUTO_COUPON_DISCOUNT_TYPE_KEY, config.discountType],
+      [AUTO_COUPON_DISCOUNT_VALUE_KEY, String(config.discountValue)],
+      [AUTO_COUPON_THRESHOLD_AMOUNT_KEY, String(config.thresholdAmount)],
+      [AUTO_COUPON_EXPIRATION_DAYS_KEY, String(config.expirationDays)],
+    ];
+
+    await this.settingsRepository.manager.transaction(async (manager) => {
+      for (const [key, value] of values) {
+        const existing = await manager.findOne(Setting, { where: { key } });
+        if (existing) {
+          existing.value = value;
+          await manager.save(Setting, existing);
+        } else {
+          await manager.save(
+            Setting,
+            manager.create(Setting, {
+              key,
+              value,
+              description: AUTO_COUPON_DESCRIPTIONS[key],
+            }),
+          );
+        }
+      }
+    });
+
+    return this.getAutoCouponConfig();
   }
 
   /** `true` si el interruptor manual "cerrado temporalmente" está activo. */

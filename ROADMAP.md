@@ -746,6 +746,38 @@ celtas-backend/
   pendiente (no bloqueante): `campaignName` aún no es filtrable desde `GET /coupons` — agregar
   en una siguiente iteración si el panel admin lo necesita.
 
+### 5.3 Config de cupones automáticos editable desde el admin — ✅ COMPLETO
+- [x] Sin tabla nueva ni migración: 4 keys en `settings` (`auto_coupon_discount_type`,
+  `auto_coupon_discount_value`, `auto_coupon_threshold_amount`, `auto_coupon_expiration_days`),
+  sembradas en `onModuleInit` desde las env vars actuales (el primer deploy conserva lo de
+  Render). Desde ahí manda la BD: las env vars `COUPON_THRESHOLD_AMOUNT` /
+  `AUTO_COUPON_DISCOUNT_*` quedan solo como semilla (documentado en `.env.example`).
+  `COUPON_EXPIRATION_DAYS` sigue siendo el default real de los cupones MANUALES sin `expiresAt`.
+- [x] `GET` / `PUT /coupons/auto-config` (admin). El PUT guarda las 4 keys en una transacción
+  (crea filas faltantes) y devuelve la config resultante. `CouponsService.checkAndGenerateForUser`
+  la lee en cada llamada: un cambio aplica al siguiente cupón sin reiniciar; los ya emitidos no
+  cambian.
+- [x] `PATCH /settings` genérico rechaza con 400 las keys `auto_coupon_*` (validación en
+  `SettingsService.upsert`) — sin puerta trasera para guardar un `percentage` > 100.
+- [x] `UpdateAutoCouponConfigDto` usa `@Validate(IsPercentageWithinLimit)` (clase real). El plan
+  original proponía dos `@ValidateIf` apilados en el mismo campo: anulan TODAS las validaciones
+  de la propiedad (siempre una condición es falsa) — no usar ese patrón.
+- [x] **Bug encontrado por `@tester` y corregido**: sin tope superior, el PUT respondía 200 con
+  `expirationDays: 1e8` o `fixed_amount: 1e9` y luego la generación automática fallaba EN
+  SILENCIO (Invalid Date / `numeric field overflow` en `decimal(10,2)`, capturado y solo
+  logueado) — ningún cliente recibía cupón. Fix: `MAX_COUPON_AMOUNT = 99_999_999.99` y
+  `MAX_AUTO_COUPON_EXPIRATION_DAYS = 365` en `coupon.entity.ts`, `@Max` + `maxDecimalPlaces: 2`
+  en el DTO, y la misma guarda en `getAutoCouponConfig` (fila editada a mano → default).
+  Barrido del mismo patrón en el módulo: `GenerateCouponDto` / `GenerateBulkCouponDto`
+  (`discountValue`, `minPurchaseAmount`) daban 500 → ahora 400.
+- [x] Auditado por `@tester`: **LISTO PARA MARCAR COMPLETO** — 743 unit (33 suites) + 669 e2e
+  (20 suites), build/lint limpios, cleanup "21 tablas sin cambios", 11 mutaciones detectadas,
+  valor límite (S/99999999.99, 365 días) verificado de punta a punta, `migration:generate --dr`
+  sin cambios.
+- Pendiente (fuera de alcance, decisión del usuario): `price` en menu / beverages /
+  extra-portions tampoco tiene `@Max` (1e9 → 500 visible al crear). Mejoras no bloqueantes: el
+  cron lee la config una vez por cliente (se podría leer una vez por corrida).
+
 ### 6. Módulo Banners
 - [x] Entidad `Banner` (imagen, título, link/acción, fechas, activo, orden)
 - [x] Endpoint `GET /banners/active` (público, consumido por la app)

@@ -16,6 +16,7 @@ import {
 } from 'typeorm';
 import { Order, OrderStatus } from '../orders/entities/order.entity';
 import { NotificationsService } from '../notifications/notifications.service';
+import { SettingsService } from '../settings/settings.service';
 import { User, UserRole } from '../users/entities/user.entity';
 import { GenerateBulkCouponDto } from './dto/generate-bulk-coupon.dto';
 import { GenerateCouponDto } from './dto/generate-coupon.dto';
@@ -92,6 +93,7 @@ export class CouponsService {
     private readonly dataSource: DataSource,
     private readonly configService: ConfigService,
     private readonly notificationsService: NotificationsService,
+    private readonly settingsService: SettingsService,
   ) {}
 
   // ── Generación manual (admin) ───────────────────────────────────────────────
@@ -319,9 +321,13 @@ export class CouponsService {
    * corresponde, genera UN cupón automático. No genera si ya hay uno activo sin
    * usar. Se ejecuta dentro de una transacción con lock pesimista sobre el
    * usuario para evitar duplicados ante llamadas concurrentes.
+   *
+   * Umbral, descuento y vigencia salen de `settings` (editables por el admin
+   * vía PUT /coupons/auto-config), leídos en cada llamada: un cambio aplica al
+   * siguiente cupón generado sin reiniciar la app.
    */
   async checkAndGenerateForUser(userId: string): Promise<Coupon | null> {
-    const threshold = this.thresholdAmount();
+    const config = await this.settingsService.getAutoCouponConfig();
 
     const coupon = await this.dataSource.transaction(async (manager) => {
       // Lock del usuario serializa la generación por usuario (evita duplicados).
@@ -361,19 +367,19 @@ export class CouponsService {
         .getRawOne<{ total: string }>();
       const spent = parseFloat(raw?.total ?? '0');
 
-      if (spent < threshold) {
+      if (spent < config.thresholdAmount) {
         return null;
       }
 
       const coupon = manager.create(Coupon, {
         userId,
         code: this.generateCode(),
-        discountType: this.autoDiscountType(),
-        discountValue: this.autoDiscountValue(),
+        discountType: config.discountType,
+        discountValue: config.discountValue,
         minPurchaseAmount: null, // los automáticos nunca llevan mínimo de compra
         status: CouponStatus.ACTIVE,
         origin: CouponOrigin.AUTO,
-        expiresAt: this.addDays(new Date(), this.expirationDays()),
+        expiresAt: this.addDays(new Date(), config.expirationDays),
       });
       return manager.save(Coupon, coupon);
     });
@@ -530,23 +536,13 @@ export class CouponsService {
     return result;
   }
 
-  private thresholdAmount(): number {
-    return this.configService.get<number>('coupons.thresholdAmount') ?? 50;
-  }
-
+  /**
+   * Vigencia por defecto de los cupones MANUALES (generate / generate-bulk sin
+   * `expiresAt`): sigue saliendo de `COUPON_EXPIRATION_DAYS`. La vigencia de los
+   * automáticos es independiente y vive en settings (`getAutoCouponConfig`).
+   */
   private expirationDays(): number {
     return this.configService.get<number>('coupons.expirationDays') ?? 15;
-  }
-
-  private autoDiscountType(): CouponDiscountType {
-    return (
-      this.configService.get<CouponDiscountType>('coupons.autoDiscountType') ??
-      CouponDiscountType.PERCENTAGE
-    );
-  }
-
-  private autoDiscountValue(): number {
-    return this.configService.get<number>('coupons.autoDiscountValue') ?? 10;
   }
 
   private round2(value: number): number {

@@ -3141,3 +3141,59 @@ para CADA cliente de la BD. Medido con un conteo de filas por tabla antes/despu�
       el anónimo queda como `tel:<crudo>`.
 - [ ] Productos borrados (`menuItemId` null) se agrupan en una sola fila con `MAX(name)` (igual que
       el dashboard). Empates de quantity+revenue en top-products sin orden determinista.
+
+## Cupones automáticos — configuración editable desde el admin (`GET/PUT /coupons/auto-config`)
+
+- [x] **Compilación**: `pnpm run build` exit 0; `pnpm run lint` exit 0.
+- [x] **Unit**: 734/734 (33 suites): `settings.service.spec.ts` (seed desde env/defaults, getter
+      tipado, fallback por campo, par default si percentage > 100 o tipo desconocido, transacción
+      que crea filas faltantes, `upsert` rechaza las 4 keys), `coupons.service.spec.ts`,
+      `dto/update-auto-coupon-config.dto.spec.ts`.
+- [x] **E2E**: suite completa 660/660 (20 suites), cleanup "21 tablas sin cambios"; valores de las
+      4 keys en la BD intactos tras la corrida (snapshot/restore). QA agregó 3 tests en
+      `test/coupons.e2e-spec.ts`: `/settings/public` no expone `auto_coupon_*`; editar la config no
+      modifica cupones automáticos ya emitidos; cupón MANUAL sin `expiresAt` sigue usando
+      `COUPON_EXPIRATION_DAYS` aunque la vigencia automática sea 3.
+- [x] **Seguridad**: GET/PUT → 401 sin token, 403 con cliente; keys fuera de la whitelist pública.
+- [x] **Sin puerta trasera percentage > 100**: DTO (`@Validate(IsPercentageWithinLimit)`, clase
+      real), `PATCH /settings` → 400 para las 4 keys, getter defensivo → par default.
+- [x] **Mutaciones** (originales restaurados, md5 verificado): sin rechazo de keys protegidas → 4
+      unit + 4 e2e fallan; sin guarda > 100 en el getter → 1 unit; sin `@Validate` en el DTO → 1 unit
+      + 1 e2e; key en la whitelist pública → 1 e2e (QA); vigencia automática desde env → 1 unit + 1 e2e.
+- [x] **Schema**: ninguna entidad ni migración tocada (solo filas nuevas en `settings` vía seed).
+- [x] **Arranque / DI**: `AppModule` completo arranca (e2e + documento Swagger); `SettingsModule`
+      no importa `CouponsModule`, sin ciclo.
+- [x] **Patrones prohibidos**: sin `@Validate` inline ni `Object.assign`/spread sobre entidades
+      (los spreads del diff son objetos planos en specs); mensajes en español.
+- [x] **Swagger** (documento generado de la app real): GET/PUT con bearer, 200/400/401/403, schema
+      `UpdateAutoCouponConfigDto` con los 4 campos required y el enum; PATCH /settings documenta el 400.
+- [x] **(Resuelto en la re-auditoría) BLOQUEANTE: valores fuera de rango aceptados por el PUT** → 200, pero luego CADA generación
+      automática falla en silencio (solo log de error, el cliente no recibe cupón):
+      `expirationDays: 100000000` → `Invalid Date` → `invalid input syntax for type timestamp with
+      time zone`; `fixed_amount` `discountValue: 1000000000` → `numeric field overflow`
+      (`decimal(10,2)`, máx 99 999 999.99). Falta `@Max` en `expirationDays` y `discountValue`
+      (y `maxDecimalPlaces: 2`: 10.555 se acepta y la columna `decimal(10,2)` lo redondearía a
+      10.56; deducido del tipo de columna, no ejecutado).
+- [ ] Performance: el cron diario llama `getAutoCouponConfig()` una vez por cliente (N queries
+      extra); se podría leer una vez por corrida.
+
+### Re-auditoría: topes en auto-config + barrido en DTOs de cupones manuales
+
+- [x] **Compilación/lint**: `pnpm run build` exit 0, `pnpm run lint` exit 0.
+- [x] **Unit**: 743/743 (33 suites). **E2E**: 669/669 (20 suites), cleanup "21 tablas sin cambios";
+      las 4 keys `auto_coupon_*` en la BD siguen en percentage/10/50/15 con su `updatedAt` original.
+- [x] **Reproducción original** (sonda temporal, ya eliminada): PUT con `expirationDays: 100000000`
+      → 400 "expirationDays no puede superar 365"; PUT con `fixed_amount` 1000000000 → 400
+      "discountValue no puede superar 99999999.99". Caso borde (fixed 99999999.99, 365 días) → 200 y
+      al entregar un pedido se genera el cupón con `discountValue` 99999999.99 y `expiresAt` +365 días.
+- [x] **Schema**: `coupon.entity.ts` solo suma 2 constantes exportadas; `migration:generate --dr` →
+      "No changes in database schema were found".
+- [x] **Mutaciones** (originales restaurados, md5 verificado): sin `@Max(365)` en el DTO → 2 unit +
+      2 e2e; sin `maxDecimalPlaces` en `discountValue` del DTO → 1 unit + 1 e2e; sin tope de días en
+      el getter → 1 unit; sin tope de monto en el getter → 1 unit; sin `@Max` en `minPurchaseAmount`
+      de `GenerateCouponDto` → 1 e2e; sin `@Max` en `discountValue` de `GenerateBulkCouponDto` → 1 e2e.
+- [ ] Fuera de alcance (decisión del usuario): `price` de menu/beverages/extra-portions sin `@Max`
+      (1e9 → 500 ruidoso al crear, no falla en silencio).
+- [ ] `npx tsc --noEmit -p tsconfig.json` reporta errores de tipos en specs que este diff no toca
+      (`validation.schema.spec.ts`, `admin-dashboard.service.spec.ts`, `auth.service.spec.ts`); no
+      afectan a `nest build` ni a jest. Deuda técnica previa.

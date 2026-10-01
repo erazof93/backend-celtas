@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -18,11 +19,13 @@ import { Request } from 'express';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { SettingsService } from '../settings/settings.service';
 import { UserRole } from '../users/entities/user.entity';
 import { CouponsService } from './coupons.service';
 import { GenerateBulkCouponDto } from './dto/generate-bulk-coupon.dto';
 import { GenerateCouponDto } from './dto/generate-coupon.dto';
 import { QueryCouponsDto } from './dto/query-coupons.dto';
+import { UpdateAutoCouponConfigDto } from './dto/update-auto-coupon-config.dto';
 import { ValidateCouponDto } from './dto/validate-coupon.dto';
 
 interface AuthenticatedRequest extends Request {
@@ -33,7 +36,10 @@ interface AuthenticatedRequest extends Request {
 @ApiBearerAuth()
 @Controller('coupons')
 export class CouponsController {
-  constructor(private readonly couponsService: CouponsService) {}
+  constructor(
+    private readonly couponsService: CouponsService,
+    private readonly settingsService: SettingsService,
+  ) {}
 
   @Post('generate')
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -137,5 +143,51 @@ export class CouponsController {
   @ApiResponse({ status: 403, description: 'Requiere rol admin' })
   listAll(@Query() query: QueryCouponsDto) {
     return this.couponsService.findAll(query);
+  }
+
+  @Get('auto-config')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Ver la configuración de cupones automáticos (solo admin)',
+    description:
+      'Umbral de gasto, tipo/valor del descuento y días de vigencia que se usan al generar cupones automáticos.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Configuración actual',
+    schema: {
+      example: {
+        discountType: 'percentage',
+        discountValue: 10,
+        thresholdAmount: 50,
+        expirationDays: 15,
+      },
+    },
+  })
+  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
+  @ApiResponse({ status: 403, description: 'Requiere rol admin' })
+  getAutoConfig() {
+    return this.settingsService.getAutoCouponConfig();
+  }
+
+  @Put('auto-config')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Actualizar la configuración de cupones automáticos (solo admin)',
+    description:
+      'Reemplaza los 4 valores en una sola transacción y devuelve la configuración resultante. Solo afecta a los cupones que se generen desde ahora: los ya emitidos conservan su descuento y vencimiento.',
+  })
+  @ApiResponse({ status: 200, description: 'Configuración actualizada' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Payload inválido (ej. percentage > 100, valores ≤ 0, días no enteros)',
+  })
+  @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
+  @ApiResponse({ status: 403, description: 'Requiere rol admin' })
+  updateAutoConfig(@Body() dto: UpdateAutoCouponConfigDto) {
+    return this.settingsService.updateAutoCouponConfig(dto);
   }
 }

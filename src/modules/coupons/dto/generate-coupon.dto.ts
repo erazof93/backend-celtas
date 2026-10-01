@@ -6,10 +6,14 @@ import {
   IsOptional,
   IsPositive,
   IsUUID,
+  Max,
   Min,
   Validate,
 } from 'class-validator';
-import { CouponDiscountType } from '../entities/coupon.entity';
+import {
+  CouponDiscountType,
+  MAX_COUPON_AMOUNT,
+} from '../entities/coupon.entity';
 import { IsPercentageWithinLimit } from './is-percentage-within-limit';
 
 /** Generación manual de un cupón desde el panel admin (campañas puntuales). */
@@ -35,9 +39,15 @@ export class GenerateCouponDto {
     description:
       'Valor del descuento: % si es percentage, soles si es fixed_amount',
   })
-  @IsNumber({}, { message: 'discountValue debe ser un número' })
+  @IsNumber(
+    { maxDecimalPlaces: 2 },
+    { message: 'discountValue debe ser un número con hasta 2 decimales' },
+  )
   @IsPositive({ message: 'discountValue debe ser mayor a 0' })
   @Min(0.01, { message: 'discountValue debe ser mayor a 0' })
+  @Max(MAX_COUPON_AMOUNT, {
+    message: `discountValue no puede superar ${MAX_COUPON_AMOUNT}`,
+  })
   // Un fixed_amount puede superar 100 (ej. S/150); el % no puede pasar de 100.
   @Validate(IsPercentageWithinLimit)
   discountValue: number;
@@ -48,8 +58,14 @@ export class GenerateCouponDto {
       'Monto mínimo de compra (subtotal del pedido) para poder usar el cupón. Omitido o null = sin mínimo. Pensado para campañas manuales.',
   })
   @IsOptional()
-  @IsNumber({}, { message: 'minPurchaseAmount debe ser un número' })
+  @IsNumber(
+    { maxDecimalPlaces: 2 },
+    { message: 'minPurchaseAmount debe ser un número con hasta 2 decimales' },
+  )
   @Min(0, { message: 'minPurchaseAmount no puede ser negativo' })
+  @Max(MAX_COUPON_AMOUNT, {
+    message: `minPurchaseAmount no puede superar ${MAX_COUPON_AMOUNT}`,
+  })
   minPurchaseAmount?: number;
 
   @ApiPropertyOptional({

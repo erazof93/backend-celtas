@@ -77,10 +77,14 @@ export class SettingsController {
   @ApiOperation({
     summary: 'Crear/actualizar una setting (solo admin)',
     description:
-      'Upsert por key: si la key no existe se crea, si existe se actualiza value/description.',
+      'Upsert por key: si la key no existe se crea, si existe se actualiza value/description. Las keys auto_coupon_* se rechazan con 400: se editan solo vía PUT /coupons/auto-config (validadas en conjunto).',
   })
   @ApiResponse({ status: 200, description: 'Setting creada/actualizada' })
-  @ApiResponse({ status: 400, description: 'Payload inválido' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Payload inválido, o key protegida (auto_coupon_*) que tiene su endpoint dedicado',
+  })
   @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
   @ApiResponse({ status: 403, description: 'Requiere rol admin' })
   upsert(@Body() dto: UpdateSettingDto) {

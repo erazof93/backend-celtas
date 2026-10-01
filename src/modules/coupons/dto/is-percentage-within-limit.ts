@@ -4,16 +4,17 @@ import {
   ValidatorConstraintInterface,
 } from 'class-validator';
 import { CouponDiscountType } from '../entities/coupon.entity';
-import { GenerateCouponDto } from './generate-coupon.dto';
 
 /**
  * Valida que un descuento porcentual no supere el 100%. Un `fixed_amount` puede
  * superar 100 (ej. S/150), por eso solo se aplica a `discountType: percentage`.
+ * Sirve para cualquier DTO con un campo hermano `discountType` (generate,
+ * generate-bulk, auto-config).
  */
 @ValidatorConstraint({ name: 'isPercentageWithinLimit', async: false })
 export class IsPercentageWithinLimit implements ValidatorConstraintInterface {
   validate(value: number, args: ValidationArguments): boolean {
-    const dto = args.object as GenerateCouponDto;
+    const dto = args.object as { discountType?: CouponDiscountType };
     if (dto.discountType === CouponDiscountType.PERCENTAGE) {
       return value <= 100;
     }

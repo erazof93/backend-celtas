@@ -21,6 +21,20 @@ export enum CouponStatus {
   EXPIRED = 'expired',
 }
 
+/**
+ * Máximo que entra en las columnas `decimal(10,2)` de montos del cupón
+ * (`discountValue`, `minPurchaseAmount`). Un valor mayor revienta el INSERT con
+ * "numeric field overflow": los DTOs lo rechazan antes con 400.
+ */
+export const MAX_COUPON_AMOUNT = 99_999_999.99;
+
+/**
+ * Tope de vigencia de los cupones automáticos (días). Sin tope, un valor enorme
+ * genera un `expiresAt` inválido y la generación automática falla en silencio
+ * (el error solo queda en el log, ningún cliente recibe cupón).
+ */
+export const MAX_AUTO_COUPON_EXPIRATION_DAYS = 365;
+
 /** Origen del cupón: automático (umbral de gasto) o manual (campaña del admin). */
 export enum CouponOrigin {
   AUTO = 'auto',

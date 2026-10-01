@@ -10,7 +10,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { Like, Repository } from 'typeorm';
+import { In, Like, Repository } from 'typeorm';
 import { AppModule } from './../src/app.module';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
 import { TransformInterceptor } from './../src/common/interceptors/transform.interceptor';
@@ -80,6 +80,7 @@ describe('Coupons (e2e)', () => {
   let addressesRepo: Repository<Address>;
   let settingsRepo: Repository<Setting>;
   let businessHoursSnapshot: BusinessHoursSnapshot;
+  let autoConfigSnapshot: Setting[];
 
   let clientAToken: string;
   let clientBToken: string;
@@ -96,7 +97,43 @@ describe('Coupons (e2e)', () => {
   const clientBEmail = `qa-coupons-b-${suffix}@test.com`;
   const clientCEmail = `qa-coupons-c-${suffix}@test.com`;
   const adminEmail = `qa-coupons-admin-${suffix}@test.com`;
+  const clientC5Email = `qa-coupons-c5-${suffix}@test.com`;
   const password = 'password123';
+
+  // Config de cupones automáticos (tabla settings). La suite la fija en un
+  // baseline conocido y la restaura al final (mismo criterio que el horario).
+  const AUTO_KEYS = [
+    'auto_coupon_discount_type',
+    'auto_coupon_discount_value',
+    'auto_coupon_threshold_amount',
+    'auto_coupon_expiration_days',
+  ];
+  const BASELINE_AUTO_CONFIG = {
+    discountType: 'percentage',
+    discountValue: 10,
+    thresholdAmount: 50,
+    expirationDays: 15,
+  };
+  /** Escribe la config directo en la BD (no por el endpoint bajo prueba). */
+  const writeAutoConfig = async (config: typeof BASELINE_AUTO_CONFIG) => {
+    const values = [
+      config.discountType,
+      config.discountValue,
+      config.thresholdAmount,
+      config.expirationDays,
+    ];
+    for (const [i, key] of AUTO_KEYS.entries()) {
+      const row = await settingsRepo.findOne({ where: { key } });
+      if (row) {
+        row.value = String(values[i]);
+        await settingsRepo.save(row);
+      } else {
+        await settingsRepo.save(
+          settingsRepo.create({ key, value: String(values[i]) }),
+        );
+      }
+    }
+  };
 
   const register = async (email: string, fullName: string) => {
     const res = await request(app.getHttpServer())
@@ -143,6 +180,10 @@ describe('Coupons (e2e)', () => {
     // "abierto siempre" para que no dependa de la hora real de Lima en la
     // que corre (ver OrdersService.create, bloquea con 409 si está cerrado).
     businessHoursSnapshot = await forceBusinessAlwaysOpen(settingsRepo);
+    autoConfigSnapshot = await settingsRepo.find({
+      where: { key: In(AUTO_KEYS) },
+    });
+    await writeAutoConfig(BASELINE_AUTO_CONFIG);
 
     const adminHash = await bcrypt.hash(password, 10);
     await usersRepo.save(
@@ -213,6 +254,7 @@ describe('Coupons (e2e)', () => {
         { email: `qa-coupons-c2-${suffix}@test.com` },
         { email: `qa-coupons-c3-${suffix}@test.com` },
         { email: `qa-coupons-c4-${suffix}@test.com` },
+        { email: clientC5Email },
       ],
     });
     const ids = users.map((u) => u.id);
@@ -230,7 +272,13 @@ describe('Coupons (e2e)', () => {
     await usersRepo.delete({ email: `qa-coupons-c2-${suffix}@test.com` });
     await usersRepo.delete({ email: `qa-coupons-c3-${suffix}@test.com` });
     await usersRepo.delete({ email: `qa-coupons-c4-${suffix}@test.com` });
+    await usersRepo.delete({ email: clientC5Email });
     await restoreBusinessHours(settingsRepo, businessHoursSnapshot);
+    // Restaurar la config automática tal cual estaba antes de la suite.
+    await settingsRepo.delete({ key: In(AUTO_KEYS) });
+    if (autoConfigSnapshot.length > 0) {
+      await settingsRepo.save(autoConfigSnapshot);
+    }
     await app.close();
   });
 
@@ -298,6 +346,26 @@ describe('Coupons (e2e)', () => {
       const data = (res.body as Envelope).data as CouponData;
       expect(data.discountType).toBe('fixed_amount');
       expect(data.discountValue).toBe(150);
+    });
+
+    // Regresión (barrido del bug de topes): antes llegaba al INSERT y la
+    // columna decimal(10,2) reventaba con "numeric field overflow" (500).
+    it.each([
+      ['fixed_amount 1000000000', { discountValue: 1000000000 }],
+      ['discountValue 10.555', { discountValue: 10.555 }],
+      ['minPurchaseAmount 1000000000', { minPurchaseAmount: 1000000000 }],
+    ])('400 (no 500) con %s', async (_label, override) => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'fixed_amount',
+          discountValue: 10,
+          ...override,
+        })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
     });
 
     it('404 si el usuario no existe', async () => {
@@ -476,6 +544,19 @@ describe('Coupons (e2e)', () => {
         .send({
           discountType: 'percentage',
           discountValue: 150,
+          campaignName,
+        })
+        .expect(400);
+      expect((res.body as ErrorResponse).statusCode).toBe(400);
+    });
+
+    it('400 (no 500) si un fixed_amount no entra en decimal(10,2)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate-bulk')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          discountType: 'fixed_amount',
+          discountValue: 1000000000,
           campaignName,
         })
         .expect(400);
@@ -1155,6 +1236,101 @@ describe('Coupons (e2e)', () => {
       expect(coupons.filter((c) => c.origin === 'auto')).toHaveLength(0);
     });
 
+    it('usa la config editada por PUT /coupons/auto-config en el siguiente cupón (sin reiniciar)', async () => {
+      try {
+        await request(app.getHttpServer())
+          .put('/coupons/auto-config')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({
+            discountType: 'fixed_amount',
+            discountValue: 7,
+            thresholdAmount: 20,
+            expirationDays: 30,
+          })
+          .expect(200);
+
+        const token = await register(clientC5Email, 'Cliente C5');
+        await deliverOrder(token, 1); // 24.9 >= 20 (con el umbral de 50 no alcanzaría)
+
+        const res = await request(app.getHttpServer())
+          .get('/coupons/me')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        const auto = ((res.body as Envelope).data as CouponData[]).filter(
+          (c) => c.origin === 'auto',
+        );
+        expect(auto).toHaveLength(1);
+        expect(auto[0].discountType).toBe('fixed_amount');
+        expect(auto[0].discountValue).toBe(7);
+        const expected = Date.now() + 30 * 24 * 60 * 60 * 1000;
+        const expiresAt = new Date(auto[0].expiresAt).getTime();
+        expect(expiresAt).toBeGreaterThan(expected - 60_000);
+        expect(expiresAt).toBeLessThan(expected + 60_000);
+      } finally {
+        await writeAutoConfig(BASELINE_AUTO_CONFIG);
+      }
+    });
+
+    it('editar la config NO modifica los cupones automáticos ya emitidos', async () => {
+      const email = `qa-coupons-c6-${suffix}@test.com`;
+      try {
+        await request(app.getHttpServer())
+          .put('/coupons/auto-config')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({
+            discountType: 'fixed_amount',
+            discountValue: 7,
+            thresholdAmount: 20,
+            expirationDays: 30,
+          })
+          .expect(200);
+
+        const token = await register(email, 'Cliente C6');
+        await deliverOrder(token, 1);
+
+        const before = await request(app.getHttpServer())
+          .get('/coupons/me')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        const issued = ((before.body as Envelope).data as CouponData[]).filter(
+          (c) => c.origin === 'auto',
+        );
+        expect(issued).toHaveLength(1);
+
+        await request(app.getHttpServer())
+          .put('/coupons/auto-config')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({
+            discountType: 'percentage',
+            discountValue: 25,
+            thresholdAmount: 20,
+            expirationDays: 3,
+          })
+          .expect(200);
+
+        const after = await request(app.getHttpServer())
+          .get('/coupons/me')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        const same = ((after.body as Envelope).data as CouponData[]).find(
+          (c) => c.id === issued[0].id,
+        );
+        expect(same).toBeDefined();
+        expect(same?.discountType).toBe('fixed_amount');
+        expect(same?.discountValue).toBe(7);
+        expect(same?.expiresAt).toBe(issued[0].expiresAt);
+      } finally {
+        await writeAutoConfig(BASELINE_AUTO_CONFIG);
+        const user = await usersRepo.findOne({ where: { email } });
+        if (user) {
+          await couponsRepo.delete({ userId: user.id });
+          await ordersRepo.delete({ userId: user.id });
+          await addressesRepo.delete({ userId: user.id });
+          await usersRepo.delete({ id: user.id });
+        }
+      }
+    });
+
     void clientCId;
   });
 
@@ -1257,5 +1433,188 @@ describe('Coupons (e2e)', () => {
       // Al menos un cupón pertenece a clientA (creado en esta suite).
       expect(data.items.some((c) => c.userId === clientAId)).toBe(true);
     });
+  });
+
+  describe('GET/PUT /coupons/auto-config (admin)', () => {
+    const validPayload = {
+      discountType: 'fixed_amount',
+      discountValue: 5,
+      thresholdAmount: 60,
+      expirationDays: 20,
+    };
+
+    afterEach(async () => {
+      await writeAutoConfig(BASELINE_AUTO_CONFIG);
+    });
+
+    it('GET 401 sin token', async () => {
+      await request(app.getHttpServer())
+        .get('/coupons/auto-config')
+        .expect(401);
+    });
+
+    it('GET 403 para un cliente', async () => {
+      await request(app.getHttpServer())
+        .get('/coupons/auto-config')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(403);
+    });
+
+    it('GET devuelve la config actual con números (no strings)', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/coupons/auto-config')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      expect((res.body as Envelope).data).toEqual(BASELINE_AUTO_CONFIG);
+    });
+
+    it('PUT 401 sin token', async () => {
+      await request(app.getHttpServer())
+        .put('/coupons/auto-config')
+        .send(validPayload)
+        .expect(401);
+    });
+
+    it('PUT 403 para un cliente', async () => {
+      await request(app.getHttpServer())
+        .put('/coupons/auto-config')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .send(validPayload)
+        .expect(403);
+    });
+
+    it('PUT actualiza, devuelve la nueva config y persiste las 4 keys', async () => {
+      const res = await request(app.getHttpServer())
+        .put('/coupons/auto-config')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send(validPayload)
+        .expect(200);
+      expect((res.body as Envelope).data).toEqual(validPayload);
+
+      const again = await request(app.getHttpServer())
+        .get('/coupons/auto-config')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      expect((again.body as Envelope).data).toEqual(validPayload);
+
+      const rows = await settingsRepo.find({ where: { key: In(AUTO_KEYS) } });
+      expect(Object.fromEntries(rows.map((r) => [r.key, r.value]))).toEqual({
+        auto_coupon_discount_type: 'fixed_amount',
+        auto_coupon_discount_value: '5',
+        auto_coupon_threshold_amount: '60',
+        auto_coupon_expiration_days: '20',
+      });
+    });
+
+    it('PUT 400 si un percentage supera el 100% y no cambia nada', async () => {
+      const res = await request(app.getHttpServer())
+        .put('/coupons/auto-config')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          ...validPayload,
+          discountType: 'percentage',
+          discountValue: 150,
+        })
+        .expect(400);
+      expect((res.body as ErrorResponse).message).toContain('100%');
+
+      const after = await request(app.getHttpServer())
+        .get('/coupons/auto-config')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      expect((after.body as Envelope).data).toEqual(BASELINE_AUTO_CONFIG);
+    });
+
+    it('PUT permite fixed_amount 150 (monto fijo sin tope)', async () => {
+      await request(app.getHttpServer())
+        .put('/coupons/auto-config')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ ...validPayload, discountValue: 150 })
+        .expect(200);
+    });
+
+    it.each([
+      ['thresholdAmount -10', { thresholdAmount: -10 }],
+      ['expirationDays 0', { expirationDays: 0 }],
+      ['expirationDays 2.5', { expirationDays: 2.5 }],
+      ['discountType desconocido', { discountType: 'FIXED' }],
+      ['discountValue como string', { discountValue: '5' }],
+      // Regresión (auditoría @tester): antes respondían 200 y la generación
+      // automática posterior fallaba en silencio.
+      ['expirationDays 366', { expirationDays: 366 }],
+      ['expirationDays 100000000', { expirationDays: 100000000 }],
+      ['fixed_amount 1000000000', { discountValue: 1000000000 }],
+      ['discountValue 10.555', { discountValue: 10.555 }],
+      ['thresholdAmount 1000000000', { thresholdAmount: 1000000000 }],
+    ])('PUT 400 con %s', async (_label, override) => {
+      await request(app.getHttpServer())
+        .put('/coupons/auto-config')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ ...validPayload, ...override })
+        .expect(400);
+    });
+
+    it('GET /settings/public NO expone las keys auto_coupon_*', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/settings/public')
+        .expect(200);
+      const keys = Object.keys((res.body as Envelope).data as object);
+      expect(keys.length).toBeGreaterThan(0);
+      expect(keys.filter((k) => k.startsWith('auto_coupon_'))).toEqual([]);
+    });
+
+    it('un cupón MANUAL sin expiresAt sigue usando COUPON_EXPIRATION_DAYS, no la vigencia automática', async () => {
+      await request(app.getHttpServer())
+        .put('/coupons/auto-config')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ ...validPayload, expirationDays: 3 })
+        .expect(200);
+
+      const res = await request(app.getHttpServer())
+        .post('/coupons/generate')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          userId: clientAId,
+          discountType: 'percentage',
+          discountValue: 10,
+        })
+        .expect(201);
+      const data = (res.body as Envelope).data as CouponData;
+      const envDays = Number(process.env.COUPON_EXPIRATION_DAYS);
+      expect(envDays).not.toBe(3);
+      const expected = Date.now() + envDays * 24 * 60 * 60 * 1000;
+      const expiresAt = new Date(data.expiresAt).getTime();
+      expect(expiresAt).toBeGreaterThan(expected - 60_000);
+      expect(expiresAt).toBeLessThan(expected + 60_000);
+    });
+
+    it('PUT 400 si falta algún campo (reemplaza la config completa)', async () => {
+      const { discountType, discountValue, thresholdAmount } = validPayload;
+      await request(app.getHttpServer())
+        .put('/coupons/auto-config')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ discountType, discountValue, thresholdAmount })
+        .expect(400);
+    });
+
+    it.each(AUTO_KEYS)(
+      'PATCH /settings rechaza la key protegida %s con 400 y no la modifica',
+      async (key) => {
+        const res = await request(app.getHttpServer())
+          .patch('/settings')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ key, value: '150' })
+          .expect(400);
+        expect((res.body as ErrorResponse).message).toContain(
+          'PUT /coupons/auto-config',
+        );
+
+        const after = await request(app.getHttpServer())
+          .get('/coupons/auto-config')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(200);
+        expect((after.body as Envelope).data).toEqual(BASELINE_AUTO_CONFIG);
+      },
+    );
   });
 });

@@ -5,6 +5,10 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { Order } from '../orders/entities/order.entity';
 import { NotificationsService } from '../notifications/notifications.service';
+import {
+  AutoCouponConfig,
+  SettingsService,
+} from '../settings/settings.service';
 import { User, UserRole } from '../users/entities/user.entity';
 import { CouponsService } from './coupons.service';
 import {
@@ -32,6 +36,14 @@ describe('CouponsService', () => {
   let dataSource: { transaction: jest.Mock };
   let configService: { get: jest.Mock };
   let notificationsService: { sendPushNotification: jest.Mock };
+  let settingsService: { getAutoCouponConfig: jest.Mock };
+
+  const defaultAutoConfig: AutoCouponConfig = {
+    discountType: CouponDiscountType.PERCENTAGE,
+    discountValue: 10,
+    thresholdAmount: 50,
+    expirationDays: 15,
+  };
 
   const userId = 'user-1';
   const otherUserId = 'user-2';
@@ -111,6 +123,9 @@ describe('CouponsService', () => {
     notificationsService = {
       sendPushNotification: jest.fn().mockResolvedValue(true),
     };
+    settingsService = {
+      getAutoCouponConfig: jest.fn().mockResolvedValue(defaultAutoConfig),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -121,6 +136,7 @@ describe('CouponsService', () => {
         { provide: DataSource, useValue: dataSource },
         { provide: ConfigService, useValue: configService },
         { provide: NotificationsService, useValue: notificationsService },
+        { provide: SettingsService, useValue: settingsService },
       ],
     }).compile();
 
@@ -702,14 +718,11 @@ describe('CouponsService', () => {
       expect(manager.save).toHaveBeenCalled();
     });
 
-    it('usa el tipo y valor de descuento configurados en AUTO_COUPON_DISCOUNT_TYPE/VALUE', async () => {
-      configService.get.mockImplementation((key: string) => {
-        if (key === 'coupons.thresholdAmount') return 50;
-        if (key === 'coupons.expirationDays') return 15;
-        if (key === 'coupons.autoDiscountType')
-          return CouponDiscountType.FIXED_AMOUNT;
-        if (key === 'coupons.autoDiscountValue') return 25;
-        return undefined;
+    it('usa el tipo y valor de descuento configurados en settings (auto-config)', async () => {
+      settingsService.getAutoCouponConfig.mockResolvedValue({
+        ...defaultAutoConfig,
+        discountType: CouponDiscountType.FIXED_AMOUNT,
+        discountValue: 25,
       });
       setupTransaction({ user: { id: userId } as User, spent: '60' });
 
@@ -717,6 +730,30 @@ describe('CouponsService', () => {
 
       expect(result!.discountType).toBe(CouponDiscountType.FIXED_AMOUNT);
       expect(result!.discountValue).toBe(25);
+    });
+
+    it('respeta un umbral editado: con umbral 100, gastar 60 no genera', async () => {
+      settingsService.getAutoCouponConfig.mockResolvedValue({
+        ...defaultAutoConfig,
+        thresholdAmount: 100,
+      });
+      setupTransaction({ user: { id: userId } as User, spent: '60' });
+
+      await expect(service.checkAndGenerateForUser(userId)).resolves.toBeNull();
+    });
+
+    it('respeta los días de vigencia editados (30 en vez de 15)', async () => {
+      settingsService.getAutoCouponConfig.mockResolvedValue({
+        ...defaultAutoConfig,
+        expirationDays: 30,
+      });
+      setupTransaction({ user: { id: userId } as User, spent: '60' });
+
+      const result = await service.checkAndGenerateForUser(userId);
+
+      const expected = Date.now() + 30 * 24 * 60 * 60 * 1000;
+      expect(result!.expiresAt.getTime()).toBeGreaterThan(expected - 5000);
+      expect(result!.expiresAt.getTime()).toBeLessThan(expected + 5000);
     });
 
     it('suma solo pedidos entregados DESDE el último cupón (corte por fecha)', async () => {
@@ -740,19 +777,17 @@ describe('CouponsService', () => {
       });
     });
 
-    it('usa el umbral y los días de expiración desde config', async () => {
-      const manager = setupTransaction({
-        user: { id: userId } as User,
-        spent: '60',
-      });
+    it('lee umbral y vigencia de settings, no de las env vars', async () => {
+      setupTransaction({ user: { id: userId } as User, spent: '60' });
       const result = await service.checkAndGenerateForUser(userId);
 
       const expected = Date.now() + 15 * 24 * 60 * 60 * 1000;
       expect(result!.expiresAt.getTime()).toBeGreaterThan(expected - 5000);
       expect(result!.expiresAt.getTime()).toBeLessThan(expected + 5000);
-      expect(configService.get).toHaveBeenCalledWith('coupons.thresholdAmount');
-      expect(configService.get).toHaveBeenCalledWith('coupons.expirationDays');
-      void manager;
+      expect(settingsService.getAutoCouponConfig).toHaveBeenCalled();
+      expect(configService.get).not.toHaveBeenCalledWith(
+        'coupons.thresholdAmount',
+      );
     });
   });
 
