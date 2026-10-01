@@ -839,6 +839,16 @@ celtas-backend/
 - [x] Suite completa verde con Node en UTC **y** en America/Lima (689 unit, 599 e2e), incluido rewards "promocionActiva refleja la promo vigente hoy" corrido a las 21:13 Lima
 - [x] Convención documentada en la skill `nestjs-celtas` (sección "Fechas y zona horaria")
 
+### 8.4 Reportes detallados app vs. teléfono — ✅ COMPLETO
+- [x] Módulo `reports` bajo `/admin/reports/*` (admin): `summary` (groupBy day|week|month), `comparison` (períodos `YYYY-MM-DD:YYYY-MM-DD`), `top-products` (limit, channel all|app|phone), `conversion`, `daily-metrics` (includeStatus)
+- [x] Base única: pedidos ENTREGADOS por `deliveredAt` (días de Lima) → averageTicket = revenue / orders coherente. Excepción documentada: `includeStatus` cuenta pedidos CREADOS ese día por estado actual
+- [x] Cliente = userId, o el cliente (rol cliente) con el mismo celular si el pedido es anónimo (ambos lados con `normalizePhone`; desempate: cuenta más antigua), o `tel:<celular>`
+- [x] Validación con `@ValidatorConstraint` reales: fecha de calendario real, inicio <= fin, máximo 366 días
+- [x] Helpers de fechas de Lima centralizados en `src/common/utils/lima-time.util.ts` (el dashboard dejó de tener copias privadas)
+- [x] **Bug encontrado por `@tester` y corregido**: el cruce por celular no normalizaba `users.phone` (teléfonos viejos en formato libre) → cliente contado doble y fuera de la conversión
+- [x] Auditado por `@tester`: **LISTO** (re-auditoría) — 701 unit, 632 e2e en TZ=UTC y America/Lima, mutaciones del resolver cubiertas
+- [ ] No bloqueante: respuestas 200 sin schema tipado en Swagger (los tipos de `celtas-admin` no se generarán para estos endpoints); prefiltro por celular sin índice (full scan de `users`, ok con el volumen actual)
+
 ### 8.1 Settings (número de WhatsApp editable desde el panel) — ✅ COMPLETO
 - [x] Entidad `Setting` (key único, value, description), sembrada al arrancar si no existe
 - [x] `GET /settings/public` (sin auth, whitelist explícita en código, nunca expone todo el key-value)

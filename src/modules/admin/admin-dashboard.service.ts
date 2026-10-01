@@ -13,17 +13,16 @@ import {
   DaysQueryDto,
   TopProductsQueryDto,
 } from './dto/dashboard-query.dto';
-
-/** Zona horaria de Lima (UTC-5, sin horario de verano). */
-const LIMA_TIMEZONE = 'America/Lima';
-const LIMA_OFFSET = '-05:00';
+import {
+  limaDayRange,
+  limaDaySql,
+  mondayOfCalendarDate,
+  shiftCalendarDate,
+  toLimaDateString,
+} from '../../common/utils/lima-time.util';
 
 /** Días por defecto de las series diarias (revenue-trend, new-customers). */
 const DEFAULT_TREND_DAYS = 7;
-
-/** Día calendario (YYYY-MM-DD) en Lima de una columna/expresión timestamptz. */
-const limaDay = (instant: string): string =>
-  `to_char(${instant} AT TIME ZONE '${LIMA_TIMEZONE}', 'YYYY-MM-DD')`;
 
 export interface DashboardSummary {
   ordersCount: number;
@@ -130,14 +129,14 @@ export class AdminDashboardService {
 
   /** Hoy, semana calendario (desde el lunes) y mes calendario (desde el día 1), en Lima. */
   async metrics(): Promise<DashboardMetrics> {
-    const today = this.todayInLima();
-    const weekStart = this.mondayOf(today);
+    const today = toLimaDateString();
+    const weekStart = mondayOfCalendarDate(today);
     const monthStart = `${today.slice(0, 8)}01`;
 
     const todayMetrics = await this.periodMetrics(today, today);
     const weekMetrics = await this.periodMetrics(weekStart, today);
     const monthMetrics = await this.periodMetrics(monthStart, today);
-    const { start, end } = this.rangeBounds(monthStart, today);
+    const { start, end } = limaDayRange(monthStart, today);
     const newCustomers = (await this.newCustomersByDay(start, end)).reduce(
       (sum, row) => sum + row.count,
       0,
@@ -153,11 +152,11 @@ export class AdminDashboardService {
   /** Serie diaria de los últimos N días (incluye hoy y los días sin movimiento, en 0). */
   async revenueTrend(query: DaysQueryDto): Promise<RevenueTrendDay[]> {
     const dates = this.lastDays(query.days ?? DEFAULT_TREND_DAYS);
-    const { start, end } = this.rangeBounds(dates[0], dates[dates.length - 1]);
+    const { start, end } = limaDayRange(dates[0], dates[dates.length - 1]);
 
     const revenueRows = await this.ordersRepository
       .createQueryBuilder('order')
-      .select(limaDay('order.deliveredAt'), 'day')
+      .select(limaDaySql('order.deliveredAt'), 'day')
       .addSelect('COALESCE(SUM(order.total), 0)', 'revenue')
       .where('order.deliveredAt IS NOT NULL')
       .andWhere('order.deliveredAt >= :start', { start })
@@ -167,7 +166,7 @@ export class AdminDashboardService {
 
     const orderRows = await this.ordersRepository
       .createQueryBuilder('order')
-      .select(limaDay('order.createdAt'), 'day')
+      .select(limaDaySql('order.createdAt'), 'day')
       .addSelect('order.source', 'source')
       .addSelect('COUNT(*)', 'count')
       .where('order.createdAt >= :start', { start })
@@ -199,7 +198,7 @@ export class AdminDashboardService {
   /** Clientes (rol cliente) registrados en los últimos N días, total y por día. */
   async newCustomers(query: DaysQueryDto): Promise<NewCustomersResult> {
     const dates = this.lastDays(query.days ?? DEFAULT_TREND_DAYS);
-    const { start, end } = this.rangeBounds(dates[0], dates[dates.length - 1]);
+    const { start, end } = limaDayRange(dates[0], dates[dates.length - 1]);
     const rows = await this.newCustomersByDay(start, end);
 
     const counts = new Map<string, number>(dates.map((date) => [date, 0]));
@@ -258,7 +257,7 @@ export class AdminDashboardService {
     from: string,
     to: string,
   ): Promise<PeriodMetrics> {
-    const { start, end } = this.rangeBounds(from, to);
+    const { start, end } = limaDayRange(from, to);
     const sourceRows = await this.ordersRepository
       .createQueryBuilder('order')
       .select('order.source', 'source')
@@ -302,7 +301,7 @@ export class AdminDashboardService {
   ): Promise<{ day: string; count: number }[]> {
     const rows = await this.usersRepository
       .createQueryBuilder('user')
-      .select(limaDay('user.createdAt'), 'day')
+      .select(limaDaySql('user.createdAt'), 'day')
       .addSelect('COUNT(*)', 'count')
       .where('user.role = :role', { role: UserRole.CLIENTE })
       .andWhere('user.createdAt >= :start', { start })
@@ -323,53 +322,22 @@ export class AdminDashboardService {
     start: Date;
     end: Date;
   } {
-    const from = query.from ?? this.todayInLima();
+    const from = query.from ?? toLimaDateString();
     const to = query.to ?? from;
-    return this.rangeBounds(from, to);
+    return limaDayRange(from, to);
   }
 
   /** Rango de los últimos N días incluyendo hoy, en Lima. */
   private lastDaysRange(days: number): { start: Date; end: Date } {
     const dates = this.lastDays(days);
-    return this.rangeBounds(dates[0], dates[dates.length - 1]);
-  }
-
-  /** Inicio (00:00:00.000) de `from` y fin (23:59:59.999) de `to`, en Lima. */
-  private rangeBounds(from: string, to: string): { start: Date; end: Date } {
-    return {
-      start: new Date(`${from}T00:00:00.000${LIMA_OFFSET}`),
-      end: new Date(`${to}T23:59:59.999${LIMA_OFFSET}`),
-    };
+    return limaDayRange(dates[0], dates[dates.length - 1]);
   }
 
   /** Los últimos N días (YYYY-MM-DD) en Lima, en orden ascendente, terminando hoy. */
   private lastDays(days: number): string[] {
-    const today = this.todayInLima();
+    const today = toLimaDateString();
     return Array.from({ length: days }, (_, i) =>
-      this.shiftDate(today, i - (days - 1)),
+      shiftCalendarDate(today, i - (days - 1)),
     );
-  }
-
-  /** Lunes de la semana de `date` (YYYY-MM-DD). */
-  private mondayOf(date: string): string {
-    const dayOfWeek = new Date(`${date}T00:00:00.000Z`).getUTCDay(); // 0=domingo
-    return this.shiftDate(date, -((dayOfWeek + 6) % 7));
-  }
-
-  /** Suma `days` días a una fecha calendario YYYY-MM-DD (aritmética en UTC, sin zona). */
-  private shiftDate(date: string, days: number): string {
-    const d = new Date(`${date}T00:00:00.000Z`);
-    d.setUTCDate(d.getUTCDate() + days);
-    return d.toISOString().slice(0, 10);
-  }
-
-  /** Fecha calendario (YYYY-MM-DD) de un instante, en la zona horaria de Lima. */
-  private toLimaDate(instant: Date): string {
-    return instant.toLocaleDateString('en-CA', { timeZone: LIMA_TIMEZONE });
-  }
-
-  /** Fecha de hoy (YYYY-MM-DD) en la zona horaria de Lima. */
-  private todayInLima(): string {
-    return this.toLimaDate(new Date());
   }
 }

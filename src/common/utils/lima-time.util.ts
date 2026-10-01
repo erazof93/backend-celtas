@@ -53,3 +53,56 @@ export function limaWallClockToUtc(
 ): Date {
   return new Date(Date.UTC(year, month - 1, day, hour + 5, minute));
 }
+
+/** Offset fijo de Lima para armar instantes a partir de fechas calendario. */
+const LIMA_OFFSET = '-05:00';
+
+/**
+ * Instantes de inicio (00:00:00.000) de `from` y fin (23:59:59.999) de `to`, ambos
+ * fechas calendario YYYY-MM-DD en Lima. Se comparan directo contra columnas
+ * `timestamptz`.
+ */
+export function limaDayRange(
+  from: string,
+  to: string,
+): { start: Date; end: Date } {
+  return {
+    start: new Date(`${from}T00:00:00.000${LIMA_OFFSET}`),
+    end: new Date(`${to}T23:59:59.999${LIMA_OFFSET}`),
+  };
+}
+
+/** Fecha calendario (YYYY-MM-DD) en Lima de un instante. */
+export function toLimaDateString(instant: Date = new Date()): string {
+  return instant.toLocaleDateString('en-CA', { timeZone: LIMA_TIMEZONE });
+}
+
+/** Suma `days` días a una fecha calendario YYYY-MM-DD (aritmética en UTC, sin zona). */
+export function shiftCalendarDate(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Lunes de la semana de una fecha calendario YYYY-MM-DD. */
+export function mondayOfCalendarDate(date: string): string {
+  const dayOfWeek = new Date(`${date}T00:00:00.000Z`).getUTCDay(); // 0=domingo
+  return shiftCalendarDate(date, -((dayOfWeek + 6) % 7));
+}
+
+/** Fechas calendario de `from` a `to` (ambas incluidas), en orden ascendente. */
+export function calendarDatesBetween(from: string, to: string): string[] {
+  const dates: string[] = [];
+  for (let date = from; date <= to; date = shiftCalendarDate(date, 1)) {
+    dates.push(date);
+  }
+  return dates;
+}
+
+/**
+ * Expresión SQL con el día calendario (YYYY-MM-DD) en Lima de una columna
+ * `timestamptz`, ej. `limaDaySql('order.deliveredAt')` en un query builder.
+ */
+export function limaDaySql(column: string): string {
+  return `to_char(${column} AT TIME ZONE '${LIMA_TIMEZONE}', 'YYYY-MM-DD')`;
+}

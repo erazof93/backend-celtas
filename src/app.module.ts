@@ -15,6 +15,7 @@ import { ExtraPortionsModule } from './modules/extra-portions/extra-portions.mod
 import { MenuModule } from './modules/menu/menu.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrdersModule } from './modules/orders/orders.module';
+import { ReportsModule } from './modules/reports/reports.module';
 import { RewardsModule } from './modules/rewards/rewards.module';
 import { FriesTypesModule } from './modules/fries-types/fries-types.module';
 import { SaucesModule } from './modules/sauces/sauces.module';
@@ -68,6 +69,7 @@ import { UsersModule } from './modules/users/users.module';
     BannersModule,
     NotificationsModule,
     AdminModule,
+    ReportsModule,
     SettingsModule,
     RewardsModule,
   ],

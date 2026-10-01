@@ -3054,3 +3054,48 @@ para CADA cliente de la BD. Medido con un conteo de filas por tabla antes/despu�
       app apuntándole, seed manual): eso da un falso positivo. No hay opción para saltearlo.
 - [ ] `qa-admin@local.test` y `qa-delivery@local.test` (admins creados a mano, no por una suite;
       qa-delivery tiene 1 pedido) siguen en la BD local: pendientes de confirmación del usuario.
+
+## Reportes (`GET /admin/reports/summary|comparison|top-products|conversion|daily-metrics`)
+
+- [x] **Compilación**: `pnpm run build` sin errores.
+- [x] **Unit**: 701/701 (10 en `src/modules/reports/reports.service.spec.ts`).
+- [x] **E2E**: 23/23 del implementador (`test/reports.e2e-spec.ts`) + 10/10 de QA
+      (`test/reports-qa.e2e-spec.ts`); suite completa 632/632, cleanup "21 tablas sin cambios".
+- [x] **Validación de contrato**: fechas faltantes/inexistentes/otro formato, rango invertido,
+      > 366 días, groupBy/channel/limit/includeStatus inválidos, comparison mal formado → 400.
+      QA: `limit=0|abc|1.5`, `startDate` repetido, vacío, con hora, `previous` repetido, período
+      > 366 días, query param desconocido → 400 (nunca 500). 366 días exactos con 29/02 → 200 y
+      367 → 400.
+- [x] **Seguridad**: los 5 endpoints → 401 sin token y 403 con rol cliente (guard a nivel de clase).
+- [x] **Agregados**: cliente en ambos canales cuenta 1 en el total y 1 en cada canal (QA);
+      `groupBy=week` con inicio a mitad de semana → primer período = lunes previo pero solo con
+      pedidos del rango (QA); mes con borde 29/02 23:30 Lima; `includeStatus=false` no agrega campos.
+- [x] **Conversión** (QA): app ANTES del teléfono no convierte; teléfono con `customerId` y luego app
+      convierte; usa el PRIMER teléfono del rango; app en el mismo instante no cuenta.
+- [x] **Resolver de cliente por celular** (corregido en re-auditoría): ambos lados por
+      `normalizePhone` (como `findCustomerForLinking`), prefiltro SQL por últimos 8 dígitos + rol
+      cliente, coincidencia exacta en memoria. QA e2e: `users.phone` viejo en formato libre → se
+      resuelve; `customerPhone` viejo sin normalizar → se resuelve; celular compartido con un ADMIN
+      más antiguo → se atribuye al cliente; dos clientes con el mismo celular → gana el de
+      `createdAt` más antiguo (desempate `id`).
+- [x] **Mutaciones del resolver** (cada una rompe exactamente 1 test QA; original restaurado, md5
+      `1e8be0e45c4e44365860f47a278abb33`): sin filtro de rol; `ORDER BY createdAt DESC`; "el último
+      gana" en el Map; sin normalizar `customerPhone`; sin normalizar `users.phone`.
+- [x] **Mutaciones** (reports e2e + QA): sin resolver por celular → 3 fallas nuevas; week sin lunes →
+      2; customers = conteo de pedidos → 1; primer → último pedido por teléfono → 1 (antes de QA: 0);
+      `>` → `>=` en conversión → 1 (antes de QA: 0). Sin filtro `role: cliente` → 1 (test QA de
+      celular compartido, agregado en la re-auditoría).
+- [x] **Performance**: 366 días en los 5 endpoints < 30 ms con la BD local (poco volumen; no
+      representativo de producción). Todos los pedidos entregados del rango se traen a memoria.
+- [x] **Swagger** (documento generado de la app real): 5 rutas con tag `reports` y bearer; params
+      requeridos/opcionales, enums, default y min/max de `limit`; respuestas 200/400/401/403.
+- [x] **Refactor del dashboard**: diff mecánico (mismas funciones movidas a `lima-time.util.ts`);
+      `admin-dashboard.e2e-spec.ts` verde.
+- [ ] Celular compartido: el anónimo se atribuye a la cuenta más antigua, aunque el pedido haya
+      sido de la otra (no hay forma de saberlo sin vincular). Decisión de producto, determinista.
+- [ ] El prefiltro `right(regexp_replace(phone), 8)` no usa índice (seq scan de `users` por
+      llamada; comparison hace 2). OK con el volumen actual, no medido con volumen real.
+- [ ] Celulares viejos que `normalizePhone` rechaza (fijos, extranjeros sin "+") no se resuelven:
+      el anónimo queda como `tel:<crudo>`.
+- [ ] Productos borrados (`menuItemId` null) se agrupan en una sola fila con `MAX(name)` (igual que
+      el dashboard). Empates de quantity+revenue en top-products sin orden determinista.
