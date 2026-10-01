@@ -1067,6 +1067,7 @@ export class OrdersService {
           ? null
           : selectedSauces.map((name) => ({ name })),
         menuItem.sauceGroupRequired,
+        menuItem.sauceAllowWithout,
         menuItem.sauceGroupMaxSelectable,
         { one: 'una salsa', many: 'salsa(s)' },
       );
@@ -1082,6 +1083,7 @@ export class OrdersService {
         offeredBeverages,
         selectedBeverages,
         menuItem.beverageGroupRequired,
+        menuItem.beverageAllowWithout,
         menuItem.beverageGroupMaxSelectable,
         { one: 'una bebida', many: 'bebida(s)' },
       );
@@ -1096,6 +1098,7 @@ export class OrdersService {
         menuItem.extraPortions,
         selectedExtraPortions,
         menuItem.extraPortionsGroupRequired,
+        menuItem.extraPortionsAllowWithout,
         menuItem.extraPortionsGroupMaxSelectable,
         { one: 'una porción extra', many: 'porción extra(s)' },
       );
@@ -1107,6 +1110,7 @@ export class OrdersService {
           ? null
           : selectedFriesTypes.map((name) => ({ name })),
         menuItem.friesTypeGroupRequired,
+        false, // tipos de papas: no hay opción "sin" configurable
         menuItem.friesTypeGroupMaxSelectable,
         { one: 'un tipo de papas', many: 'tipo(s) de papas' },
       );
@@ -1267,12 +1271,18 @@ export class OrdersService {
    * o ausente) — el `groupRequired`/`Max` configurado no importa si no hay nada
    * para elegir. `groupMaxSelectable === null` = sin tope máximo (el
    * `groupRequired` se sigue aplicando).
+   *
+   * `allowWithout` (`sauceAllowWithout`, etc.): en un grupo obligatorio, "Sin X"
+   * cuenta como respuesta válida — "elige una salsa o 'Sin salsas'". Solo el `[]`
+   * EXPLÍCITO (tri-state de `resolveSelectedSauces`/`resolveSelectedPriced`); el
+   * campo omitido (`null`) sigue siendo 400: el cliente tiene que decidir.
    */
   private validateGroupSelection(
     menuItemName: string,
     offered: { id: string }[] | undefined,
     selected: { name: string }[] | null,
     groupRequired: boolean,
+    allowWithout: boolean,
     groupMaxSelectable: number | null,
     // Con artículo y plural propios: "una salsa" pero "un tipo de papas".
     itemLabel: { one: string; many: string },
@@ -1280,7 +1290,10 @@ export class OrdersService {
     if (!offered || offered.length === 0) {
       return;
     }
-    if (groupRequired && (selected === null || selected.length === 0)) {
+    if (
+      groupRequired &&
+      (selected === null || (selected.length === 0 && !allowWithout))
+    ) {
       throw new BadRequestException(
         `El producto "${menuItemName}" requiere elegir al menos ${itemLabel.one}`,
       );

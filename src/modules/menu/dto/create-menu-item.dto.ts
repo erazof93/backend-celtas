@@ -185,7 +185,7 @@ export class CreateMenuItemDto {
   @ApiPropertyOptional({
     example: true,
     description:
-      'Si la app debe ofrecer la opción explícita "Sin salsas" para este producto (default true)',
+      'Si la app debe ofrecer la opción explícita "Sin salsas" para este producto (default true). Con sauceGroupRequired=true, "Sin salsas" (sauceIds: [] explícito) cuenta como elección válida; con false, el pedido exige al menos una salsa. Omitir sauceIds en un grupo obligatorio siempre es 400.',
   })
   @IsOptionalNonNullable()
   @IsBoolean({ message: 'sauceAllowWithout debe ser true o false' })
@@ -194,7 +194,7 @@ export class CreateMenuItemDto {
   @ApiPropertyOptional({
     example: true,
     description:
-      'Si la app debe ofrecer la opción explícita "Sin bebida" para este producto (default true)',
+      'Si la app debe ofrecer la opción explícita "Sin bebida" para este producto (default true). Con beverageGroupRequired=true, "Sin bebida" (beverageIds: [] explícito) cuenta como elección válida; con false, el pedido exige al menos una bebida. Omitir beverageIds en un grupo obligatorio siempre es 400.',
   })
   @IsOptionalNonNullable()
   @IsBoolean({ message: 'beverageAllowWithout debe ser true o false' })
@@ -203,7 +203,7 @@ export class CreateMenuItemDto {
   @ApiPropertyOptional({
     example: true,
     description:
-      'Si la app debe ofrecer la opción explícita "Sin porciones extras" para este producto (default true)',
+      'Si la app debe ofrecer la opción explícita "Sin porciones extras" para este producto (default true). Con extraPortionsGroupRequired=true, "Sin porciones extras" (extraPortionIds: [] explícito) cuenta como elección válida; con false, el pedido exige al menos una. Omitir extraPortionIds en un grupo obligatorio siempre es 400.',
   })
   @IsOptionalNonNullable()
   @IsBoolean({ message: 'extraPortionsAllowWithout debe ser true o false' })

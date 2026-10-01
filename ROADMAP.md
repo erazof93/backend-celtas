@@ -360,6 +360,19 @@ celtas-backend/
       pedido, distinto de no mostrar nada) **y `celtas-app`** (mandar `sauceIds: []` explícito
       desde el carrito cuando el cliente elige deliberadamente ninguna salsa) — ambos ya en curso
       con el mismo criterio.
+- [x] **"Sin X" válido en grupos obligatorios (`*AllowWithout` + `*GroupRequired`)** — auditado
+      por @tester: LISTO. Antes `validateGroupSelection` rechazaba `[]` en todo grupo obligatorio,
+      aunque el producto ofreciera "Sin salsas". Ahora, con `allowWithout: true`, el `[]`
+      EXPLÍCITO cuenta como elección ("elige una salsa o 'Sin salsas'"); el campo OMITIDO sigue
+      siendo 400 (el cliente tiene que decidir). Aplica a salsas, bebidas y porciones extras; tipos
+      de papas no tiene `allowWithout` y sigue estricto. Sin migración. Unit +8 (aceptación con
+      `[]`, rechazo si se omite, `allowWithout=false` sigue 400, el máximo no se relaja) y e2e en
+      `sauces` con el default real de la columna. Mutaciones: la lógica vieja y la variante "también
+      acepta omitido" hacen fallar unit y e2e.
+      ⚠️ **Impacto en datos reales**: `*AllowWithout` vale `true` por defecto, así que en producción
+      pasan a aceptar "Sin bebida" los combos con `beverageGroupRequired=true` (Full Guerrero,
+      La Celta (Clásica), alitas). Si esas bebidas deben ser obligatorias de verdad, poner
+      `beverageAllowWithout=false` desde el panel.
 - [x] **Horario de atención del negocio, backend como única fuente de
       verdad.** Antes se aceptaban pedidos a cualquier hora. Reutiliza la tabla `settings` (sin
       migración nueva): `business_hours_schedule` (JSON por día de la semana, mismas claves

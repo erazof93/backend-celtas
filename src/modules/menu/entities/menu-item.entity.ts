@@ -195,16 +195,16 @@ export class MenuItem {
 
   /**
    * Si la app debe ofrecer la opción explícita "Sin salsas" para este producto
-   * (default true). Independiente de `sauceGroupRequired`: ese controla si el
-   * cliente está obligado a elegir al menos una; este controla si "ninguna" es
-   * una opción visible/elegible. Sin efecto si `sauces` está vacío.
+   * (default true). Combinado con `sauceGroupRequired`: el grupo obligatorio exige
+   * una DECISIÓN — una salsa o "Sin salsas" (`sauceIds: []` explícito); con false,
+   * exige al menos una salsa. Sin efecto si `sauces` está vacío.
    */
   @Column({ name: 'sauce_allow_without', type: 'boolean', default: true })
   sauceAllowWithout: boolean;
 
   /**
    * Si la app debe ofrecer la opción explícita "Sin bebida" para este producto
-   * (default true). Mismo criterio que `sauceAllowWithout`, independiente de
+   * (default true). Mismo criterio que `sauceAllowWithout` frente a
    * `beverageGroupRequired`.
    */
   @Column({ name: 'beverage_allow_without', type: 'boolean', default: true })
@@ -212,8 +212,8 @@ export class MenuItem {
 
   /**
    * Si la app debe ofrecer la opción explícita "Sin porciones extras" para
-   * este producto (default true). Mismo criterio que `sauceAllowWithout`,
-   * independiente de `extraPortionsGroupRequired`.
+   * este producto (default true). Mismo criterio que `sauceAllowWithout` frente a
+   * `extraPortionsGroupRequired`.
    */
   @Column({
     name: 'extra_portions_allow_without',

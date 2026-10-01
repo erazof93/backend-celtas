@@ -615,4 +615,62 @@ describe('Sauces (e2e)', () => {
 
     void clientId;
   });
+
+  describe('POST /orders: grupo de salsas obligatorio + sauceAllowWithout', () => {
+    let sauceId: string;
+    let itemId: string;
+    const order = (item: Record<string, unknown>) =>
+      request(app.getHttpServer())
+        .post('/orders')
+        .set('Authorization', `Bearer ${clientToken}`)
+        .send({
+          addressSnapshot: genericAddress,
+          items: [{ menuItemId: itemId, quantity: 1, ...item }],
+        });
+
+    beforeAll(async () => {
+      sauceId = (await createSauce({ name: `Req Mayo ${suffix}` })).id;
+      // sauceAllowWithout no se envía: queda el default de la columna (true).
+      itemId = (
+        await createItem({
+          name: `Req Burger ${suffix}`,
+          sauceIds: [sauceId],
+          sauceGroupRequired: true,
+        })
+      ).id;
+    });
+
+    it('default de la BD (allowWithout=true): sauceIds: [] → 201, "Sin salsas" en snapshot y WhatsApp', async () => {
+      expect((await getMenuItem(itemId))?.sauceAllowWithout).toBe(true);
+      const res = await order({ sauceIds: [] }).expect(201);
+      const data = (res.body as Envelope).data as OrderData;
+      expect(data.items[0].selectedSauces).toEqual([]);
+      expect(decodeURIComponent(data.whatsappUrl)).toContain(
+        '(Salsas: Sin salsas)',
+      );
+    });
+
+    it('allowWithout=true pero sauceIds omitido → 400 (el cliente no decidió)', async () => {
+      const res = await order({}).expect(400);
+      expect((res.body as ErrorResponse).message).toContain(
+        'requiere elegir al menos una salsa',
+      );
+    });
+
+    it('con una salsa elegida → 201', async () => {
+      await order({ sauceIds: [sauceId] }).expect(201);
+    });
+
+    it('PATCH sauceAllowWithout=false: sauceIds: [] → 400', async () => {
+      await request(app.getHttpServer())
+        .patch(`/menu/items/${itemId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ sauceAllowWithout: false })
+        .expect(200);
+      const res = await order({ sauceIds: [] }).expect(400);
+      expect((res.body as ErrorResponse).message).toContain(
+        'requiere elegir al menos una salsa',
+      );
+    });
+  });
 });

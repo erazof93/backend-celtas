@@ -1018,6 +1018,112 @@ describe('OrdersService', () => {
       },
     );
 
+    // allowWithout en grupo obligatorio: "Sin X" ([] explícito) es una respuesta
+    // válida; omitir el campo sigue siendo 400 (el cliente tiene que decidir).
+    const allowWithoutCases = [
+      [
+        'salsas',
+        {
+          sauces: [{ id: 's1', name: 'Mayo' }],
+          sauceGroupRequired: true,
+          sauceAllowWithout: true,
+        },
+        'sauceIds',
+        'selectedSauces',
+        'una salsa',
+      ],
+      [
+        'bebidas',
+        {
+          beverages: [{ id: 'b1', name: 'Coca', price: 5 }],
+          beverageGroupRequired: true,
+          beverageAllowWithout: true,
+        },
+        'beverageIds',
+        'selectedBeverages',
+        'una bebida',
+      ],
+      [
+        'porciones extras',
+        {
+          extraPortions: [{ id: 'e1', name: 'Queso', price: 3 }],
+          extraPortionsGroupRequired: true,
+          extraPortionsAllowWithout: true,
+        },
+        'extraPortionIds',
+        'selectedExtraPortions',
+        'una porción extra',
+      ],
+    ] as const;
+
+    it.each(allowWithoutCases)(
+      '%s: grupo obligatorio + allowWithout=true + [] explícito ("Sin …") → crea el pedido',
+      async (_label, overrides, field, resultField) => {
+        menuItemsRepo.find.mockResolvedValue([menuMenuItem(overrides)]);
+
+        const result = await service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 1, [field]: [] }],
+        });
+
+        expect(result.items[0][resultField]).toEqual([]);
+      },
+    );
+
+    it.each(allowWithoutCases)(
+      '%s: grupo obligatorio + allowWithout=true + campo OMITIDO → 400 (no decidió)',
+      async (_label, overrides, _field, _resultField, one) => {
+        menuItemsRepo.find.mockResolvedValue([menuMenuItem(overrides)]);
+
+        const error: unknown = await service
+          .create(userId, { addressId, items: [{ menuItemId, quantity: 1 }] })
+          .catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(BadRequestException);
+        expect((error as BadRequestException).message).toBe(
+          `El producto "Celtas Clásica" requiere elegir al menos ${one}`,
+        );
+      },
+    );
+
+    it('porciones extras: grupo obligatorio + allowWithout=false + [] explícito → 400', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          extraPortions: [{ id: 'e1', name: 'Queso', price: 3 }],
+          extraPortionsGroupRequired: true,
+          extraPortionsAllowWithout: false,
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 1, extraPortionIds: [] }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('allowWithout=true no desactiva el máximo: 2 salsas con max=1 → 400', async () => {
+      menuItemsRepo.find.mockResolvedValue([
+        menuMenuItem({
+          sauces: [
+            { id: 's1', name: 'Mayo' },
+            { id: 's2', name: 'Ají' },
+          ],
+          sauceGroupRequired: true,
+          sauceAllowWithout: true,
+          sauceGroupMaxSelectable: 1,
+        }),
+      ]);
+
+      await expect(
+        service.create(userId, {
+          addressId,
+          items: [{ menuItemId, quantity: 1, sauceIds: ['s1', 's2'] }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
     it('grupo de bebidas obligatorio (required=true) + beverageIds omitido → 400', async () => {
       menuItemsRepo.find.mockResolvedValue([
         menuMenuItem({
@@ -1034,11 +1140,12 @@ describe('OrdersService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('grupo de bebidas obligatorio + beverageIds: [] explícito (tampoco cuenta) → 400', async () => {
+    it('grupo de bebidas obligatorio + beverageAllowWithout=false + beverageIds: [] explícito (no cuenta) → 400', async () => {
       menuItemsRepo.find.mockResolvedValue([
         menuMenuItem({
           beverages: [{ id: 'bev-coca', name: 'Coca-Cola 500ml', price: 5 }],
           beverageGroupRequired: true,
+          beverageAllowWithout: false,
         }),
       ]);
 
@@ -1166,11 +1273,12 @@ describe('OrdersService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('grupo de salsas obligatorio + sauceIds: [] explícito (tampoco cuenta) → 400', async () => {
+    it('grupo de salsas obligatorio + sauceAllowWithout=false + sauceIds: [] explícito (no cuenta) → 400', async () => {
       menuItemsRepo.find.mockResolvedValue([
         menuMenuItem({
           sauces: [{ id: 'sauce-mayo', name: 'Mayonesa' }],
           sauceGroupRequired: true,
+          sauceAllowWithout: false,
         }),
       ]);
 

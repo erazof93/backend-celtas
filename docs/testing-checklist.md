@@ -1261,6 +1261,32 @@ aislada; (2) gaps menores de contrato en el DTO de salsas; (3) flaky de infra pr
       mantenga su propio estado independiente); `sauceIds: []` en un producto que no ofrece
       ninguna salsa (`menuItem.sauces` vacío/`undefined`).
 
+### "Sin X" válido en grupos obligatorios (`*AllowWithout` + `*GroupRequired`)
+
+> `validateGroupSelection(…, groupRequired, allowWithout, …)`: con grupo obligatorio, `[]`
+> EXPLÍCITO es válido si `allowWithout`; omitido (`null`) siempre 400. Papas pasa `false` fijo.
+>
+> **Auditado por `@tester` (2026-10-01). Veredicto: LISTO.**
+
+- [x] `pnpm run build` exit 0; `npx eslint "{src,apps,libs,test}/**/*.ts"` (sin --fix) exit 0.
+- [x] Unit 709/709 (32 suites); e2e 638/638 (20 suites).
+- [x] Mutación "lógica vieja" (`[]` siempre 400): 3 unit (`[] explícito → crea el pedido` x3) +
+      1 e2e (`default de la BD … sauceIds: [] → 201`) fallan.
+- [x] Mutación "acepta omitido si allowWithout": 3 unit (`campo OMITIDO → 400` x3) + 1 e2e fallan.
+- [x] Mutación papas `false`→`true`: falla `friesTypeGroupRequired + [] explícito → 400`.
+- [x] Mutación cableado `beverageAllowWithout`→`sauceAllowWithout`: falla el caso bebidas.
+- [x] Archivo restaurado desde backup, sha256 idéntico.
+- [x] Barrido: `validateGroupSelection` tiene un solo sitio de uso (`buildItems`), compartido por
+      `POST /orders`, `POST /orders/admin` e ítems con `rewardRedemptionId` → regla uniforme. No
+      hay endpoint de edición de ítems de pedido; las estimaciones de delivery no validan grupos.
+      Omitido → 400 ya era el comportamiento previo: no hay regresión para premios/admin.
+- [x] Swagger: descripciones en `CreateMenuItemDto`, heredadas por `UpdateMenuItemDto` (PartialType).
+- [ ] Seguimiento cross-repo (no bloquea): `celtas-admin` (`manual-order.ts`, `required && selected === 0`
+      → error) y `celtas-app` (`cart_item.dart`: chip "Sin X" oculto si el grupo es obligatorio)
+      todavía no aprovechan la regla nueva.
+- [ ] Riesgo no cubierto: e2e solo para salsas (bebidas/porciones solo unit); sin e2e para
+      `POST /orders/admin` con `[]` en grupo obligatorio.
+
 ## Paginación por límite en `GET /orders/me` (`QueryMyOrdersDto`)
 
 > Feature puntual: `GET /orders/me` (listado de "mis pedidos" del cliente autenticado) ahora acepta
