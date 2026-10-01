@@ -57,8 +57,10 @@ export default () => ({
     apiSecret: env('CLOUDINARY_API_SECRET'),
   },
   coupons: {
-    thresholdAmount: parseFloat(env('COUPON_THRESHOLD_AMOUNT')),
-    expirationDays: parseInt(env('COUPON_EXPIRATION_DAYS'), 10),
+    // Opcionales (mismos defaults que validation.schema.ts): ya no se usa env()
+    // porque lanza si la variable falta y la app no arrancaría sin ellas.
+    thresholdAmount: parseFloat(process.env.COUPON_THRESHOLD_AMOUNT ?? '50'),
+    expirationDays: parseInt(process.env.COUPON_EXPIRATION_DAYS ?? '15', 10),
     // Descuento del cupón automático. Opcional: por defecto 10% (mismo default
     // y mismo rango que valida validation.schema.ts vía Joi.when).
     autoDiscountType: process.env.AUTO_COUPON_DISCOUNT_TYPE ?? 'percentage',

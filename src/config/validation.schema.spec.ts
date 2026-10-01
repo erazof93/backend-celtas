@@ -133,6 +133,22 @@ describe('validationSchema (Módulo 0.5)', () => {
     expect(value.AUTO_COUPON_DISCOUNT_VALUE).toBe(10);
   });
 
+  it('COUPON_THRESHOLD_AMOUNT/EXPIRATION_DAYS son opcionales (config en BD) y aplican defaults 50/15', () => {
+    const {
+      COUPON_THRESHOLD_AMOUNT: _threshold,
+      COUPON_EXPIRATION_DAYS: _days,
+      ...withoutCouponVars
+    } = completeEnv;
+    void _threshold;
+    void _days;
+    const { error, value } = validationSchema.validate(withoutCouponVars, {
+      allowUnknown: true,
+    }) as { error?: Joi.ValidationError; value: Record<string, unknown> };
+    expect(error).toBeUndefined();
+    expect(value.COUPON_THRESHOLD_AMOUNT).toBe(50);
+    expect(value.COUPON_EXPIRATION_DAYS).toBe(15);
+  });
+
   it('falla si AUTO_COUPON_DISCOUNT_VALUE > 100 con tipo percentage (default o explícito)', () => {
     const { error } = validationSchema.validate(
       { ...completeEnv, AUTO_COUPON_DISCOUNT_VALUE: '150' },

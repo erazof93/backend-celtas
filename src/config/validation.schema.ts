@@ -52,8 +52,16 @@ export const validationSchema = Joi.object({
   CLOUDINARY_API_SECRET: Joi.string().required(),
 
   // Cupones automáticos (módulo Coupons)
-  COUPON_THRESHOLD_AMOUNT: Joi.number().positive().required(),
-  COUPON_EXPIRATION_DAYS: Joi.number().integer().positive().required(),
+  // Opcionales desde que la config de cupones automáticos vive en la tabla
+  // settings (PUT /coupons/auto-config): solo siembran la BD la primera vez.
+  // COUPON_EXPIRATION_DAYS además es la vigencia por defecto de los cupones
+  // MANUALES sin expiresAt, por eso lleva default (nunca undefined/NaN).
+  COUPON_THRESHOLD_AMOUNT: Joi.number().positive().optional().default(50),
+  COUPON_EXPIRATION_DAYS: Joi.number()
+    .integer()
+    .positive()
+    .optional()
+    .default(15),
   // Descuento del cupón automático. Opcional: por defecto 10% (comportamiento
   // actual sin configurar nada). Si el tipo es 'percentage' el valor no puede
   // superar 100 (mismo límite que IsPercentageWithinLimit en cupones manuales) —
