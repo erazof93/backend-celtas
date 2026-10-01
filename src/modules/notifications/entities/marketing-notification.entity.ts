@@ -43,6 +43,6 @@ export class MarketingNotification {
   @Column({ type: 'int' })
   totalCount: number;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 }

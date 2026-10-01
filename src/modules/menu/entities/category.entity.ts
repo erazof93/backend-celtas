@@ -36,9 +36,9 @@ export class Category {
   @OneToMany(() => MenuItem, (item) => item.category)
   items: MenuItem[];
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 }

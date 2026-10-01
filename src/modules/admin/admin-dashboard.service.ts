@@ -21,20 +21,7 @@ const LIMA_OFFSET = '-05:00';
 /** Días por defecto de las series diarias (revenue-trend, new-customers). */
 const DEFAULT_TREND_DAYS = 7;
 
-/**
- * `createdAt` (orders/users) es `timestamp` SIN zona, escrito por `now()` de la
- * BD en la zona de su sesión (UTC en Supabase y en el Postgres local). Se convierte
- * a instante real con esa misma zona antes de comparar o agrupar.
- *
- * Comparar la columna cruda contra un Date de JS depende de la zona del proceso
- * Node: pg serializa el Date con el offset local y Postgres IGNORA el offset al
- * castearlo a `timestamp`. En Render (Node en UTC) coincidía; con Node en Lima
- * (desarrollo local) los rangos quedaban corridos 5 horas.
- */
-const createdAtInstant = (alias: string): string =>
-  `(${alias}.createdAt AT TIME ZONE current_setting('TimeZone'))`;
-
-/** Día calendario (YYYY-MM-DD) en Lima de una expresión timestamptz. */
+/** Día calendario (YYYY-MM-DD) en Lima de una columna/expresión timestamptz. */
 const limaDay = (instant: string): string =>
   `to_char(${instant} AT TIME ZONE '${LIMA_TIMEZONE}', 'YYYY-MM-DD')`;
 
@@ -99,8 +86,8 @@ export interface NewCustomersResult {
  * por `createdAt` e incluyen todos los estados, igual que `summary.ordersCount`.
  * `ordersPhone` = pedidos con `source = admin` (cargados desde el panel).
  *
- * SERIES DIARIAS: se agrupan por día de Lima en SQL. `deliveredAt` es timestamptz;
- * `createdAt` es timestamp SIN zona y pasa antes por `createdAtInstant`.
+ * SERIES DIARIAS: se agrupan por día de Lima en SQL. Todas las fechas son
+ * timestamptz, así que los rangos se comparan directo contra los Date de JS.
  */
 @Injectable()
 export class AdminDashboardService {
@@ -118,16 +105,16 @@ export class AdminDashboardService {
 
     const ordersCount = await this.ordersRepository
       .createQueryBuilder('order')
-      .where(`${createdAtInstant('order')} >= :start`, { start })
-      .andWhere(`${createdAtInstant('order')} <= :end`, { end })
+      .where('order.createdAt >= :start', { start })
+      .andWhere('order.createdAt <= :end', { end })
       .getCount();
 
     const statusRows = await this.ordersRepository
       .createQueryBuilder('order')
       .select('order.status', 'status')
       .addSelect('COUNT(*)', 'count')
-      .where(`${createdAtInstant('order')} >= :start`, { start })
-      .andWhere(`${createdAtInstant('order')} <= :end`, { end })
+      .where('order.createdAt >= :start', { start })
+      .andWhere('order.createdAt <= :end', { end })
       .groupBy('order.status')
       .getRawMany<{ status: OrderStatus; count: string }>();
 
@@ -180,11 +167,11 @@ export class AdminDashboardService {
 
     const orderRows = await this.ordersRepository
       .createQueryBuilder('order')
-      .select(limaDay(createdAtInstant('order')), 'day')
+      .select(limaDay('order.createdAt'), 'day')
       .addSelect('order.source', 'source')
       .addSelect('COUNT(*)', 'count')
-      .where(`${createdAtInstant('order')} >= :start`, { start })
-      .andWhere(`${createdAtInstant('order')} <= :end`, { end })
+      .where('order.createdAt >= :start', { start })
+      .andWhere('order.createdAt <= :end', { end })
       .groupBy('"day"')
       .addGroupBy('order.source')
       .getRawMany<{ day: string; source: OrderSource; count: string }>();
@@ -276,8 +263,8 @@ export class AdminDashboardService {
       .createQueryBuilder('order')
       .select('order.source', 'source')
       .addSelect('COUNT(*)', 'count')
-      .where(`${createdAtInstant('order')} >= :start`, { start })
-      .andWhere(`${createdAtInstant('order')} <= :end`, { end })
+      .where('order.createdAt >= :start', { start })
+      .andWhere('order.createdAt <= :end', { end })
       .groupBy('order.source')
       .getRawMany<{ source: OrderSource; count: string }>();
 
@@ -315,11 +302,11 @@ export class AdminDashboardService {
   ): Promise<{ day: string; count: number }[]> {
     const rows = await this.usersRepository
       .createQueryBuilder('user')
-      .select(limaDay(createdAtInstant('user')), 'day')
+      .select(limaDay('user.createdAt'), 'day')
       .addSelect('COUNT(*)', 'count')
       .where('user.role = :role', { role: UserRole.CLIENTE })
-      .andWhere(`${createdAtInstant('user')} >= :start`, { start })
-      .andWhere(`${createdAtInstant('user')} <= :end`, { end })
+      .andWhere('user.createdAt >= :start', { start })
+      .andWhere('user.createdAt <= :end', { end })
       .groupBy('"day"')
       .getRawMany<{ day: string; count: string }>();
     return rows.map((row) => ({

@@ -38,9 +38,9 @@ export class FriesType {
   @ManyToMany(() => MenuItem, (menuItem) => menuItem.friesTypes)
   menuItems: MenuItem[];
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 }

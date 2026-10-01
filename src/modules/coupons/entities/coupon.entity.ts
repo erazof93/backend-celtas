@@ -108,6 +108,6 @@ export class Coupon {
   @JoinColumn({ name: 'usedInOrderId' })
   usedInOrder: Order | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 }

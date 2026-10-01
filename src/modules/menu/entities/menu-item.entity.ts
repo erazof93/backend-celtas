@@ -254,9 +254,9 @@ export class MenuItem {
   @Column({ name: 'fries_type_group_max_selectable', type: 'int', default: 1 })
   friesTypeGroupMaxSelectable: number;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 }

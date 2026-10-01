@@ -73,9 +73,9 @@ export class User {
   @OneToMany(() => Address, (address) => address.user)
   addresses: Address[];
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 }

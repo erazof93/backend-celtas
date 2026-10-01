@@ -52,9 +52,9 @@ export class ExtraPortion {
   @ManyToMany(() => MenuItem, (menuItem) => menuItem.extraPortions)
   menuItems: MenuItem[];
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 }

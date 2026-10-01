@@ -32,9 +32,9 @@ export class RewardMilestone {
   @Column({ type: 'boolean', default: false })
   isSpecial: boolean;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 }

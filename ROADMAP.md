@@ -827,8 +827,17 @@ celtas-backend/
 - [x] `GET /admin/dashboard/revenue-trend?days` y `GET /admin/dashboard/new-customers?days` (1-90, días en 0 incluidos)
 - [x] `top-products` acepta `days` (exclusivo con from/to vía `IsDaysExclusiveWithRange`); forma `{ items, limit }` sin cambios
 - [x] **Bug de zona horaria corregido en el dashboard**: `createdAt` es `timestamp` SIN zona (UTC por `now()`); compararlo con un Date de JS dependía de la zona de Node (Postgres ignora el offset al castear). Correcto en Render (UTC), corrido 5h en local (Lima). Ahora se usa `createdAt AT TIME ZONE current_setting('TimeZone')`.
-- [ ] **Pendiente (mismo bug de clase, fuera del dashboard)**: `rewards` lee `order.createdAt` en JS y falla en local después de las 19:00 Lima (e2e "promocionActiva refleja la promo vigente hoy"). Fix de fondo propuesto: parsear/serializar `timestamp` sin zona como UTC en `pg`.
+- [x] ~~Pendiente~~ RESUELTO en 8.3: `rewards` leía `order.createdAt` en JS y fallaba en local después de las 19:00 Lima. Causa de fondo corregida migrando todas las fechas a `timestamptz`.
 - [x] Auditado por `@tester`: **LISTO** — 689 unit, e2e dashboard 21/21 (Node en Lima y con TZ=UTC), build limpio
+
+### 8.3 Zona horaria: todas las fechas en `timestamptz` — ✅ COMPLETO
+- [x] Las 32 columnas `createdAt`/`updatedAt` (17 tablas) pasan de `timestamp` sin zona a `timestamptz`: `@CreateDateColumn({ type: 'timestamptz' })` / `@UpdateDateColumn({ type: 'timestamptz' })`
+- [x] Migración `TimestampsToTimestamptz` **escrita a mano** (`ALTER COLUMN ... TYPE timestamptz USING col AT TIME ZONE 'UTC'`): `migration:generate` producía DROP + ADD COLUMN y borraba todas las fechas. Un solo `ALTER TABLE` por tabla (una reescritura por tabla). Verificado en local: up y down conservan los valores exactos
+- [x] Causa: con `timestamp` sin zona, pg serializa/parsea los Date con la zona del proceso Node y Postgres ignora el offset al castear. Render (Node en UTC) coincidía; Node en Lima corría todo 5h (dashboard, rewards, fechas en las respuestas de la API)
+- [x] Dashboard: se quitó el workaround `createdAt AT TIME ZONE current_setting('TimeZone')` (sobre `timestamptz` daría un resultado incorrecto); los rangos se comparan directo
+- [x] Sin `dayjs`: la conversión a Lima sigue en `src/common/utils/lima-time.util.ts` y en SQL (`AT TIME ZONE 'America/Lima'`) solo donde se agrupa por día
+- [x] Suite completa verde con Node en UTC **y** en America/Lima (689 unit, 599 e2e), incluido rewards "promocionActiva refleja la promo vigente hoy" corrido a las 21:13 Lima
+- [x] Convención documentada en la skill `nestjs-celtas` (sección "Fechas y zona horaria")
 
 ### 8.1 Settings (número de WhatsApp editable desde el panel) — ✅ COMPLETO
 - [x] Entidad `Setting` (key único, value, description), sembrada al arrancar si no existe

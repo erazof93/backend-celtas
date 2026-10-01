@@ -65,9 +65,9 @@ export class Beverage {
   @ManyToMany(() => MenuItem, (menuItem) => menuItem.beverages)
   menuItems: MenuItem[];
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 }

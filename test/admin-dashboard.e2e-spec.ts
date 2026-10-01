@@ -143,18 +143,6 @@ describe('Admin Dashboard (e2e)', () => {
     }
   };
 
-  /**
-   * Fija `createdAt` (timestamp SIN zona) como lo escribiría `now()` de la BD: en
-   * la zona de la sesión. Con `ordersRepo.update`, pg serializa el Date con el
-   * offset de Node y Postgres lo ignora al castear, así que con Node en Lima el
-   * valor quedaba en hora de Lima y no en la de la sesión (UTC).
-   */
-  const setCreatedAt = (orderId: string, instant: Date) =>
-    ordersRepo.query(
-      `UPDATE "orders" SET "createdAt" = ($1::timestamptz AT TIME ZONE current_setting('TimeZone')) WHERE "id" = $2`,
-      [instant.toISOString(), orderId],
-    );
-
   const getSummary = async (date: string): Promise<SummaryData> => {
     const res = await request(app.getHttpServer())
       .get(`/admin/dashboard/summary?from=${date}&to=${date}`)
@@ -309,7 +297,7 @@ describe('Admin Dashboard (e2e)', () => {
       });
       const aId = ((orderA.body as Envelope).data as Order).id;
       await markDelivered(aId);
-      await setCreatedAt(aId, lima(DAY, '10:00:00.000'));
+      await ordersRepo.update(aId, { createdAt: lima(DAY, '10:00:00.000') });
       await ordersRepo.update(aId, { deliveredAt: lima(DAY, '11:00:00.000') });
 
       // C: cancelado (no debe contar en revenue)
@@ -323,7 +311,7 @@ describe('Admin Dashboard (e2e)', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ status: 'cancelado' })
         .expect(200);
-      await setCreatedAt(cId, lima(DAY, '12:00:00.000'));
+      await ordersRepo.update(cId, { createdAt: lima(DAY, '12:00:00.000') });
 
       // D: pendiente (no debe contar en revenue)
       const orderD = await createOrder({
@@ -331,7 +319,7 @@ describe('Admin Dashboard (e2e)', () => {
         items: [{ menuItemId: itemAId, quantity: 3 }],
       });
       const dId = ((orderD.body as Envelope).data as Order).id;
-      await setCreatedAt(dId, lima(DAY, '13:00:00.000'));
+      await ordersRepo.update(dId, { createdAt: lima(DAY, '13:00:00.000') });
 
       const data = await getSummary(DAY);
 
@@ -355,7 +343,7 @@ describe('Admin Dashboard (e2e)', () => {
       });
       const eId = ((orderE.body as Envelope).data as Order).id;
       await markDelivered(eId);
-      await setCreatedAt(eId, lima(PREV, '12:00:00.000'));
+      await ordersRepo.update(eId, { createdAt: lima(PREV, '12:00:00.000') });
       await ordersRepo.update(eId, { deliveredAt: lima(DAY, '14:00:00.000') });
 
       const dayData = await getSummary(DAY);
@@ -378,7 +366,7 @@ describe('Admin Dashboard (e2e)', () => {
       });
       const bId = ((orderB.body as Envelope).data as Order).id;
       await markDelivered(bId);
-      await setCreatedAt(bId, lima(DAY, '09:00:00.000'));
+      await ordersRepo.update(bId, { createdAt: lima(DAY, '09:00:00.000') });
       await ordersRepo.update(bId, { deliveredAt: lima(PREV, '23:59:00.000') });
 
       const prevData = await getSummary(PREV);
@@ -402,7 +390,7 @@ describe('Admin Dashboard (e2e)', () => {
         items: [{ menuItemId: itemAId, quantity: 1 }],
       }).expect(201);
       const nId = ((orderN.body as Envelope).data as Order).id;
-      await setCreatedAt(nId, lima(NIGHT, '21:30:00.000'));
+      await ordersRepo.update(nId, { createdAt: lima(NIGHT, '21:30:00.000') });
 
       const nightAfter = await getSummary(NIGHT);
       const nextAfter = await getSummary(NEXT);

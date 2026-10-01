@@ -187,6 +187,28 @@ sobre la entidad que se va a devolver en la respuesta.
 - Los mocks de repositorio en los specs unitarios deben incluir `merge` replicando este
   comportamiento (solo copiar `!== undefined`) — ver `addresses.service.spec.ts`.
 
+## Fechas y zona horaria — SIEMPRE `timestamptz`
+
+⚠️ **Gotcha confirmado en este proyecto**: con columnas `timestamp` (sin zona), pg serializa y
+parsea los `Date` con la zona del proceso Node, y Postgres **ignora en silencio** el offset al
+castear a `timestamp`. En Render (Node en UTC) todo coincidía; con Node en Lima (desarrollo
+local) los filtros por fecha y las fechas de la API quedaban corridos 5 horas (dashboard y
+rewards fallaban después de las 19:00 Lima).
+
+**Regla del proyecto**:
+- Toda columna de fecha/hora es `timestamptz`: `@Column({ type: 'timestamptz' })`,
+  `@CreateDateColumn({ type: 'timestamptz' })`, `@UpdateDateColumn({ type: 'timestamptz' })`.
+  Nunca `@CreateDateColumn()` sin tipo (TypeORM lo crea como `timestamp` sin zona).
+- La BD guarda instantes; la conversión a Lima se hace solo donde hace falta un día calendario:
+  en JS con `src/common/utils/lima-time.util.ts`, o en SQL con `col AT TIME ZONE 'America/Lima'`
+  al agrupar por día. Los rangos se arman como instantes (`YYYY-MM-DDT00:00:00.000-05:00`) y se
+  comparan directo contra la columna.
+- **Cambiar el tipo de una columna con datos: escribir la migración a mano.**
+  `migration:generate` genera DROP COLUMN + ADD COLUMN y borra los valores. Usar
+  `ALTER COLUMN ... TYPE ... USING ...` y verificar con un snapshot antes y después.
+- Probar lo que dependa de fechas con Node en UTC **y** en America/Lima: solo en UTC el bug no
+  aparece.
+
 ## Swagger
 
 - Todo controller lleva `@ApiTags('nombre-modulo')`.

@@ -445,11 +445,15 @@ describe('AdminDashboardService', () => {
         { date: '2026-09-29', revenue: 0, ordersApp: 1, ordersPhone: 0 },
         { date: '2026-09-30', revenue: 45.5, ordersApp: 2, ordersPhone: 1 },
       ]);
-      // createdAt (timestamp sin zona) se interpreta en la zona de la sesión de la BD.
+      // createdAt es timestamptz: se compara directo y se agrupa por día de Lima.
       const ordersQb = ordersRepo.createQueryBuilder.mock.results[1]
         .value as QbMock;
+      expect(ordersQb.select).toHaveBeenCalledWith(
+        "to_char(order.createdAt AT TIME ZONE 'America/Lima', 'YYYY-MM-DD')",
+        'day',
+      );
       expect(ordersQb.where).toHaveBeenCalledWith(
-        "(order.createdAt AT TIME ZONE current_setting('TimeZone')) >= :start",
+        'order.createdAt >= :start',
         expect.anything(),
       );
       expect(ordersQb.addGroupBy).toHaveBeenCalledWith('order.source');

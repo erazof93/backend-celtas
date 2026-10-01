@@ -1656,7 +1656,7 @@ el historial y lo que se manda al push.
 - [x] Migración `AddSourceToOrder`: enum NOT NULL default `'app'`, backfill `userId IS NULL → 'admin'`, `down` reversible; `migration:generate` posterior sin cambios
 - [x] `metrics`: `orders = ordersApp + ordersPhone` (creados, todos los estados); `revenue` = entregados por `deliveredAt`; `month.newCustomers` solo rol `cliente`
 - [x] Fronteras en Lima: de noche (UTC ya es el día/mes siguiente) se usa el día y mes de Lima; día 1 a las 00:30 → mes = solo hoy; lunes → semana = hoy; domingo 23:30 → semana del lunes anterior; cruce de año (unit con fake timers)
-- [x] `createdAt` (timestamp sin zona) se convierte con `AT TIME ZONE current_setting('TimeZone')`: un pedido creado 21:30 Lima (02:30 UTC del día siguiente) cuenta en el día de Lima, con Node en Lima y en UTC (e2e corrido con `TZ=UTC`)
+- [x] `createdAt` (timestamp sin zona) se convierte con `AT TIME ZONE current_setting('TimeZone')`: un pedido creado 21:30 Lima (02:30 UTC del día siguiente) cuenta en el día de Lima, con Node en Lima y en UTC (e2e corrido con `TZ=UTC`) — **REEMPLAZADO** por la sección "Zona horaria": `createdAt` ahora es `timestamptz` y se compara directo; el workaround ya no existe
 - [x] `revenue-trend`/`new-customers`: N días ascendentes terminando hoy (Lima), días sin movimiento en 0, `total` = suma de `byDay`; `days` 1-90 (400 con 0, 91, `abc`)
 - [x] `top-products?days=N` filtra por los últimos N días; `days` + `from`/`to` → 400 "days no se puede combinar con from/to"; forma `{ items, limit }` sin cambios
 - [x] Swagger: los 3 endpoints con summary, `bearer`, respuestas 200/400/401/403; `days` en `top-products` aparece una sola vez (sin duplicar `@ApiQuery` + DTO)
@@ -3004,6 +3004,22 @@ registra la confirmación del admin.
       pero no da estrellas. Es por diseño, pero no tiene test e2e.
 - [ ] Swagger no documenta `ArrayMaxSize`/`uniqueItems`/`format: uuid` en `orderIds`, ni el schema
       de la respuesta 200 del preview.
+
+## Zona horaria (todas las fechas `timestamptz`, migración `TimestampsToTimestamptz`)
+
+- [x] Ninguna columna `timestamp without time zone` en `public` (`information_schema.columns` → 0)
+- [x] `migration:generate` posterior → "No changes in database schema were found"
+- [x] Migración up → down → up conserva `createdAt`/`updatedAt` exactos (snapshot de orders/users/coupons/settings, 23 filas, leído en UTC)
+- [x] Suite unit completa verde con `TZ=UTC` y con Node en America/Lima
+- [x] Suite e2e completa verde con `TZ=UTC` y con Node en America/Lima (incluye rewards "promocionActiva refleja la promo vigente hoy", que antes fallaba en Lima después de las 19:00)
+- [x] Dashboard: un pedido creado a las 21:30 Lima (= 02:30 UTC del día siguiente) cuenta en el día de Lima, no en el siguiente
+- [x] Sin restos del workaround (`AT TIME ZONE current_setting`, `setCreatedAt`) ni casts a `timestamp` sin zona en `src/` y `test/`
+- [ ] **Antes del deploy**: confirmar en Supabase (SQL editor) que `SHOW timezone;` devuelve `UTC`. La migración interpreta los valores actuales como UTC porque `now()` los escribió en la zona de la sesión
+- [x] Guard de regresión independiente de BD y de zona de Node (`src/entities-timestamptz.spec.ts`, agregado por `@tester`): toda columna `Date`/`createDate`/`updateDate` de toda `*.entity.ts` es `timestamptz` o `date`. Verificado que FALLA contra HEAD pre-cambio (32 offenders, exactamente las 32 columnas migradas) y pasa con el cambio
+- [x] Cobertura de la migración verificada contra el historial de migraciones: las 32 columnas son todos los `createdAt`/`updatedAt` creados como `TIMESTAMP` sin zona (17 tablas; las otras 4 de `public` son join tables sin fechas); el resto de fechas (`deliveredAt`, `whatsappSentAt`, `expiresAt`, `usedAt`, `earnedAt`, `startDate`/`endDate` de banners) ya eran `TIMESTAMP WITH TIME ZONE`; `star_promotions.startDate/endDate` son `date`
+- [x] Código que compara fechas sin depender del tipo: cupones automáticos (`order.createdAt > lastCoupon.createdAt`, ambos timestamptz), rewards (`multiplierForDate(order.createdAt)` vía `lima-time.util`), ordenamientos `createdAt DESC/ASC` — sin raw SQL con `now()`, `::timestamp`, `::date` ni `date_trunc` en `src/`
+- [ ] La migración reescribe cada tabla una vez POR COLUMNA (el `USING ... AT TIME ZONE 'UTC'` impide la optimización sin rewrite de PG ≥ 12) y toma `ACCESS EXCLUSIVE` sobre las 17 tablas hasta el commit (una sola transacción). Con el volumen actual son segundos; no verificado contra el volumen real de Supabase
+- [ ] Ventana de deploy: el deploy corre `migration:run` antes de arrancar la versión nueva; mientras tanto la versión vieja (con `createdAtInstant`) sobre columnas `timestamptz` agrupa por día los `createdAt` de `revenue-trend` (ordersApp/ordersPhone) y `new-customers` corridos +10h respecto del día de Lima (doble conversión: `AT TIME ZONE 'UTC'` → `AT TIME ZONE 'America/Lima'` sobre el wall clock UTC); los filtros de rango siguen correctos con Node en UTC. Un rollback de código en Render sin `migration:revert` deja ese mismo estado de forma permanente
 
 ### Test Cleanup (datos huérfanos de las suites e2e)
 
