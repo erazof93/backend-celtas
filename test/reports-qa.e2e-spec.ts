@@ -80,6 +80,11 @@ describe('Reports QA (e2e)', () => {
     S1: `qa-rq-s1-${suffix}@test.com`,
     S2: `qa-rq-s2-${suffix}@test.com`,
     T: `qa-rq-t-${suffix}@test.com`,
+    admin3: `qa-rq-admin3-${suffix}@test.com`,
+    U: `qa-rq-u-${suffix}@test.com`,
+    V1: `qa-rq-v1-${suffix}@test.com`,
+    V2: `qa-rq-v2-${suffix}@test.com`,
+    V3: `qa-rq-v3-${suffix}@test.com`,
   };
   const password = 'password123';
   const lima = (date: string, time = '12:00:00.000') =>
@@ -341,6 +346,83 @@ describe('Reports QA (e2e)', () => {
       customerPhone: `${phoneT.slice(0, 3)} ${phoneT.slice(3, 6)} ${phoneT.slice(6)}`,
     });
     await deliver((await appOrder(tokenT, addrT)).id, lima('2023-09-04'));
+
+    // Octubre: phoneU compartido por un ADMIN (más antiguo, celular en formato libre
+    // "+51 9xx xxx xxx") que además PIDE POR APP, y el cliente U, que no pide por app.
+    // Anónimo 02/10 (guardado sin normalizar), app del admin 05/10. Si el anónimo se
+    // atribuyera al admin, el reporte mostraría una conversión que no existe.
+    const phoneU = digitsPlus(19);
+    const spaced = (d: string) =>
+      `${d.slice(0, 3)} ${d.slice(3, 6)} ${d.slice(6)}`;
+    const admin3 = await usersRepo.save(
+      usersRepo.create({
+        email: emails.admin3,
+        password: await bcrypt.hash(password, 10),
+        fullName: 'Admin3 RQ',
+        provider: UserProvider.LOCAL,
+        role: UserRole.ADMIN,
+        phone: `+51 ${spaced(phoneU)}`,
+      } as Partial<User>),
+    );
+    await usersRepo.update(admin3.id, { createdAt: lima('2019-01-01') });
+    const tokenAdmin3 = (
+      (
+        await http()
+          .post('/auth/login')
+          .send({ email: emails.admin3, password })
+          .expect(200)
+      ).body as { data: { accessToken: string } }
+    ).data.accessToken;
+    const addrAdmin3 = (await createAddress(tokenAdmin3)).id;
+    await register(emails.U);
+    const userU = await usersRepo.findOneByOrFail({ email: emails.U });
+    await usersRepo.update(userU.id, {
+      phone: `51${phoneU}`,
+      createdAt: lima('2021-06-01'),
+    });
+    await anonWith(phoneU, lima('2023-10-02'));
+    await ordersRepo.update(anonOrderIds[anonOrderIds.length - 1], {
+      customerPhone: phoneU, // 9 dígitos sin código de país
+    });
+    await deliver(
+      (await appOrder(tokenAdmin3, addrAdmin3)).id,
+      lima('2023-10-05'),
+    );
+
+    // Noviembre: phoneV compartido por TRES clientes, cada uno con un formato distinto
+    // de celular. Se registran en orden V1, V2, V3 pero la cuenta más antigua por
+    // createdAt es V2, no la primera registrada. (El desempate por id solo aplica con
+    // createdAt iguales; aquí son distintos, así que no se ejercita.)
+    // Anónimo 02/11 (guardado "9xx xxx xxx"); app V1 04/11, V3 05/11, V2 08/11.
+    const phoneV = digitsPlus(23);
+    const tokenV1 = await register(emails.V1);
+    const tokenV2 = await register(emails.V2);
+    const tokenV3 = await register(emails.V3);
+    const addrV1 = (await createAddress(tokenV1)).id;
+    const addrV2 = (await createAddress(tokenV2)).id;
+    const addrV3 = (await createAddress(tokenV3)).id;
+    const userV1 = await usersRepo.findOneByOrFail({ email: emails.V1 });
+    const userV2 = await usersRepo.findOneByOrFail({ email: emails.V2 });
+    const userV3 = await usersRepo.findOneByOrFail({ email: emails.V3 });
+    await usersRepo.update(userV1.id, {
+      phone: `+51 ${spaced(phoneV)}`,
+      createdAt: lima('2022-01-01'),
+    });
+    await usersRepo.update(userV2.id, {
+      phone: `${phoneV.slice(0, 3)}-${phoneV.slice(3, 6)}-${phoneV.slice(6)}`,
+      createdAt: lima('2020-01-01'),
+    });
+    await usersRepo.update(userV3.id, {
+      phone: `51${phoneV}`,
+      createdAt: lima('2021-01-01'),
+    });
+    await anonWith(phoneV, lima('2023-11-02'));
+    await ordersRepo.update(anonOrderIds[anonOrderIds.length - 1], {
+      customerPhone: spaced(phoneV),
+    });
+    await deliver((await appOrder(tokenV1, addrV1)).id, lima('2023-11-04'));
+    await deliver((await appOrder(tokenV3, addrV3)).id, lima('2023-11-05'));
+    await deliver((await appOrder(tokenV2, addrV2)).id, lima('2023-11-08'));
   });
 
   afterAll(async () => {
@@ -374,6 +456,39 @@ describe('Reports QA (e2e)', () => {
       // S1 (más antiguo), no S2 que pidió por app el 11/08
       { phoneOrderDate: '2023-08-10', appOrderDate: '2023-08-12', daysDiff: 2 },
     ]);
+  });
+
+  it('celular compartido admin/cliente: el anónimo va al cliente aunque el admin sea más antiguo y pida por app (U)', async () => {
+    const c = await get<ReportConversion>(
+      'conversion?startDate=2023-10-01&endDate=2023-10-31',
+    );
+    expect(c.phoneOrders).toBe(1);
+    expect(c.phoneCustomers).toBe(1); // U
+    // U nunca pidió por app; el pedido por app del 05/10 es del admin.
+    expect(c.convertedToApp).toBe(0);
+    expect(c.timeline).toEqual([]);
+    const s = await get<ReportSummary>(
+      'summary?startDate=2023-10-01&endDate=2023-10-31&groupBy=month',
+    );
+    expect(s.summary.totalOrders).toBe(2);
+    expect(s.summary.totalCustomers).toBe(2); // U (teléfono) + admin (app)
+  });
+
+  it('celular compartido por 3 clientes con formatos distintos: gana el createdAt más antiguo (V2), no el primero registrado', async () => {
+    const c = await get<ReportConversion>(
+      'conversion?startDate=2023-11-01&endDate=2023-11-02',
+    );
+    expect(c.phoneOrders).toBe(1);
+    expect(c.phoneCustomers).toBe(1);
+    // Solo la app de V2 (08/11); V1 sería 04/11 y V3 05/11.
+    expect(c.timeline).toEqual([
+      { phoneOrderDate: '2023-11-02', appOrderDate: '2023-11-08', daysDiff: 6 },
+    ]);
+    const s = await get<ReportSummary>(
+      'summary?startDate=2023-11-01&endDate=2023-11-30&groupBy=month',
+    );
+    expect(s.summary.totalOrders).toBe(4);
+    expect(s.summary.totalCustomers).toBe(3); // el anónimo se fusiona con V2
   });
 
   it('anónimo viejo con customerPhone sin normalizar se resuelve al cliente (T)', async () => {

@@ -847,7 +847,9 @@ celtas-backend/
 - [x] Helpers de fechas de Lima centralizados en `src/common/utils/lima-time.util.ts` (el dashboard dejó de tener copias privadas)
 - [x] **Bug encontrado por `@tester` y corregido**: el cruce por celular no normalizaba `users.phone` (teléfonos viejos en formato libre) → cliente contado doble y fuera de la conversión
 - [x] Auditado por `@tester`: **LISTO** (re-auditoría) — 701 unit, 632 e2e en TZ=UTC y America/Lima, mutaciones del resolver cubiertas
-- [ ] No bloqueante: respuestas 200 sin schema tipado en Swagger (los tipos de `celtas-admin` no se generarán para estos endpoints); prefiltro por celular sin índice (full scan de `users`, ok con el volumen actual)
+- [ ] No bloqueante: respuestas 200 sin schema tipado en Swagger → movido a "Future: Swagger tipos para reportes"
+- [x] Prefiltro por celular con índice (auditado por `@tester`: LISTO): migración `AddPhoneIndexToUsers` (escrita a mano) crea `idx_users_phone_tail8`, índice de **expresión** `right(regexp_replace(phone, '[^0-9]', '', 'g'), 8)` — idéntica al prefiltro de `customerResolver`; un B-tree sobre `phone` a secas no se usaría. Verificado: `EXPLAIN` hace `Index Scan using idx_users_phone_tail8`, up/down probados, `migration:generate` sin diffs (no intenta borrarlo)
+- [x] Tests e2e de celular compartido en `reports-qa` (auditado por `@tester`: LISTO): admin más antiguo que además pide por app → el anónimo va al cliente; 3 clientes con formatos distintos → gana el `createdAt` más antiguo (no el primero registrado). Mutaciones (quitar filtro de rol / invertir desempate) los hacen fallar
 
 ### 8.1 Settings (número de WhatsApp editable desde el panel) — ✅ COMPLETO
 - [x] Entidad `Setting` (key único, value, description), sembrada al arrancar si no existe
@@ -960,6 +962,14 @@ celtas-backend/
   evaluado como aceptable para la escala del proyecto. Detalle en `docs/testing-checklist.md`,
   sección "Rewards — `GET /rewards/progress` se autocorrige llamando a `recalculateForUser` en cada
   lectura".
+
+## Future
+
+### Swagger tipos para reportes
+- `GET /admin/reports/*` devuelven 200 pero Swagger los describe solo con texto (sin schema)
+- Agregar `@ApiResponse({ status: 200, type: ... })` con clases de respuesta (o `schema: {...}`) por endpoint
+- Regenerar tipos en `celtas-admin`: `npm run generate:types`
+- Prioridad: baja (funcional, solo documentación)
 
 ---
 

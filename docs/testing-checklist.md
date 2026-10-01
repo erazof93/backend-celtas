@@ -3093,8 +3093,24 @@ para CADA cliente de la BD. Medido con un conteo de filas por tabla antes/despu�
       `admin-dashboard.e2e-spec.ts` verde.
 - [ ] Celular compartido: el anónimo se atribuye a la cuenta más antigua, aunque el pedido haya
       sido de la otra (no hay forma de saberlo sin vincular). Decisión de producto, determinista.
-- [ ] El prefiltro `right(regexp_replace(phone), 8)` no usa índice (seq scan de `users` por
-      llamada; comparison hace 2). OK con el volumen actual, no medido con volumen real.
+- [x] **Índice del prefiltro** (`AddPhoneIndexToUsers1790900000000`, escrita a mano): índice de
+      expresión `idx_users_phone_tail8` idéntico al prefiltro. QA: `EXPLAIN` del SQL real generado
+      por el QueryBuilder (`$1/$2`, `enable_seqscan=off`) → `Index Scan using idx_users_phone_tail8`
+      (con 8 usuarios y seqscan habilitado el planner elige Seq Scan, esperado); `migration:revert`
+      → índice ausente, `migration:run` → presente; `migration:generate --dr` → "No changes".
+- [x] **Tests de celular compartido (re-auditoría 8.4)**: octubre (admin más antiguo con formato
+      libre que pide por app, U sin app → convertedToApp 0, totalCustomers 2) y noviembre (V1/V2/V3
+      con formatos distintos, V2 más antiguo → timeline 02/11→08/11). Mutaciones QA: sin filtro de
+      rol → falla el test U (y el de agosto); `ORDER BY createdAt DESC` → falla el test V (y el de
+      agosto). Original restaurado (`git diff` vacío). Verde en 3 corridas, TZ=UTC y America/Lima.
+      E2E: QA 12/12, reports 35/35, suite completa 634/634 (TZ=UTC), unit 701/701, cleanup OK.
+- [x] **Migraciones viejas reformateadas por lint** (`AllowAnonymousManualOrders`,
+      `AddWhatsappSentAtToOrder`): los literales SQL son idénticos a HEAD; el cast
+      `as { count: number }[]` se borra al compilar. Sin cambio semántico (TypeORM solo usa nombre).
+- [ ] Deploy del índice: `CREATE INDEX` no concurrente dentro de la transacción de TypeORM toma
+      lock SHARE sobre `users` (bloquea INSERT/UPDATE, no SELECT) mientras se construye; con el
+      volumen actual son milisegundos. Si `users` crece mucho, considerar `CONCURRENTLY` con
+      `transaction = false` en la migración.
 - [ ] Celulares viejos que `normalizePhone` rechaza (fijos, extranjeros sin "+") no se resuelven:
       el anónimo queda como `tel:<crudo>`.
 - [ ] Productos borrados (`menuItemId` null) se agrupan en una sola fila con `MAX(name)` (igual que
