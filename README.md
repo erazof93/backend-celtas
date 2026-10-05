@@ -1,103 +1,45 @@
 # Celtas Backend
 
-API del backend de la dark kitchen **Celtas** (fast food, solo delivery) en San Juan de
-Miraflores, Lima. NestJS + TypeScript + PostgreSQL + TypeORM.
+API de una dark kitchen de fast food en Lima, solo delivery. NestJS 11,
+TypeScript, PostgreSQL y TypeORM. Clientes: panel React y aplicación Flutter.
 
-## Stack
+## Desarrollo local
 
-- **NestJS 11** + TypeScript
-- **PostgreSQL 17** (local vía docker-compose, producción en Supabase)
-- **TypeORM** (migraciones, `synchronize` SIEMPRE apagado)
-- Autenticación híbrida: email+password y Google OAuth (`password` nullable para usuarios Google)
-- Checkout sin pago en la app: el pedido se guarda como `pendiente` y se redirige a WhatsApp
-- Banners promocionales, cupones automáticos (umbral de gasto vía cron), notificaciones FCM
+Requisitos: Node compatible con las dependencias instaladas (el README anterior
+indicaba 20+; no hay engines/packageManager fijados), pnpm y Docker.
 
-## Requisitos
+Desde PowerShell, para una instalación nueva:
 
-- Node.js 20+
-- pnpm
-- Docker (para el Postgres local)
-
-## Setup
-
-```bash
-# 1. Copia el .env de ejemplo y ajusta los valores
-cp .env.example .env
-
-# 2. Instala dependencias
+```powershell
+Copy-Item .env.example .env
+# Ajustar valores locales y credenciales de integraciones antes de arrancar.
 pnpm install
-
-# 3. Levanta el Postgres local (lee DB_* del .env)
 docker compose up -d postgres
+pnpm run migration:run
+pnpm run start:dev
 ```
 
-## Flujo de migraciones (OBLIGATORIO)
+No sobrescribir un .env existente. Identificar una BD local antes de ejecutar
+migraciones o tests. El arranque valida variables con Joi; no subir secretos al repositorio.
 
-> **`synchronize` está apagado siempre, incluso en desarrollo.** El schema se gestiona solo
-> por migraciones. Reactivar `synchronize` rompe la detección de diffs de `migration:generate`.
+Swagger con la aplicación levantada: [UI](http://localhost:3000/docs) y
+[spec JSON](http://localhost:3000/docs-json). start:prod ejecuta node dist/main y
+requiere un build previo; no aplica migraciones por sí mismo.
 
-Cada vez que agregues o modifiques una entidad (columna, tabla, índice, FK, enum):
+## Mapa del proyecto y documentación
 
-1. Modifica la entidad en código.
-2. Genera la migración:
+- `src/modules/`: dominios, controllers, services, DTOs y entidades.
+- `src/common/`: decoradores, guards, filtros, interceptores, validadores y utilidades.
+- `src/shared/`: integraciones compartidas; `src/config/`: configuración validada.
+- `src/data-source.ts` y `src/migrations/`: CLI y cambios de esquema.
+- `src/**/*.spec.ts` y `test/`: unitarios y e2e.
+- [AGENTS.md](AGENTS.md): instrucciones principales para Codex.
+- [ROADMAP.md](ROADMAP.md): estado y prioridades actuales.
+- [Convenciones](docs/backend-conventions.md), [negocio](docs/business-rules.md),
+  [migraciones](docs/database-migrations.md) y [testing](docs/testing-checklist.md): consultar por tarea.
+- `docs/planning/`: propuestas; `docs/history/`: antecedentes sin autoridad operativa.
 
-   ```bash
-   pnpm run migration:generate src/migrations/NombreDescriptivo
-   ```
-
-3. **Revisa el archivo generado a mano** — nunca confíes ciegamente en el diff automático.
-4. Aplica la migración localmente y prueba el cambio real:
-
-   ```bash
-   pnpm run migration:run
-   pnpm run start:dev
-   ```
-
-5. Commitea la entidad **y** el archivo de migración juntos, en el mismo commit.
-6. Al hacer `git push`, el deploy corre `migration:run` antes de arrancar la nueva versión.
-
-Si `migration:generate` dice "No changes in database schema were found" después de un cambio
-real de entidad, es señal de que `synchronize` se reactivó o de que la BD local no está al día
-con las migraciones — resolvé esa inconsistencia antes de seguir.
-
-### Nota sobre la BD local
-
-La BD local de Docker fue creada originalmente con `synchronize`, así que tiene el schema pero
-**no** tiene la tabla `migrations`. Para dejarla en el mismo "estado conocido" que producción:
-
-1. Crear la tabla `migrations` (schema de TypeORM: `id` serial PK, `timestamp` bigint, `name` varchar).
-2. Insertar la fila `('timestamp_de_InitialSchema', 'InitialSchema...')` para marcarla como ya ejecutada
-   sin volver a correr su `CREATE TABLE`.
-
-Después de eso, `pnpm run migration:generate` contra la BD local debe decir
-"No changes in database schema were found" si no hay cambios de entidades pendientes.
-
-## Scripts
-
-```bash
-pnpm run start:dev          # desarrollo con watch
-pnpm run start:prod         # build de producción (node dist/main)
-pnpm run build              # compila a dist/
-pnpm run migration:generate # genera una migración desde el diff de entidades vs BD local
-pnpm run migration:run      # aplica las migraciones pendientes
-pnpm run migration:revert   # deshace la última migración aplicada
-pnpm run test               # tests unitarios
-pnpm run test:e2e           # tests e2e (con la BD local; si tu .env apunta a otro host,
-                            # antepón los DB_* correctos al comando)
-pnpm run lint               # eslint + prettier
-```
-
-## Swagger
-
-Con la app corriendo:
-
-- UI: `http://localhost:3000/docs`
-- Spec JSON (consumido por Flutter): `http://localhost:3000/docs-json`
-
-## Estructura
-
-- `src/modules/<modulo>/` — cada módulo: `entities/`, `dto/`, `<modulo>.controller.ts`, `<modulo>.service.ts`, `<modulo>.module.ts`
-- `src/migrations/` — migraciones de TypeORM
-- `src/config/` — `configuration.ts` (lectura de env) y `validation.schema.ts` (validación Joi)
-- `src/data-source.ts` — DataSource para el CLI de TypeORM (carga `.env` con dotenv)
-- `test/` — tests e2e
+Los scripts y sus argumentos están en package.json. `pnpm run lint` lleva --fix;
+el comando sin correcciones y la selección de pruebas están en el checklist.
+Para cambiar el esquema consultar el procedimiento de migraciones; synchronize
+permanece desactivado en todos los entornos.
