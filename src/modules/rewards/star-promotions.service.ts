@@ -21,15 +21,12 @@ export class StarPromotionsService {
   ) {}
 
   async create(dto: CreateStarPromotionDto): Promise<StarPromotion> {
-    this.assertValidDates(dto.startDate, dto.endDate);
-    if (dto.active ?? true) {
-      await this.assertNoOverlap(dto.startDate, dto.endDate);
-    }
-    const promotion = this.starPromotionsRepository.create({
-      ...dto,
-      active: dto.active ?? true,
+    return this.write(async (repo) => {
+      this.assertValidDates(dto.startDate, dto.endDate);
+      if (dto.active ?? true)
+        await this.assertNoOverlap(repo, dto.startDate, dto.endDate);
+      return repo.save(repo.create({ ...dto, active: dto.active ?? true }));
     });
-    return this.starPromotionsRepository.save(promotion);
   }
 
   async findAll(): Promise<StarPromotion[]> {
@@ -52,19 +49,34 @@ export class StarPromotionsService {
     id: string,
     dto: UpdateStarPromotionDto,
   ): Promise<StarPromotion> {
-    const promotion = await this.findOne(id);
-    // merge (no Object.assign): mismo criterio que el resto del proyecto para
-    // actualizaciones parciales — ver skill nestjs-celtas.
-    this.starPromotionsRepository.merge(promotion, dto);
-    this.assertValidDates(promotion.startDate, promotion.endDate);
-    if (promotion.active) {
-      await this.assertNoOverlap(
-        promotion.startDate,
-        promotion.endDate,
-        promotion.id,
-      );
-    }
-    return this.starPromotionsRepository.save(promotion);
+    return this.write(async (repo) => {
+      const promotion = await repo.findOne({ where: { id } });
+      if (!promotion)
+        throw new NotFoundException('Promoci\u00f3n no encontrada');
+      repo.merge(promotion, dto);
+      this.assertValidDates(promotion.startDate, promotion.endDate);
+      if (promotion.active)
+        await this.assertNoOverlap(
+          repo,
+          promotion.startDate,
+          promotion.endDate,
+          promotion.id,
+        );
+      return repo.save(promotion);
+    });
+  }
+
+  /** Catalog lock is distinct from delivery and acquired before any read/write. */
+  private write<T>(
+    work: (repo: Repository<StarPromotion>) => Promise<T>,
+  ): Promise<T> {
+    return this.starPromotionsRepository.manager.transaction(
+      'READ COMMITTED',
+      async (manager) => {
+        await manager.query('SELECT pg_advisory_xact_lock(731942, 2)');
+        return work(manager.getRepository(StarPromotion));
+      },
+    );
   }
 
   // ── Validaciones de negocio ─────────────────────────────────────────────────
@@ -86,11 +98,12 @@ export class StarPromotionsService {
    * rango del proyecto, ej. banners).
    */
   private async assertNoOverlap(
+    repo: Repository<StarPromotion>,
     startDate: string,
     endDate: string,
     excludeId?: string,
   ): Promise<void> {
-    const qb = this.starPromotionsRepository
+    const qb = repo
       .createQueryBuilder('promo')
       .where('promo.active = true')
       .andWhere('promo.startDate <= :endDate', { endDate })

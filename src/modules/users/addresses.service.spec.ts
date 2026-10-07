@@ -4,10 +4,12 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { AddressesService } from './addresses.service';
 import { CreateAddressDto } from './dto/create-address.dto';
 import { Address } from './entities/address.entity';
+import { User } from './entities/user.entity';
 
 describe('AddressesService', () => {
   let service: AddressesService;
   let repo: {
+    manager: { transaction: jest.Mock };
     find: jest.Mock;
     findOne: jest.Mock;
     create: jest.Mock;
@@ -17,6 +19,7 @@ describe('AddressesService', () => {
     update: jest.Mock;
   };
 
+  let lockUser: jest.Mock;
   const userA = 'user-a';
   const userB = 'user-b';
   const ownAddress = {
@@ -40,6 +43,7 @@ describe('AddressesService', () => {
 
   beforeEach(async () => {
     repo = {
+      manager: { transaction: jest.fn() },
       find: jest.fn(),
       findOne: jest.fn(),
       create: jest.fn(),
@@ -54,11 +58,21 @@ describe('AddressesService', () => {
       (target: Address, dto: Record<string, unknown>) => {
         for (const key of Object.keys(dto)) {
           if (dto[key] !== undefined) {
-            (target as Record<string, unknown>)[key] = dto[key];
+            Object.assign(target, { [key]: dto[key] });
           }
         }
         return target;
       },
+    );
+    lockUser = jest.fn().mockResolvedValue({ id: userA });
+    const manager = {
+      query: jest.fn().mockResolvedValue([]),
+      findOne: lockUser,
+      getRepository: jest.fn(() => repo),
+    };
+    repo.manager.transaction.mockImplementation(
+      (_isolation: string, work: (m: typeof manager) => Promise<unknown>) =>
+        work(manager),
     );
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -70,6 +84,40 @@ describe('AddressesService', () => {
     service = module.get(AddressesService);
   });
 
+  it('locks the owner before any address write in a READ COMMITTED transaction', async () => {
+    repo.create.mockImplementation((value: unknown) => value);
+    repo.save.mockResolvedValue(ownAddress);
+    await service.create(userA, {
+      alias: 'QA',
+      fullAddress: 'QA',
+      district: 'QA',
+      isDefault: true,
+    });
+    expect(repo.manager.transaction).toHaveBeenCalledWith(
+      'READ COMMITTED',
+      expect.any(Function),
+    );
+    expect(lockUser).toHaveBeenCalledWith(User, {
+      where: { id: userA },
+      lock: { mode: 'pessimistic_write' },
+    });
+    expect(lockUser.mock.invocationCallOrder[0]).toBeLessThan(
+      repo.update.mock.invocationCallOrder[0],
+    );
+  });
+  it('rejects a missing owner without changing addresses', async () => {
+    lockUser.mockResolvedValue(null);
+    await expect(
+      service.create(userA, {
+        alias: 'QA',
+        fullAddress: 'QA',
+        district: 'QA',
+        isDefault: true,
+      }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(repo.update).not.toHaveBeenCalled();
+    expect(repo.save).not.toHaveBeenCalled();
+  });
   describe('findByUser', () => {
     it('busca por userId ordenando principal primero', async () => {
       repo.find.mockResolvedValue([ownAddress]);

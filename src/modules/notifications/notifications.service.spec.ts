@@ -82,6 +82,76 @@ describe('NotificationsService', () => {
     service = module.get(NotificationsService);
   });
 
+  describe('best effort boundary', () => {
+    it('contains failures while obtaining the token', async () => {
+      const user = makeUser();
+      Object.defineProperty(user, 'fcmToken', {
+        get: () => {
+          throw new Error('controlled token failure');
+        },
+      });
+      usersRepo.findOne.mockResolvedValue(user);
+      await expect(
+        service.sendPushNotification('user-1', { title: 'QA', body: 'QA' }),
+      ).resolves.toBe(false);
+    });
+    it('contains initial token lookup failures', async () => {
+      usersRepo.findOne.mockRejectedValue(new Error('lookup failed'));
+      await expect(
+        service.sendPushNotification('user-1', { title: 'QA', body: 'QA' }),
+      ).resolves.toBe(false);
+    });
+    it('contains initial broadcast recipient lookup failures', async () => {
+      usersRepo.find.mockRejectedValue(new Error('lookup failed'));
+      await expect(
+        service.broadcastPushNotification({ title: 'QA', body: 'QA' }),
+      ).resolves.toEqual({ sent: 0, total: 0 });
+    });
+    it('does not log tokens embedded in provider errors', async () => {
+      const token = 'sensitive-fcm-token-do-not-log';
+      usersRepo.findOne.mockResolvedValue(makeUser({ fcmToken: token }));
+      sendMock.mockRejectedValue(new Error(`provider rejected ${token}`));
+      const logger = jest
+        .spyOn(
+          (
+            service as unknown as {
+              logger: { error: (...args: unknown[]) => void };
+            }
+          ).logger,
+          'error',
+        )
+        .mockImplementation(() => undefined);
+      await expect(
+        service.sendPushNotification('user-1', { title: 'QA', body: 'QA' }),
+      ).resolves.toBe(false);
+      expect(logger).toHaveBeenCalled();
+      expect(JSON.stringify(logger.mock.calls)).not.toContain(token);
+    });
+    it('does not log broadcast tokens or provider error text', async () => {
+      const token = 'sensitive-multicast-token-do-not-log';
+      usersRepo.find.mockResolvedValue([makeUser({ fcmToken: token })]);
+      multicastMock.mockResolvedValue({
+        successCount: 0,
+        responses: [{ success: false, error: new Error(token) }],
+      });
+      const logger = jest
+        .spyOn(
+          (
+            service as unknown as {
+              logger: { error: (...args: unknown[]) => void };
+            }
+          ).logger,
+          'error',
+        )
+        .mockImplementation(() => undefined);
+      await expect(
+        service.broadcastPushNotification({ title: 'QA', body: 'QA' }),
+      ).resolves.toEqual({ sent: 0, total: 1 });
+      expect(logger).toHaveBeenCalled();
+      expect(JSON.stringify(logger.mock.calls)).not.toContain(token);
+    });
+  });
+
   describe('sendPushNotification', () => {
     it('no hace nada (false) si el usuario no tiene fcmToken', async () => {
       usersRepo.findOne.mockResolvedValue(makeUser());
@@ -166,9 +236,12 @@ describe('NotificationsService', () => {
       });
 
       expect(result).toBe(false);
-      expect(usersRepo.update).toHaveBeenCalledWith('user-1', {
-        fcmToken: null,
-      });
+      expect(usersRepo.update).toHaveBeenCalledWith(
+        { id: 'user-1', fcmToken: 'token-fantasma' },
+        {
+          fcmToken: null,
+        },
+      );
     });
 
     it('si limpiar el fcmToken en la BD falla (ej. timeout), NO propaga la excepción (contrato "nunca lanza")', async () => {
@@ -210,6 +283,20 @@ describe('NotificationsService', () => {
     });
   });
 
+  it('treats zero rows affected during conditional cleanup as normal', async () => {
+    usersRepo.findOne.mockResolvedValue(makeUser({ fcmToken: 'old-token' }));
+    sendMock.mockRejectedValue({
+      code: 'messaging/registration-token-not-registered',
+    });
+    usersRepo.update.mockResolvedValue({ affected: 0 });
+    await expect(
+      service.sendPushNotification('user-1', { title: 'QA', body: 'QA' }),
+    ).resolves.toBe(false);
+    expect(usersRepo.update).toHaveBeenCalledWith(
+      { id: 'user-1', fcmToken: 'old-token' },
+      { fcmToken: null },
+    );
+  });
   describe('broadcastPushNotification', () => {
     it('cuenta sent/total correctamente y un token inválido no frena a los demás', async () => {
       usersRepo.find.mockResolvedValue([
@@ -371,9 +458,12 @@ describe('NotificationsService', () => {
 
       expect(result).toEqual({ sent: 2, total: 3 });
       expect(usersRepo.update).toHaveBeenCalledTimes(1);
-      expect(usersRepo.update).toHaveBeenCalledWith(['u2'], {
-        fcmToken: null,
-      });
+      expect(usersRepo.update).toHaveBeenCalledWith(
+        [{ id: 'u2', fcmToken: 'token-fantasma' }],
+        {
+          fcmToken: null,
+        },
+      );
     });
 
     it('un fallo por error transitorio (no UNREGISTERED) en el broadcast NO limpia el fcmToken', async () => {

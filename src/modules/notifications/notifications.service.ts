@@ -84,40 +84,50 @@ export class NotificationsService {
     userId: string,
     payload: PushNotificationPayload,
   ): Promise<boolean> {
-    const user = await this.usersRepository.findOne({ where: { id: userId } });
-    if (!user?.fcmToken) {
-      // Sin token: el usuario no tiene notificaciones habilitadas. No es un error.
-      return false;
-    }
-
+    let failedToken: string | null = null;
     try {
+      const user = await this.usersRepository.findOne({
+        where: { id: userId },
+      });
+      failedToken = user?.fcmToken ?? null;
+      if (!failedToken) {
+        // Sin token: el usuario no tiene notificaciones habilitadas. No es un error.
+        return false;
+      }
+
       await getMessaging(this.getApp()).send({
-        token: user.fcmToken,
+        token: failedToken,
         notification: { title: payload.title, body: payload.body },
         data: payload.data,
       });
       return true;
     } catch (err) {
       // Token inválido/expirado, error de red, etc. Nunca romper el flujo del caller.
-      this.logger.error(
+      this.logDeliveryError(
         `No se pudo enviar la notificación push al usuario ${userId}`,
-        err as Error,
+        err,
       );
       // `UNREGISTERED` es definitivo (ver constante arriba): se limpia el token para no
       // reintentar contra algo que Firebase ya descartó. Cualquier otro error (red,
       // backend caído, etc.) se deja como está — puede ser transitorio.
-      if ((err as { code?: string })?.code === FCM_TOKEN_NOT_REGISTERED_CODE) {
+      if (
+        failedToken &&
+        (err as { code?: string })?.code === FCM_TOKEN_NOT_REGISTERED_CODE
+      ) {
         // Try/catch propio: esta limpieza es "best effort". Si la escritura a la BD
         // falla (timeout, pool agotado), NO puede propagarse — rompería el contrato
         // "nunca lanza" de este método para callers que no esperan un try/catch propio
         // (ej. SettingsService.notifyBusinessHoursChange). Un token que no se pudo
         // limpiar ahora se vuelve a intentar limpiar en el próximo envío fallido.
         try {
-          await this.usersRepository.update(userId, { fcmToken: null });
+          await this.usersRepository.update(
+            { id: userId, fcmToken: failedToken },
+            { fcmToken: null },
+          );
         } catch (cleanupErr) {
-          this.logger.error(
+          this.logDeliveryError(
             `No se pudo limpiar el fcmToken del usuario ${userId} tras UNREGISTERED`,
-            cleanupErr as Error,
+            cleanupErr,
           );
         }
       }
@@ -136,76 +146,99 @@ export class NotificationsService {
   async broadcastPushNotification(
     payload: PushNotificationPayload,
   ): Promise<{ sent: number; total: number }> {
-    const users = await this.usersRepository.find({
-      where: { fcmToken: Not(IsNull()) },
-      select: { id: true, fcmToken: true },
-    });
-    // Se mantiene el par (userId, token) unido desde el arranque: así, si un token falla
-    // con UNREGISTERED más abajo, sabemos exactamente a qué usuario limpiarle el campo
-    // sin depender de que los índices de dos arrays separados sigan alineados.
-    const entries = users
-      .filter((user): user is User & { fcmToken: string } => !!user.fcmToken)
-      .map((user) => ({ userId: user.id, token: user.fcmToken }));
-
-    if (entries.length === 0) {
-      return { sent: 0, total: 0 };
-    }
-
-    const data: Record<string, string> = { ...payload.data };
-    if (payload.link) {
-      data.link = payload.link;
-    }
-
     let sent = 0;
-    const staleUserIds: string[] = [];
-    for (let i = 0; i < entries.length; i += MULTICAST_BATCH_SIZE) {
-      const batch = entries.slice(i, i + MULTICAST_BATCH_SIZE);
-      try {
-        const response = await getMessaging(this.getApp()).sendEachForMulticast(
-          {
+    let total = 0;
+    try {
+      const users = await this.usersRepository.find({
+        where: { fcmToken: Not(IsNull()) },
+        select: { id: true, fcmToken: true },
+      });
+      // Se mantiene el par (userId, token) unido desde el arranque: así, si un token falla
+      // con UNREGISTERED más abajo, sabemos exactamente a qué usuario limpiarle el campo
+      // sin depender de que los índices de dos arrays separados sigan alineados.
+      const entries = users
+        .filter((user): user is User & { fcmToken: string } => !!user.fcmToken)
+        .map((user) => ({ userId: user.id, token: user.fcmToken }));
+      total = entries.length;
+
+      if (entries.length === 0) {
+        return { sent: 0, total: 0 };
+      }
+
+      const data: Record<string, string> = { ...payload.data };
+      if (payload.link) {
+        data.link = payload.link;
+      }
+
+      const staleTokens: { id: string; fcmToken: string }[] = [];
+      for (let i = 0; i < entries.length; i += MULTICAST_BATCH_SIZE) {
+        const batch = entries.slice(i, i + MULTICAST_BATCH_SIZE);
+        try {
+          const response = await getMessaging(
+            this.getApp(),
+          ).sendEachForMulticast({
             tokens: batch.map((entry) => entry.token),
             notification: { title: payload.title, body: payload.body },
             data: Object.keys(data).length > 0 ? data : undefined,
-          },
-        );
-        sent += response.successCount;
-        response.responses.forEach((result, index) => {
-          if (!result.success) {
-            this.logger.error(
-              `No se pudo enviar la notificación push al token ${batch[index].token}`,
-              result.error as Error,
-            );
-            // Mismo criterio que en `sendPushNotification`: UNREGISTERED es definitivo,
-            // se limpia; cualquier otro error se deja (puede ser transitorio).
-            if (result.error?.code === FCM_TOKEN_NOT_REGISTERED_CODE) {
-              staleUserIds.push(batch[index].userId);
+          });
+          sent += response.successCount;
+          response.responses.forEach((result, index) => {
+            if (!result.success) {
+              this.logDeliveryError(
+                `No se pudo enviar la notificación push al usuario ${batch[index].userId}`,
+                result.error,
+              );
+              // Mismo criterio que en `sendPushNotification`: UNREGISTERED es definitivo,
+              // se limpia; cualquier otro error se deja (puede ser transitorio).
+              if (result.error?.code === FCM_TOKEN_NOT_REGISTERED_CODE) {
+                staleTokens.push({
+                  id: batch[index].userId,
+                  fcmToken: batch[index].token,
+                });
+              }
             }
-          }
-        });
-      } catch (err) {
-        // Fallo del lote completo (ej. error de red): no frena los siguientes lotes.
-        this.logger.error(
-          'Fallo el envío masivo de notificaciones push (lote completo)',
-          err as Error,
-        );
+          });
+        } catch (err) {
+          // Fallo del lote completo (ej. error de red): no frena los siguientes lotes.
+          this.logDeliveryError(
+            'Fallo el envío masivo de notificaciones push (lote completo)',
+            err,
+          );
+        }
       }
-    }
 
-    if (staleUserIds.length > 0) {
-      // Mismo criterio que en `sendPushNotification`: best effort, nunca puede propagar
-      // (ej. `SettingsService.notifyBusinessHoursChange` llama a este método sin try/catch
-      // propio, confiando en que nunca lanza).
-      try {
-        await this.usersRepository.update(staleUserIds, { fcmToken: null });
-      } catch (cleanupErr) {
-        this.logger.error(
-          'No se pudieron limpiar los fcmToken de usuarios con token UNREGISTERED',
-          cleanupErr as Error,
-        );
+      if (staleTokens.length > 0) {
+        // Mismo criterio que en `sendPushNotification`: best effort, nunca puede propagar
+        // (ej. `SettingsService.notifyBusinessHoursChange` llama a este método sin try/catch
+        // propio, confiando en que nunca lanza).
+        try {
+          await this.usersRepository.update(staleTokens, { fcmToken: null });
+        } catch (cleanupErr) {
+          this.logDeliveryError(
+            'No se pudieron limpiar los fcmToken de usuarios con token UNREGISTERED',
+            cleanupErr,
+          );
+        }
       }
-    }
 
-    return { sent, total: entries.length };
+      return { sent, total: entries.length };
+    } catch (err) {
+      this.logDeliveryError(
+        'No se pudo preparar el envío masivo de notificaciones push',
+        err,
+      );
+      return { sent, total };
+    }
+  }
+
+  /** Provider messages/stacks can contain tokens; log only a bounded FCM code. */
+  private logDeliveryError(message: string, error: unknown): void {
+    const code = (error as { code?: unknown } | null)?.code;
+    const detail =
+      typeof code === 'string' && /^messaging\/[a-z-]{1,80}$/.test(code)
+        ? code
+        : 'notification_delivery_failed';
+    this.logger.error(`${message} (${detail})`);
   }
 
   /**

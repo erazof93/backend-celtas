@@ -7,6 +7,7 @@ import { StarPromotionsService } from './star-promotions.service';
 describe('StarPromotionsService', () => {
   let service: StarPromotionsService;
   let repo: {
+    manager: { transaction: jest.Mock };
     find: jest.Mock;
     findOne: jest.Mock;
     create: jest.Mock;
@@ -15,6 +16,7 @@ describe('StarPromotionsService', () => {
     createQueryBuilder: jest.Mock;
   };
 
+  let lockCatalog: jest.Mock;
   const seedPromotion = (overrides: Partial<StarPromotion> = {}) =>
     ({
       id: 'promo-1',
@@ -34,6 +36,7 @@ describe('StarPromotionsService', () => {
 
   beforeEach(async () => {
     repo = {
+      manager: { transaction: jest.fn() },
       find: jest.fn(),
       findOne: jest.fn(),
       create: jest.fn(),
@@ -44,6 +47,15 @@ describe('StarPromotionsService', () => {
       createQueryBuilder: jest.fn(),
     };
 
+    lockCatalog = jest.fn().mockResolvedValue([]);
+    const manager = {
+      query: lockCatalog,
+      getRepository: jest.fn(() => repo),
+    };
+    repo.manager.transaction.mockImplementation(
+      (_isolation: string, work: (m: typeof manager) => Promise<unknown>) =>
+        work(manager),
+    );
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         StarPromotionsService,
@@ -54,6 +66,27 @@ describe('StarPromotionsService', () => {
     service = module.get(StarPromotionsService);
   });
 
+  it('takes the transaction catalog lock before checking overlap', async () => {
+    repo.createQueryBuilder.mockReturnValue(mockQueryBuilder(null));
+    repo.create.mockImplementation((value: unknown) => value);
+    repo.save.mockResolvedValue(seedPromotion());
+    await service.create({
+      label: 'QA',
+      multiplier: 2,
+      startDate: '2026-01-01',
+      endDate: '2026-01-02',
+    });
+    expect(repo.manager.transaction).toHaveBeenCalledWith(
+      'READ COMMITTED',
+      expect.any(Function),
+    );
+    expect(lockCatalog).toHaveBeenCalledWith(
+      'SELECT pg_advisory_xact_lock(731942, 2)',
+    );
+    expect(lockCatalog.mock.invocationCallOrder[0]).toBeLessThan(
+      repo.createQueryBuilder.mock.invocationCallOrder[0],
+    );
+  });
   describe('create', () => {
     it('lanza 400 si startDate es posterior a endDate', async () => {
       repo.createQueryBuilder.mockReturnValue(mockQueryBuilder(null));

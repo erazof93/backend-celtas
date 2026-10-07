@@ -339,6 +339,7 @@ export class RewardsService {
   ): Promise<void> {
     const redemptions = await manager.find(RewardRedemption, {
       where: { usedInOrderId: orderId },
+      order: { id: 'ASC' },
       lock: { mode: 'pessimistic_write' },
     });
     if (redemptions.length === 0) return;
