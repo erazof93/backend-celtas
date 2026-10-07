@@ -1,3 +1,4 @@
+import { toCents, fromCents } from '../../common/utils/money.util';
 import {
   BadRequestException,
   ConflictException,
@@ -17,6 +18,13 @@ import {
   Repository,
 } from 'typeorm';
 import { haversineDistanceMeters } from '../../common/utils/geo.util';
+import { DeliveryMode } from '../delivery/delivery-mode';
+import { DeliveryZonesService } from '../delivery/delivery-zones.service';
+import {
+  DeliveryEstimateDto,
+  DeliverySnapshot,
+} from '../delivery/dto/delivery-response.dto';
+import { validDeliveryCoordinates } from '../delivery/polygon.util';
 import { normalizePhone } from '../../common/utils/phone.util';
 import { CouponsService } from '../coupons/coupons.service';
 import { MenuItem } from '../menu/entities/menu-item.entity';
@@ -117,6 +125,7 @@ export class OrdersService {
     private readonly notificationsService: NotificationsService,
     private readonly settingsService: SettingsService,
     private readonly geoapifyService: GeoapifyService,
+    private readonly deliveryZonesService: DeliveryZonesService,
   ) {}
 
   async create(userId: string, dto: CreateOrderDto): Promise<Order> {
@@ -221,8 +230,17 @@ export class OrdersService {
     } = params;
 
     const addressSnapshot = await this.resolveAddressSnapshot(userId, dto);
-    const { deliveryFee, isFarOrder } =
-      await this.resolveDelivery(addressSnapshot);
+    const delivery = await this.resolveDelivery(addressSnapshot);
+    if (delivery.deliveryMode === DeliveryMode.ZONES && !delivery.isCovered) {
+      throw new BadRequestException(
+        'La dirección no tiene cobertura de delivery o no tiene coordenadas válidas',
+      );
+    }
+    const { deliveryFee, isFarOrder } = delivery;
+    const deliverySnapshot: DeliverySnapshot = {
+      deliveryMode: delivery.deliveryMode,
+      zone: delivery.zone ? { ...delivery.zone } : null,
+    };
     const { items, rewardClaims } = await this.buildItems(dto.items);
     if (!userId && rewardClaims.length > 0) {
       throw new BadRequestException(
@@ -230,7 +248,10 @@ export class OrdersService {
       );
     }
     const subtotal = this.round2(
-      items.reduce((sum, item) => sum + item.subtotal, 0),
+      fromCents(
+        items.reduce((sum, item) => sum + toCents(item.subtotal), 0),
+        'subtotal',
+      ),
     );
     // El id se genera acá para poder construir el whatsappUrl y marcar el cupón usado.
     const orderId = randomUUID();
@@ -253,11 +274,17 @@ export class OrdersService {
           userId,
           subtotal,
         });
-        total = applied.discountedTotal;
+        total = fromCents(toCents(applied.discountedTotal));
         coupon = applied.coupon;
-        discountAmount = this.round2(subtotal - applied.discountedTotal);
+        discountAmount = fromCents(
+          toCents(subtotal) - toCents(total),
+          'descuento',
+        );
       }
-      total = this.round2(total + deliveryFee);
+      total = fromCents(
+        toCents(subtotal) - toCents(discountAmount) + toCents(deliveryFee),
+        'total',
+      );
 
       // Validar y bloquear los premios canjeados ANTES de persistir el pedido
       // (mismo patrón que el cupón): si alguno no es válido, la transacción se
@@ -266,11 +293,31 @@ export class OrdersService {
         redemption: RewardRedemption;
         menuItemId: string;
       }[] = [];
-      for (const claim of rewardClaims) {
+      const validatedRewardIds = new Set<string>();
+      const sortedRewardClaims = rewardClaims
+        .map((claim) => ({
+          ...claim,
+          rewardRedemptionId: claim.rewardRedemptionId.toLowerCase(),
+        }))
+        .sort((a, b) =>
+          a.rewardRedemptionId < b.rewardRedemptionId
+            ? -1
+            : a.rewardRedemptionId > b.rewardRedemptionId
+              ? 1
+              : 0,
+        );
+      for (const claim of sortedRewardClaims) {
         // Ya rechazado arriba si no hay userId; el guard estrecha el tipo.
         if (!userId) break;
+        const rewardRedemptionId = claim.rewardRedemptionId;
+        if (validatedRewardIds.has(rewardRedemptionId)) {
+          throw new BadRequestException(
+            'No puedes usar el mismo premio más de una vez en el mismo pedido',
+          );
+        }
+        validatedRewardIds.add(rewardRedemptionId);
         const redemption = await this.rewardsService.validateForOrder(manager, {
-          rewardRedemptionId: claim.rewardRedemptionId,
+          rewardRedemptionId,
           userId,
           menuItemId: claim.menuItemId,
         });
@@ -287,6 +334,7 @@ export class OrdersService {
         addressSnapshot,
         total,
         deliveryFee,
+        deliverySnapshot,
         items,
       } as Partial<Order>);
       order.whatsappUrl = await this.buildWhatsappUrl(
@@ -454,14 +502,27 @@ export class OrdersService {
           // Pedido manual anónimo (userId null): no hay a quién sumarle totalSpent,
           // pero la entrega se registra igual (deliveredAt → ventas del dashboard).
           if (order.userId) {
+            // PostgreSQL adds to the current numeric value under its row lock.
+            // The increment rolls back together with the order transition.
             const user = await manager.findOne(User, {
               where: { id: order.userId },
+              lock: { mode: 'pessimistic_write' },
             });
-            if (!user) {
+            if (!user)
+              throw new NotFoundException('Usuario del pedido no encontrado');
+            fromCents(
+              toCents(user.totalSpent) + toCents(order.total),
+              'totalSpent',
+            );
+            const incremented = await manager.increment(
+              User,
+              { id: order.userId },
+              'totalSpent',
+              order.total,
+            );
+            if (incremented.affected === 0) {
               throw new NotFoundException('Usuario del pedido no encontrado');
             }
-            user.totalSpent = this.round2(user.totalSpent + order.total);
-            await manager.save(User, user);
           }
           // Marca la entrega real: las ventas del dashboard se miden con esta fecha.
           order.deliveredAt = new Date();
@@ -541,11 +602,15 @@ export class OrdersService {
     });
 
     const subtotal = this.round2(
-      order.items.reduce((sum, item) => sum + item.subtotal, 0),
+      fromCents(
+        order.items.reduce((sum, item) => sum + toCents(item.subtotal), 0),
+      ),
     );
     // Mismo despeje que el panel: total = (subtotal - descuento) + deliveryFee.
     const discountAmount = this.round2(
-      subtotal + order.deliveryFee - order.total,
+      fromCents(
+        toCents(subtotal) + toCents(order.deliveryFee) - toCents(order.total),
+      ),
     );
     const couponCode =
       discountAmount > 0
@@ -683,13 +748,9 @@ export class OrdersService {
           );
         }
 
-        await manager.update(Order, { id: In(orderIds) }, { userId: user.id });
-
-        const delivered = this.round2(
-          orders
-            .filter((order) => order.status === OrderStatus.ENTREGADO)
-            .reduce((sum, order) => sum + order.total, 0),
-        );
+        // Keep ORDER -> USER, as in delivery transitions. Acquire the exclusive
+        // user lock before the FK UPDATE takes KEY SHARE; concurrent disjoint
+        // links must not both hold KEY SHARE and then attempt a lock upgrade.
         const lockedUser = await manager.findOne(User, {
           where: { id: user.id },
           lock: { mode: 'pessimistic_write' },
@@ -697,9 +758,17 @@ export class OrdersService {
         if (!lockedUser) {
           throw new NotFoundException('Usuario no encontrado');
         }
+        await manager.update(Order, { id: In(orderIds) }, { userId: user.id });
+
+        const delivered = fromCents(
+          orders
+            .filter((order) => order.status === OrderStatus.ENTREGADO)
+            .reduce((sum, order) => sum + toCents(order.total), 0),
+        );
         if (delivered > 0) {
-          lockedUser.totalSpent = this.round2(
-            lockedUser.totalSpent + delivered,
+          lockedUser.totalSpent = fromCents(
+            toCents(lockedUser.totalSpent) + toCents(delivered),
+            'totalSpent',
           );
           await manager.save(User, lockedUser);
         }
@@ -771,11 +840,7 @@ export class OrdersService {
   async estimateDeliveryFee(
     userId: string,
     dto: EstimateDeliveryFeeDto,
-  ): Promise<{
-    deliveryFee: number;
-    isFarOrder: boolean;
-    distanceMeters: number | null;
-  }> {
+  ): Promise<DeliveryEstimateDto> {
     const address = await this.addressesRepository.findOne({
       where: { id: dto.addressId, userId },
     });
@@ -795,13 +860,11 @@ export class OrdersService {
   /**
    * Estima el delivery para coordenadas sueltas (`GET /delivery/estimate`, ej. el
    * pin del mapa antes de guardar la dirección). Mismo `computeDelivery` que
-   * `create()`: lo que se cotiza acá es exactamente lo que se cobrará.
+   * `create()`: misma resolución, recalculada al crear (no congela la cotización).
    */
-  async estimateDeliveryByCoords(dto: EstimateDeliveryByCoordsDto): Promise<{
-    deliveryFee: number;
-    isFarOrder: boolean;
-    distanceMeters: number | null;
-  }> {
+  async estimateDeliveryByCoords(
+    dto: EstimateDeliveryByCoordsDto,
+  ): Promise<DeliveryEstimateDto> {
     return this.computeDelivery({
       latitude: dto.latitude,
       longitude: dto.longitude,
@@ -859,41 +922,95 @@ export class OrdersService {
   }
 
   /**
-   * Costo de delivery por distancia (Haversine contra `store_location`) y si
-   * el pedido supera el radio de aviso interno. Si la dirección no trae
-   * coordenadas (dato viejo, o `addressSnapshot` de texto libre sin
-   * `addressId`, ya documentado como fuera de alcance), NUNCA bloquea el
-   * pedido: `deliveryFee = 0` y solo se loguea un warning.
+   * Resolve the snapshot with the configured mode; creation enforces client
+   * coverage for every order after this shared calculation.
    */
   private async resolveDelivery(
     addressSnapshot: string,
-  ): Promise<{ deliveryFee: number; isFarOrder: boolean }> {
+  ): Promise<DeliveryEstimateDto> {
     const coords = this.parseAddressCoords(addressSnapshot);
     if (!coords) {
       this.logger.warn(
-        'No se pudo calcular el delivery por distancia: la dirección del pedido no tiene coordenadas. deliveryFee = 0.',
+        'La dirección del pedido no tiene coordenadas numéricas; se aplica la política del modo de delivery configurado.',
       );
     }
     return this.computeDelivery(coords);
   }
 
   /**
-   * Cálculo compartido de delivery por distancia (Haversine contra `store_location`
-   * + tramo de `delivery_fee_tiers` + radio de aviso), usado tanto por `create()`
-   * como por `estimateDeliveryFee()`. Sin coordenadas: `deliveryFee = 0`,
-   * `isFarOrder = false`, `distanceMeters = null` — nunca bloquea nada.
+   * Shared resolution for both estimates and creation. DISTANCE is compatible;
+   * ZONES explicitly reports coverage. An uncovered fee of 0 is not a quotation.
    */
   private async computeDelivery(
     coords: { latitude: number; longitude: number } | null,
-  ): Promise<{
-    deliveryFee: number;
-    isFarOrder: boolean;
-    distanceMeters: number | null;
-  }> {
-    if (!coords) {
-      return { deliveryFee: 0, isFarOrder: false, distanceMeters: null };
+  ): Promise<DeliveryEstimateDto> {
+    const mode = await this.settingsService.getDeliveryMode();
+    if (mode === DeliveryMode.DISTANCE)
+      return this.computeDistanceDelivery(coords);
+    if (
+      !coords ||
+      !validDeliveryCoordinates(coords.latitude, coords.longitude)
+    ) {
+      return {
+        deliveryFee: 0,
+        isFarOrder: false,
+        distanceMeters: null,
+        isCovered: false,
+        deliveryMode: mode,
+        zone: null,
+      };
     }
+    const zone = await this.deliveryZonesService.resolve(
+      coords.latitude,
+      coords.longitude,
+    );
+    // Keep the existing distance diagnostics (and their configuration requirement) in both modes.
+    const diagnostics = await this.computeDistanceDiagnostics(coords);
+    return {
+      isFarOrder: diagnostics.isFarOrder,
+      distanceMeters: diagnostics.distanceMeters,
+      deliveryFee: zone?.fee ?? 0,
+      isCovered: zone !== null,
+      deliveryMode: mode,
+      zone: zone ? { id: zone.id, name: zone.name } : null,
+    };
+  }
 
+  private async computeDistanceDelivery(
+    coords: { latitude: number; longitude: number } | null,
+  ): Promise<DeliveryEstimateDto> {
+    if (!coords) {
+      return {
+        deliveryFee: 0,
+        isFarOrder: false,
+        distanceMeters: null,
+        isCovered: true,
+        deliveryMode: DeliveryMode.DISTANCE,
+        zone: null,
+      };
+    }
+    const [diagnostics, tiers] = await Promise.all([
+      this.computeDistanceDiagnostics(coords),
+      this.settingsService.getDeliveryFeeTiers(),
+    ]);
+    return {
+      deliveryFee: this.feeForDistance(diagnostics.exactDistanceMeters, tiers),
+      isFarOrder: diagnostics.isFarOrder,
+      distanceMeters: diagnostics.distanceMeters,
+      isCovered: true,
+      deliveryMode: DeliveryMode.DISTANCE,
+      zone: null,
+    };
+  }
+
+  private async computeDistanceDiagnostics(coords: {
+    latitude: number;
+    longitude: number;
+  }): Promise<{
+    exactDistanceMeters: number;
+    distanceMeters: number;
+    isFarOrder: boolean;
+  }> {
     const store = await this.settingsService.getStoreLocation();
     const distanceMeters = haversineDistanceMeters(
       store.latitude,
@@ -901,17 +1018,10 @@ export class OrdersService {
       coords.latitude,
       coords.longitude,
     );
-    const [tiers, alertRadiusMeters] = await Promise.all([
-      this.settingsService.getDeliveryFeeTiers(),
-      this.settingsService.getDeliveryAlertRadiusMeters(),
-    ]);
-
-    // Tarifa y aviso con la distancia EXACTA (redondear antes movería los
-    // bordes de tramo: 120 m → 100 m cobraría S/2 en vez de S/4). Solo la
-    // distancia expuesta se redondea, para no permitir triangular la
-    // ubicación del local con distancias al metro desde 3 puntos.
+    const alertRadiusMeters =
+      await this.settingsService.getDeliveryAlertRadiusMeters();
     return {
-      deliveryFee: this.feeForDistance(distanceMeters, tiers),
+      exactDistanceMeters: distanceMeters,
       isFarOrder: distanceMeters > alertRadiusMeters,
       distanceMeters:
         Math.round(distanceMeters / DISTANCE_ROUNDING_METERS) *
@@ -919,7 +1029,7 @@ export class OrdersService {
     };
   }
 
-  /** Extrae `{ latitude, longitude }` del snapshot JSON, o `null` si no están presentes/son válidas. */
+  /** Legacy numeric extraction; ZONES additionally validates finiteness/ranges before resolving. */
   private parseAddressCoords(
     snapshot: string,
   ): { latitude: number; longitude: number } | null {
@@ -957,33 +1067,39 @@ export class OrdersService {
 
   /**
    * Push a los admins con token registrado avisando el pedido nuevo.
-   * Fire-and-forget best-effort: `sendPushNotification` nunca lanza (ver
-   * contrato en NotificationsService), así que no hace falta try/catch acá.
+   * Awaited best effort after commit, including recipient lookup.
    */
   private async notifyAdminsNewOrder(
     order: Order,
     isFarOrder: boolean,
   ): Promise<void> {
-    const admins = await this.usersRepository.find({
-      where: { role: UserRole.ADMIN, fcmToken: Not(IsNull()) },
-    });
-    if (admins.length === 0) return;
+    try {
+      const admins = await this.usersRepository.find({
+        where: { role: UserRole.ADMIN, fcmToken: Not(IsNull()) },
+      });
+      if (admins.length === 0) return;
 
-    const shortId = order.id.slice(0, 8).toUpperCase();
-    const title = isFarOrder
-      ? `⚠️ Nuevo pedido fuera de la zona habitual #${shortId} — S/ ${order.total.toFixed(2)}`
-      : `🍔 Nuevo pedido #${shortId} — S/ ${order.total.toFixed(2)}`;
-    const body = this.readableAddress(order.addressSnapshot);
+      const shortId = order.id.slice(0, 8).toUpperCase();
+      const title = isFarOrder
+        ? `⚠️ Nuevo pedido fuera de la zona habitual #${shortId} — S/ ${order.total.toFixed(2)}`
+        : `🍔 Nuevo pedido #${shortId} — S/ ${order.total.toFixed(2)}`;
+      const body = this.readableAddress(order.addressSnapshot);
 
-    await Promise.all(
-      admins.map((admin) =>
-        this.notificationsService.sendPushNotification(admin.id, {
-          title,
-          body,
-          data: { orderId: order.id, status: order.status },
-        }),
-      ),
-    );
+      await Promise.all(
+        admins.map((admin) =>
+          this.notificationsService.sendPushNotification(admin.id, {
+            title,
+            body,
+            data: { orderId: order.id, status: order.status },
+          }),
+        ),
+      );
+    } catch {
+      // Never convert an already committed order into a failed HTTP response.
+      this.logger.error(
+        `No se pudo notificar a los administradores del pedido ${order.id}`,
+      );
+    }
   }
 
   /**
@@ -1046,15 +1162,16 @@ export class OrdersService {
             'Un premio canjeado solo habilita 1 unidad del producto',
           );
         }
-        if (seenRewardIds.has(item.rewardRedemptionId)) {
+        const rewardRedemptionId = item.rewardRedemptionId.toLowerCase();
+        if (seenRewardIds.has(rewardRedemptionId)) {
           throw new BadRequestException(
             'No puedes usar el mismo premio más de una vez en el mismo pedido',
           );
         }
-        seenRewardIds.add(item.rewardRedemptionId);
+        seenRewardIds.add(rewardRedemptionId);
         unitPrice = 0;
         rewardClaims.push({
-          rewardRedemptionId: item.rewardRedemptionId,
+          rewardRedemptionId,
           menuItemId: menuItem.id,
         });
       }
@@ -1118,14 +1235,15 @@ export class OrdersService {
       // Las bebidas/porciones extras suman su precio aunque `unitPrice` sea 0 por
       // un premio canjeado — el premio cubre el producto base, no lo que el
       // cliente agregó encima (ver doc de OrderItem.subtotal).
-      const extrasUnitPrice = this.round2(
+      const extrasUnitPrice = fromCents(
         [...(selectedBeverages ?? []), ...(selectedExtraPortions ?? [])].reduce(
-          (sum, selected) => sum + selected.price,
+          (sum, selected) => sum + toCents(selected.price),
           0,
         ),
       );
-      const subtotal = this.round2(
-        (unitPrice + extrasUnitPrice) * item.quantity,
+      const subtotal = fromCents(
+        (toCents(unitPrice) + toCents(extrasUnitPrice)) * item.quantity,
+        'subtotal del producto',
       );
       result.push(
         this.orderItemsRepository.create({

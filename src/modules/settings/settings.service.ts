@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   OnModuleInit,
@@ -21,6 +22,10 @@ import {
 } from '../coupons/entities/coupon.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Setting } from './entities/setting.entity';
+import { validateCriticalSetting } from './settings-validation';
+import { DeliveryMode } from '../delivery/delivery-mode';
+import { DeliveryZone } from '../delivery/entities/delivery-zone.entity';
+import { lockDeliveryCatalog } from '../delivery/delivery-catalog-lock';
 
 /** Clave del número de WhatsApp del negocio (usada por OrdersService). */
 export const WHATSAPP_NUMBER_KEY = 'whatsapp_business_number';
@@ -49,6 +54,7 @@ export const DELIVERY_FEE_TIERS_KEY = 'delivery_fee_tiers';
 
 /** Clave del radio (metros) a partir del cual un pedido dispara el aviso interno de "lejano". */
 export const DELIVERY_ALERT_RADIUS_METERS_KEY = 'delivery_alert_radius_meters';
+export const DELIVERY_MODE_KEY = 'delivery_mode';
 
 /**
  * Clave de los soles gastados (subtotal sin envío) necesarios para ganar 1
@@ -246,6 +252,11 @@ export class SettingsService implements OnModuleInit {
       'Ubicación del local (JSON {"latitude":number,"longitude":number}) — sin configurar por defecto, necesaria para calcular el delivery por distancia',
     );
     await this.seedIfMissing(
+      DELIVERY_MODE_KEY,
+      DeliveryMode.DISTANCE,
+      'Modo de delivery: DISTANCE (default compatible) o ZONES',
+    );
+    await this.seedIfMissing(
       DELIVERY_FEE_TIERS_KEY,
       JSON.stringify(DEFAULT_DELIVERY_FEE_TIERS),
       'Tramos de tarifa de delivery por distancia (JSON, array ascendente por maxMeters; el último tramo con maxMeters=null es la tarifa plana sin techo, nunca se rechaza un pedido por distancia)',
@@ -345,9 +356,39 @@ export class SettingsService implements OnModuleInit {
     value: string,
     description?: string,
   ): Promise<Setting> {
+    validateCriticalSetting(key, value);
+    if (
+      key === DELIVERY_MODE_KEY &&
+      !Object.values(DeliveryMode).includes(value as DeliveryMode)
+    ) {
+      throw new BadRequestException('delivery_mode debe ser DISTANCE o ZONES');
+    }
     if (PROTECTED_KEYS.has(key)) {
       throw new BadRequestException(
         `La setting "${key}" no se puede editar desde aquí. Usa PUT /coupons/auto-config`,
+      );
+    }
+
+    if (key === DELIVERY_MODE_KEY) {
+      return this.settingsRepository.manager.transaction(
+        'READ COMMITTED',
+        async (manager) => {
+          await lockDeliveryCatalog(manager);
+          if (
+            value === 'ZONES' &&
+            (await manager.countBy(DeliveryZone, { active: true })) === 0
+          ) {
+            throw new ConflictException(
+              'No se puede activar ZONES sin al menos una zona de delivery activa',
+            );
+          }
+          const existing = await manager.findOneBy(Setting, { key });
+          const setting = existing ?? manager.create(Setting, { key });
+          setting.value = value;
+          if (description !== undefined) setting.description = description;
+          else if (!existing) setting.description = null;
+          return manager.save(Setting, setting);
+        },
       );
     }
 
@@ -387,22 +428,30 @@ export class SettingsService implements OnModuleInit {
 
   /** Avisa a todos los clientes con push cuando el cierre manual cambia de verdad. */
   private async notifyBusinessHoursChange(newValue: string): Promise<void> {
-    if (newValue === 'true') {
-      // Motivo leído fresco de la base: puede haberse guardado en un PATCH
-      // separado del mismo formulario del admin, no confiar en este request.
-      const { reason } = await this.getManualClosedState();
+    try {
+      if (newValue === 'true') {
+        // Motivo leído fresco de la base: puede haberse guardado en un PATCH
+        // separado del mismo formulario del admin, no confiar en este request.
+        const { reason } = await this.getManualClosedState();
+        await this.notificationsService.broadcastPushNotification({
+          title: 'Celtas está cerrado temporalmente',
+          body:
+            reason ?? 'El local no está atendiendo pedidos en este momento.',
+          data: { businessHoursChanged: 'true' },
+        });
+        return;
+      }
       await this.notificationsService.broadcastPushNotification({
-        title: 'Celtas está cerrado temporalmente',
-        body: reason ?? 'El local no está atendiendo pedidos en este momento.',
+        title: '¡Ya volvimos a abrir!',
+        body: 'Ya podés hacer tu pedido normalmente',
         data: { businessHoursChanged: 'true' },
       });
-      return;
+    } catch {
+      // Preparing the push must not fail a setting update that already committed.
+      this.logger.error(
+        'No se pudo preparar la notificación del horario de atención',
+      );
     }
-    await this.notificationsService.broadcastPushNotification({
-      title: '¡Ya volvimos a abrir!',
-      body: 'Ya podés hacer tu pedido normalmente',
-      data: { businessHoursChanged: 'true' },
-    });
   }
 
   /**
@@ -462,6 +511,18 @@ export class SettingsService implements OnModuleInit {
     throw new NotFoundException(
       'La ubicación del local todavía no está configurada (setting "store_location")',
     );
+  }
+
+  /** Missing mode keeps existing installations on distance; invalid persisted values fail explicitly. */
+  async getDeliveryMode(): Promise<DeliveryMode> {
+    const setting = await this.settingsRepository.findOne({
+      where: { key: DELIVERY_MODE_KEY },
+    });
+    if (!setting) return DeliveryMode.DISTANCE;
+    if (!Object.values(DeliveryMode).includes(setting.value as DeliveryMode)) {
+      throw new BadRequestException('delivery_mode debe ser DISTANCE o ZONES');
+    }
+    return setting.value as DeliveryMode;
   }
 
   /** Tramos de tarifa de delivery configurados; si la key falta o el JSON es inválido, cae al default. */

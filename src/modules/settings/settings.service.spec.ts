@@ -1,10 +1,12 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { EntityManager } from 'typeorm';
 import { CouponDiscountType } from '../coupons/entities/coupon.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Setting } from './entities/setting.entity';
+import { DeliveryMode } from '../delivery/delivery-mode';
 import {
   AUTO_COUPON_DISCOUNT_TYPE_KEY,
   AUTO_COUPON_DISCOUNT_VALUE_KEY,
@@ -16,6 +18,7 @@ import {
   BusinessHoursSchedule,
   DELIVERY_ALERT_RADIUS_METERS_KEY,
   DELIVERY_FEE_TIERS_KEY,
+  DELIVERY_MODE_KEY,
   SettingsService,
   STORE_LOCATION_KEY,
   WHATSAPP_NUMBER_KEY,
@@ -28,6 +31,7 @@ describe('SettingsService', () => {
     find: jest.Mock;
     save: jest.Mock;
     create: jest.Mock;
+    manager: { transaction: jest.Mock };
   };
   let configService: { get: jest.Mock };
   let notificationsService: { broadcastPushNotification: jest.Mock };
@@ -47,6 +51,25 @@ describe('SettingsService', () => {
       find: jest.fn(),
       save: jest.fn((v: Setting) => Promise.resolve(v)),
       create: jest.fn((v: Partial<Setting>) => v as Setting),
+      manager: {
+        transaction: jest.fn(
+          (
+            _isolation: string,
+            cb: (manager: EntityManager) => Promise<Setting>,
+          ) =>
+            cb({
+              query: jest.fn().mockResolvedValue([]),
+              countBy: jest.fn().mockResolvedValue(1),
+              findOneBy: (_type: unknown, criteria: unknown) =>
+                settingsRepo.findOne({
+                  where: criteria,
+                }) as Promise<Setting | null>,
+              create: (_type: unknown, value: unknown) => value,
+              save: (_type: unknown, value: unknown) =>
+                settingsRepo.save(value) as Promise<Setting>,
+            } as unknown as EntityManager),
+        ),
+      },
     };
     configService = { get: jest.fn() };
     notificationsService = {
@@ -171,6 +194,25 @@ describe('SettingsService', () => {
     });
 
     describe('notificación push al cambiar business_manual_closed', () => {
+      it('conserva el cambio confirmado si falla la lectura del motivo para el push', async () => {
+        settingsRepo.findOne.mockResolvedValue(
+          seedSetting({ key: BUSINESS_MANUAL_CLOSED_KEY, value: 'false' }),
+        );
+        jest
+          .spyOn(
+            service as unknown as {
+              getManualClosedState: () => Promise<unknown>;
+            },
+            'getManualClosedState',
+          )
+          .mockRejectedValue(
+            new Error('controlled notification preparation failure'),
+          );
+        await expect(
+          service.upsert(BUSINESS_MANUAL_CLOSED_KEY, 'true'),
+        ).resolves.toEqual(expect.objectContaining({ value: 'true' }));
+        expect(settingsRepo.save).toHaveBeenCalled();
+      });
       it('"false" → "true" dispara la notificación de cierre con el motivo leído fresco de la base', async () => {
         settingsRepo.findOne.mockResolvedValue(
           seedSetting({ key: BUSINESS_MANUAL_CLOSED_KEY, value: 'false' }),
@@ -530,6 +572,78 @@ describe('SettingsService', () => {
       const result = await service.getBusinessHoursSchedule();
       expect(result['0'].open).toBe('11:00');
       expect(result['5'].close).toBe('01:00');
+    });
+  });
+
+  describe('delivery mode', () => {
+    it('rejects activating ZONES without active zones under the catalog lock', async () => {
+      const query = jest.fn().mockResolvedValue([]);
+      settingsRepo.manager.transaction.mockImplementation(
+        (
+          _isolation: string,
+          cb: (manager: EntityManager) => Promise<Setting>,
+        ) =>
+          cb({
+            query,
+            countBy: jest.fn().mockResolvedValue(0),
+          } as unknown as EntityManager),
+      );
+      await expect(
+        service.upsert(DELIVERY_MODE_KEY, 'ZONES'),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(query).toHaveBeenCalledWith(
+        'SELECT pg_advisory_xact_lock(731942, 1)',
+      );
+      expect(settingsRepo.save).not.toHaveBeenCalled();
+    });
+    it('seeds DISTANCE without replacing an existing setting', async () => {
+      settingsRepo.findOne.mockResolvedValue(null);
+      await service.onModuleInit();
+      expect(settingsRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: DELIVERY_MODE_KEY,
+          value: DeliveryMode.DISTANCE,
+        }),
+      );
+    });
+    it('defaults to DISTANCE only when the key is absent', async () => {
+      settingsRepo.findOne.mockResolvedValue(null);
+      expect(await service.getDeliveryMode()).toBe(DeliveryMode.DISTANCE);
+    });
+    it.each([DeliveryMode.DISTANCE, DeliveryMode.ZONES])(
+      'reads and accepts %s',
+      async (mode) => {
+        settingsRepo.findOne.mockResolvedValue(
+          seedSetting({ key: DELIVERY_MODE_KEY, value: mode }),
+        );
+        expect(await service.getDeliveryMode()).toBe(mode);
+        await expect(
+          service.upsert(DELIVERY_MODE_KEY, mode),
+        ).resolves.toMatchObject({ value: mode });
+      },
+    );
+    it.each(['zones', 'INVALID', '', ' ZONES '])(
+      'rejects invalid mode %j on write and read',
+      async (mode) => {
+        await expect(
+          service.upsert(DELIVERY_MODE_KEY, mode),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(settingsRepo.save).not.toHaveBeenCalled();
+        settingsRepo.findOne.mockResolvedValue(
+          seedSetting({ key: DELIVERY_MODE_KEY, value: mode }),
+        );
+        await expect(service.getDeliveryMode()).rejects.toBeInstanceOf(
+          BadRequestException,
+        );
+      },
+    );
+    it('does not expose mode or delivery settings publicly', async () => {
+      settingsRepo.find.mockResolvedValue([
+        seedSetting({ key: DELIVERY_MODE_KEY, value: 'ZONES' }),
+        seedSetting({ key: STORE_LOCATION_KEY }),
+        seedSetting({ key: DELIVERY_FEE_TIERS_KEY }),
+      ]);
+      expect(await service.findPublic()).toEqual({});
     });
   });
 

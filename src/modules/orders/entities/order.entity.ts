@@ -11,6 +11,7 @@ import {
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 import { OrderItem } from './order-item.entity';
+import type { DeliverySnapshot } from '../../delivery/dto/delivery-response.dto';
 
 export enum OrderStatus {
   PENDIENTE = 'pendiente',
@@ -89,10 +90,9 @@ export class Order {
   total: number;
 
   /**
-   * Costo de delivery calculado por distancia (Haversine) contra el tramo de
-   * `delivery_fee_tiers` que corresponda. `0` cuando la dirección del pedido
-   * no tiene coordenadas (dato viejo o texto libre sin `addressId`) — nunca
-   * se rechaza un pedido por no poder calcularlo. Ya incluido en `total`.
+   * Delivery snapshot amount, already included in total. DISTANCE uses Haversine
+   * and tiers (0 without coordinates); ZONES uses an active zone fee and blocks
+   * all orders without coverage, including manual admin orders.
    */
   @Column({
     type: 'decimal',
@@ -105,6 +105,10 @@ export class Order {
     },
   })
   deliveryFee: number;
+
+  /** Stable snapshot; null for legacy orders whose original calculation cannot be reconstructed. */
+  @Column({ type: 'jsonb', nullable: true })
+  deliverySnapshot: DeliverySnapshot | null;
 
   /**
    * Link de WhatsApp generado al crear el pedido. Se persiste para no tener que

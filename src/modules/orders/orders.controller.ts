@@ -30,6 +30,7 @@ import { UserRole } from '../users/entities/user.entity';
 import { CreateOrderAdminDto } from './dto/create-order-admin.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { EstimateDeliveryFeeDto } from './dto/estimate-delivery-fee.dto';
+import { DeliveryEstimateResponseDto } from '../delivery/dto/delivery-response.dto';
 import { GeocodeAddressDto } from './dto/geocode-address.dto';
 import { QueryMyOrdersDto } from './dto/query-my-orders.dto';
 import { QueryOrdersDto } from './dto/query-orders.dto';
@@ -54,12 +55,13 @@ export class OrdersController {
   @ApiOperation({
     summary: 'Crear un pedido (cliente)',
     description:
-      'Valida productos disponibles, calcula subtotales y total en el backend, guarda el pedido en estado "pendiente" con el addressSnapshot y devuelve el pedido + whatsappUrl para confirmar por WhatsApp.',
+      'Valida productos disponibles, calcula subtotales y total en el backend, guarda el pedido en estado "pendiente" con snapshots de dirección y delivery y devuelve el pedido + whatsappUrl. En ZONES rechaza direcciones sin cobertura o coordenadas válidas; DISTANCE conserva el comportamiento anterior.',
   })
   @ApiResponse({ status: 201, description: 'Pedido creado con whatsappUrl' })
   @ApiResponse({
     status: 400,
-    description: 'Payload inválido o producto no disponible',
+    description:
+      'Payload inválido, producto no disponible o dirección sin cobertura/coordenadas válidas en ZONES',
   })
   @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
   @ApiResponse({
@@ -81,7 +83,7 @@ export class OrdersController {
   @ApiOperation({
     summary: 'Crear un pedido manual (solo admin)',
     description:
-      'Para pedidos tomados fuera de la app (ej. por teléfono). Mismo cálculo que POST /orders (precios snapshot, delivery por distancia, cupón, premios), pero NO se bloquea por horario de atención. Con customerId se asocia a ese cliente (addressId/cupón/premios se validan contra él); sin customerId es anónimo: customerName + customerPhone obligatorios y dirección solo por addressSnapshot (para calcular el delivery, incluir latitude/longitude en el JSON, ej. con GET /orders/geocode). El whatsappUrl apunta al celular del cliente con el resumen para confirmar (si el cliente registrado no tiene celular válido, al número del negocio). Un pedido anónimo entregado no suma totalSpent, estrellas ni cupones.',
+      'Para pedidos tomados fuera de la app (ej. por teléfono). Precios snapshot, cupón y premios como POST /orders; NO bloquea por horario. Delivery en ZONES: aplica zona si tiene cobertura; fuera de cobertura o sin coordenadas válidas rechaza con 400, sin fallback a DISTANCE. Con customerId valida addressId/cupón/premios contra ese cliente; sin él exige customerName + customerPhone y dirección por addressSnapshot (incluir latitude/longitude para calcular delivery). whatsappUrl apunta al cliente, con fallback al negocio. Un pedido anónimo entregado no suma totalSpent, estrellas ni cupones.',
   })
   @ApiResponse({
     status: 201,
@@ -90,7 +92,7 @@ export class OrdersController {
   @ApiResponse({
     status: 400,
     description:
-      'Payload inválido, producto no disponible, falta contacto/dirección, o addressId/cupón/premio en un pedido anónimo',
+      'Payload inválido, producto no disponible, falta contacto/dirección, sin cobertura en ZONES, o addressId/cupón/premio en un pedido anónimo',
   })
   @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
   @ApiResponse({ status: 403, description: 'El usuario no es admin' })
@@ -179,12 +181,13 @@ export class OrdersController {
   @ApiOperation({
     summary: 'Estimar el costo de delivery de una dirección guardada (cliente)',
     description:
-      'Mismo cálculo que POST /orders (Haversine contra store_location + tramo de delivery_fee_tiers), sin crear un pedido. Si la dirección no tiene coordenadas: deliveryFee 0, isFarOrder false, distanceMeters null (no bloquea).',
+      'Misma resolución que POST /orders, sin crear pedido. DISTANCE conserva tarifa 0 sin coordenadas. ZONES devuelve isCovered=false sin zona activa o coordenadas válidas; tarifa 0 es un marcador sin cotización. isFarOrder sigue siendo aviso de distancia.',
   })
   @ApiResponse({
     status: 201,
     description:
-      'deliveryFee, isFarOrder y distanceMeters calculados (distanceMeters redondeado a múltiplos de 50 m; la tarifa usa la distancia exacta)',
+      'deliveryFee, isFarOrder y distanceMeters calculados (distanceMeters redondeado a múltiplos de 50 m; la tarifa DISTANCE usa la distancia exacta)',
+    type: DeliveryEstimateResponseDto,
   })
   @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
   @ApiResponse({

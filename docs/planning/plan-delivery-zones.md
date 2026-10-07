@@ -1,8 +1,10 @@
 # Propuesta: zonas de delivery por polígonos
 
-Estado al 2026-10-03: **no implementado en el árbol revisado**. El documento anterior
-indicaba “en desarrollo” en feature/delivery-zones; la existencia o avance de esa
-rama no se verificó. Requiere decisión del desarrollador antes de implementarlo.
+Estado al 2026-10-06: primera fase backend implementada en el árbol de trabajo;
+migración, rollback y E2E verificados en PostgreSQL local aislado, sin despliegue.
+El contrato vigente de esta fase está en [delivery](../delivery.md).
+Los apartados siguientes conservan alternativas de la propuesta original;
+no sustituyen las decisiones implementadas ni certifican despliegue.
 
 ## Objetivo
 

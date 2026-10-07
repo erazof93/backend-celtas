@@ -18,6 +18,7 @@ import { Sauce } from './modules/sauces/entities/sauce.entity';
 import { Setting } from './modules/settings/entities/setting.entity';
 import { Address } from './modules/users/entities/address.entity';
 import { User } from './modules/users/entities/user.entity';
+import { DeliveryZone } from './modules/delivery/entities/delivery-zone.entity';
 
 /**
  * Lee una variable de entorno requerida y lanza un error claro si falta o está vacía.
@@ -70,6 +71,7 @@ export const AppDataSource = new DataSource({
     RewardRedemption,
     RewardMilestone,
     StarPromotion,
+    DeliveryZone,
   ],
   migrations: [__dirname + '/migrations/*{.ts,.js}'],
   synchronize: false,

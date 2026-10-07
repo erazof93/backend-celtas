@@ -19,6 +19,7 @@ import { TransformInterceptor } from './../src/common/interceptors/transform.int
 import { Category } from './../src/modules/menu/entities/category.entity';
 import { MenuItem } from './../src/modules/menu/entities/menu-item.entity';
 import { Order } from './../src/modules/orders/entities/order.entity';
+import { DeliveryZone } from './../src/modules/delivery/entities/delivery-zone.entity';
 import { GeoapifyService } from './../src/modules/orders/geoapify.service';
 import { Sauce } from './../src/modules/sauces/entities/sauce.entity';
 import { Setting } from './../src/modules/settings/entities/setting.entity';
@@ -77,6 +78,8 @@ describe('Orders (e2e)', () => {
   let ordersRepo: Repository<Order>;
   let settingsRepo: Repository<Setting>;
   let businessHoursSnapshot: BusinessHoursSnapshot;
+  let originalDeliveryMode: string;
+  let originalStoreLocation: string;
 
   let clientAToken: string;
   let clientBToken: string;
@@ -164,6 +167,13 @@ describe('Orders (e2e)', () => {
     itemsRepo = app.get<Repository<MenuItem>>(getRepositoryToken(MenuItem));
     ordersRepo = app.get<Repository<Order>>(getRepositoryToken(Order));
     settingsRepo = app.get<Repository<Setting>>(getRepositoryToken(Setting));
+    originalDeliveryMode = (
+      await settingsRepo.findOneByOrFail({ key: 'delivery_mode' })
+    ).value;
+    originalStoreLocation = (
+      await settingsRepo.findOneByOrFail({ key: 'store_location' })
+    ).value;
+    await settingsRepo.update({ key: 'delivery_mode' }, { value: 'DISTANCE' });
 
     // Esta suite crea pedidos reales vía POST /orders: forzar el local
     // "abierto siempre" para que no dependa de la hora real de Lima en la
@@ -272,6 +282,14 @@ describe('Orders (e2e)', () => {
     await usersRepo.delete({ email: clientBEmail });
     await usersRepo.delete({ email: adminEmail });
     await restoreBusinessHours(settingsRepo, businessHoursSnapshot);
+    await settingsRepo.update(
+      { key: 'delivery_mode' },
+      { value: originalDeliveryMode },
+    );
+    await settingsRepo.update(
+      { key: 'store_location' },
+      { value: originalStoreLocation },
+    );
     await app.close();
   });
 
@@ -491,27 +509,28 @@ describe('Orders (e2e)', () => {
         .expect(201);
       const addrId = ((addr.body as Envelope).data as { id: string }).id;
 
-      // Desconfigura store_location temporalmente (se restaura al final del test).
+      // Invalid writes now fail; reproduce the historical unconfigured seed locally.
       await request(app.getHttpServer())
         .patch('/settings')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ key: 'store_location', value: ' ' })
-        .expect(200);
-
-      const res = await createOrder(clientAToken, {
-        addressId: addrId,
-        items: [{ menuItemId: itemAId, quantity: 1 }],
-      }).expect(404);
-      expect((res.body as ErrorResponse).statusCode).toBe(404);
-
-      await request(app.getHttpServer())
-        .patch('/settings')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .send({
-          key: 'store_location',
-          value: JSON.stringify({ latitude: -12.1631, longitude: -76.97 }),
-        })
-        .expect(200);
+        .expect(400);
+      const previous = await settingsRepo.findOneByOrFail({
+        key: 'store_location',
+      });
+      await settingsRepo.update({ key: 'store_location' }, { value: '' });
+      try {
+        const res = await createOrder(clientAToken, {
+          addressId: addrId,
+          items: [{ menuItemId: itemAId, quantity: 1 }],
+        }).expect(404);
+        expect((res.body as ErrorResponse).statusCode).toBe(404);
+      } finally {
+        await settingsRepo.update(
+          { key: 'store_location' },
+          { value: previous.value },
+        );
+      }
     });
 
     it('acepta addressSnapshot directo (sin direcciones guardadas)', async () => {
@@ -873,6 +892,9 @@ describe('Orders (e2e)', () => {
         deliveryFee: 0,
         isFarOrder: false,
         distanceMeters: null,
+        isCovered: true,
+        deliveryMode: 'DISTANCE',
+        zone: null,
       });
     });
 
@@ -960,6 +982,351 @@ describe('Orders (e2e)', () => {
     });
   });
 
+  describe('ZONES delivery with PostgreSQL', () => {
+    const zoneIds: string[] = [];
+    const zoneAdminOrderIds: string[] = [];
+    const polygon = {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [100, 70],
+          [100.01, 70],
+          [100.01, 70.01],
+          [100, 70.01],
+          [100, 70],
+        ],
+      ],
+    };
+    const coords = { latitude: 70.005, longitude: 100.005 };
+    const draft = {
+      addressSnapshot: JSON.stringify({
+        fullAddress: 'Dirección de prueba',
+        ...coords,
+      }),
+      items: [{ menuItemId: '', quantity: 1 }],
+    };
+    let zoneId: string;
+    let modeBeforeZones: string;
+    const estimate = (lat = coords.latitude, lng = coords.longitude) =>
+      request(app.getHttpServer())
+        .get(`/delivery/estimate?latitude=${lat}&longitude=${lng}`)
+        .set('Authorization', `Bearer ${clientAToken}`);
+
+    beforeAll(async () => {
+      modeBeforeZones = (
+        await settingsRepo.findOneByOrFail({ key: 'delivery_mode' })
+      ).value;
+      await settingsRepo.update({ key: 'delivery_mode' }, { value: 'ZONES' });
+      draft.items[0].menuItemId = itemAId;
+      const created = await request(app.getHttpServer())
+        .post('/delivery/zones')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ name: `QA zone ${suffix}`, polygon, fee: 7.5 })
+        .expect(201);
+      zoneId = ((created.body as Envelope).data as DeliveryZone).id;
+      zoneIds.push(zoneId);
+    });
+    afterAll(async () => {
+      try {
+        if (zoneAdminOrderIds.length)
+          await ordersRepo.delete(zoneAdminOrderIds);
+        if (zoneIds.length)
+          await app
+            .get<Repository<DeliveryZone>>(getRepositoryToken(DeliveryZone))
+            .delete(zoneIds);
+      } finally {
+        await settingsRepo.update(
+          { key: 'delivery_mode' },
+          { value: modeBeforeZones },
+        );
+      }
+    });
+
+    it('rejects mode strings other than DISTANCE/ZONES through settings', async () => {
+      await request(app.getHttpServer())
+        .patch('/settings')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ key: 'delivery_mode', value: 'invalid' })
+        .expect(400);
+    });
+
+    it('persists zone fee and snapshot, matching estimate, independent of later edits/deletion', async () => {
+      const quoted = ((await estimate().expect(200)).body as Envelope).data as {
+        deliveryFee: number;
+        zone: { id: string; name: string };
+      };
+      expect(quoted.deliveryFee).toBe(7.5);
+      const created = (
+        (await createOrder(clientAToken, draft).expect(201)).body as Envelope
+      ).data as OrderData;
+      const persisted = await ordersRepo.findOneByOrFail({ id: created.id });
+      expect(persisted.deliveryFee).toBe(quoted.deliveryFee);
+      expect(persisted.total).toBe(32.4);
+      expect(persisted.deliverySnapshot).toEqual({
+        deliveryMode: 'ZONES',
+        zone: quoted.zone,
+      });
+      await request(app.getHttpServer())
+        .patch(`/delivery/zones/${zoneId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ name: 'Renombrada QA', fee: 9 })
+        .expect(200);
+      expect(
+        ((await estimate().expect(200)).body as Envelope).data,
+      ).toMatchObject({ deliveryFee: 9 });
+      await request(app.getHttpServer())
+        .patch('/settings')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ key: 'delivery_mode', value: 'DISTANCE' })
+        .expect(200);
+      await request(app.getHttpServer())
+        .delete(`/delivery/zones/${zoneId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      expect(
+        (await ordersRepo.findOneByOrFail({ id: created.id })).deliverySnapshot,
+      ).toEqual(persisted.deliverySnapshot);
+      // Restore a fresh catalog zone for subsequent cases without rewriting the order snapshot.
+      const fresh = await request(app.getHttpServer())
+        .post('/delivery/zones')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ name: `QA zone restored ${suffix}`, polygon, fee: 7.5 })
+        .expect(201);
+      zoneId = ((fresh.body as Envelope).data as DeliveryZone).id;
+      zoneIds.push(zoneId);
+      await request(app.getHttpServer())
+        .patch('/settings')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ key: 'delivery_mode', value: 'ZONES' })
+        .expect(200);
+    });
+
+    it('includes border/vertex and rejects client checkout outside without writing an order', async () => {
+      expect(
+        ((await estimate(70, 100).expect(200)).body as Envelope).data,
+      ).toMatchObject({ isCovered: true, deliveryFee: 7.5 });
+      expect(
+        ((await estimate(70.005, 100).expect(200)).body as Envelope).data,
+      ).toMatchObject({ isCovered: true });
+      const outside = ((await estimate(69, 99).expect(200)).body as Envelope)
+        .data;
+      expect(outside).toMatchObject({
+        isCovered: false,
+        deliveryMode: 'ZONES',
+        zone: null,
+        deliveryFee: 0,
+      });
+      const count = await ordersRepo.countBy({ userId: clientAId });
+      await createOrder(clientAToken, {
+        ...draft,
+        addressSnapshot: JSON.stringify({ latitude: 69, longitude: 99 }),
+      }).expect(400);
+      expect(await ordersRepo.countBy({ userId: clientAId })).toBe(count);
+    });
+
+    it('rejects missing/invalid coordinates and inactive zone at client checkout', async () => {
+      const spare = await request(app.getHttpServer())
+        .post('/delivery/zones')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          name: 'Inactive coverage QA',
+          fee: 5,
+          polygon: {
+            type: 'Polygon',
+            coordinates: [
+              [
+                [101, 70],
+                [101.01, 70],
+                [101.01, 70.01],
+                [101, 70.01],
+                [101, 70],
+              ],
+            ],
+          },
+        })
+        .expect(201);
+      const spareId = ((spare.body as Envelope).data as DeliveryZone).id;
+      zoneIds.push(spareId);
+      for (const addressSnapshot of [
+        'Dirección manual',
+        '{}',
+        '{"latitude":91,"longitude":0}',
+      ]) {
+        await createOrder(clientAToken, { ...draft, addressSnapshot }).expect(
+          400,
+        );
+      }
+      await request(app.getHttpServer())
+        .patch(`/delivery/zones/${zoneId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ active: false })
+        .expect(200);
+      try {
+        expect(
+          ((await estimate().expect(200)).body as Envelope).data,
+        ).toMatchObject({ isCovered: false });
+        await createOrder(clientAToken, draft).expect(400);
+      } finally {
+        await request(app.getHttpServer())
+          .patch(`/delivery/zones/${zoneId}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ active: true })
+          .expect(200);
+        await request(app.getHttpServer())
+          .delete(`/delivery/zones/${spareId}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(200);
+      }
+    });
+
+    it('rejects uncovered anonymous admin orders without writing an order', async () => {
+      const count = await ordersRepo.count();
+      await request(app.getHttpServer())
+        .post('/orders/admin')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          items: draft.items,
+          customerName: 'QA Admin',
+          customerPhone: '999888777',
+          addressSnapshot: 'Dirección manual',
+        })
+        .expect(400);
+      expect(await ordersRepo.count()).toBe(count);
+    });
+
+    it('serializes simultaneous conflicting catalog writes even when their region is empty', async () => {
+      const concurrentPolygon = {
+        type: 'Polygon',
+        coordinates: [
+          [
+            [102, 70],
+            [102.01, 70],
+            [102.01, 70.01],
+            [102, 70.01],
+            [102, 70],
+          ],
+        ],
+      };
+      const results = await Promise.all(
+        [1, 2].map((n) =>
+          request(app.getHttpServer())
+            .post('/delivery/zones')
+            .set('Authorization', `Bearer ${adminToken}`)
+            .send({
+              name: `Concurrent QA ${suffix}-${n}`,
+              polygon: concurrentPolygon,
+              fee: 4,
+            }),
+        ),
+      );
+      for (const response of results) {
+        if (response.status === 201)
+          zoneIds.push(((response.body as Envelope).data as DeliveryZone).id);
+      }
+      expect(results.map((response) => response.status).sort()).toEqual([
+        201, 409,
+      ]);
+    });
+
+    it('rejects overlaps including inactive zones and unauthorized CRUD', async () => {
+      await request(app.getHttpServer())
+        .post('/delivery/zones')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ name: 'QA overlap', polygon, fee: 2, active: false })
+        .expect(409);
+      await request(app.getHttpServer()).get('/delivery/zones').expect(401);
+      await request(app.getHttpServer())
+        .get('/delivery/zones')
+        .set('Authorization', `Bearer ${clientAToken}`)
+        .expect(403);
+    });
+
+    it('preserves both configurations and protects the last active zone, including concurrent removals', async () => {
+      const zonesRepo = app.get<Repository<DeliveryZone>>(
+        getRepositoryToken(DeliveryZone),
+      );
+      const tiersBefore = (
+        await settingsRepo.findOneByOrFail({ key: 'delivery_fee_tiers' })
+      ).value;
+      const changeMode = (value: string) =>
+        request(app.getHttpServer())
+          .patch('/settings')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ key: 'delivery_mode', value });
+      const remove = (id: string) =>
+        request(app.getHttpServer())
+          .delete(`/delivery/zones/${id}`)
+          .set('Authorization', `Bearer ${adminToken}`);
+      const deactivate = (id: string) =>
+        request(app.getHttpServer())
+          .patch(`/delivery/zones/${id}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ active: false });
+      for (const id of zoneIds.filter((id) => id !== zoneId)) {
+        if (await zonesRepo.existsBy({ id, active: true }))
+          await deactivate(id).expect(200);
+      }
+      await deactivate(zoneId).expect(409);
+      await remove(zoneId).expect(409);
+      const second = await request(app.getHttpServer())
+        .post('/delivery/zones')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          name: 'Concurrent last QA',
+          fee: 5,
+          polygon: {
+            type: 'Polygon',
+            coordinates: [
+              [
+                [104, 70],
+                [104.01, 70],
+                [104.01, 70.01],
+                [104, 70.01],
+                [104, 70],
+              ],
+            ],
+          },
+        })
+        .expect(201);
+      const secondId = ((second.body as Envelope).data as DeliveryZone).id;
+      zoneIds.push(secondId);
+      const results = await Promise.all([remove(zoneId), deactivate(secondId)]);
+      expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+      expect(await zonesRepo.countBy({ active: true })).toBe(1);
+      const catalogBefore = await zonesRepo.find({ order: { id: 'ASC' } });
+      await changeMode('DISTANCE').expect(200);
+      expect(await zonesRepo.find({ order: { id: 'ASC' } })).toEqual(
+        catalogBefore,
+      );
+      await changeMode('ZONES').expect(200);
+      expect(
+        (await settingsRepo.findOneByOrFail({ key: 'delivery_fee_tiers' }))
+          .value,
+      ).toBe(tiersBefore);
+      await changeMode('DISTANCE').expect(200);
+      const remaining = await zonesRepo.findOneByOrFail({ active: true });
+      // Activation and removal must never jointly succeed leaving ZONES empty.
+      const racing = await Promise.all([
+        changeMode('ZONES'),
+        remove(remaining.id),
+      ]);
+      expect(racing.map((r) => r.status).sort()).toEqual([200, 409]);
+      const mode = (
+        await settingsRepo.findOneByOrFail({ key: 'delivery_mode' })
+      ).value;
+      if (mode === 'ZONES')
+        expect(await zonesRepo.countBy({ active: true })).toBe(1);
+      await changeMode('DISTANCE').expect(200);
+      for (const zone of await zonesRepo.findBy({ active: true }))
+        await deactivate(zone.id).expect(200);
+      expect(await zonesRepo.countBy({ active: true })).toBe(0);
+      await changeMode('ZONES').expect(409);
+      expect(
+        (await settingsRepo.findOneByOrFail({ key: 'delivery_mode' })).value,
+      ).toBe('DISTANCE');
+    });
+  });
+
   describe('GET /delivery/estimate', () => {
     interface DeliveryEstimate {
       deliveryFee: number;
@@ -982,6 +1349,9 @@ describe('Orders (e2e)', () => {
         deliveryFee: 2,
         isFarOrder: false,
         distanceMeters: 0,
+        isCovered: true,
+        deliveryMode: 'DISTANCE',
+        zone: null,
       });
     });
 

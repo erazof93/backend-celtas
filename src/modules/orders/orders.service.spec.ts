@@ -21,6 +21,8 @@ import { Order, OrderStatus } from './entities/order.entity';
 import { GeoapifyService } from './geoapify.service';
 import { OrdersService } from './orders.service';
 import * as geoUtil from '../../common/utils/geo.util';
+import { DeliveryMode } from '../delivery/delivery-mode';
+import { DeliveryZonesService } from '../delivery/delivery-zones.service';
 
 /** Mock de repositorio: devuelve el mismo objeto que recibe (identity tipado). */
 const passthrough = <T>(value: T): T => value;
@@ -56,7 +58,9 @@ describe('OrdersService', () => {
     recalculateForUser: jest.Mock;
   };
   let notificationsService: { sendPushNotification: jest.Mock };
+  let deliveryZonesService: { resolve: jest.Mock };
   let settingsService: {
+    getDeliveryMode: jest.Mock;
     getWhatsappNumber: jest.Mock;
     isOpenNow: jest.Mock;
     getStoreLocation: jest.Mock;
@@ -160,6 +164,7 @@ describe('OrdersService', () => {
       sendPushNotification: jest.fn().mockResolvedValue(true),
     };
     settingsService = {
+      getDeliveryMode: jest.fn().mockResolvedValue(DeliveryMode.DISTANCE),
       getWhatsappNumber: jest.fn().mockResolvedValue('51999999999'),
       // Local abierto por defecto: los tests existentes de create() no deben
       // verse afectados por el guard de horario de atención.
@@ -180,6 +185,7 @@ describe('OrdersService', () => {
     };
     // Nunca pegarle a Geoapify real desde un test unitario (rate limit compartido).
     geoapifyService = { geocode: jest.fn() };
+    deliveryZonesService = { resolve: jest.fn().mockResolvedValue(null) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -196,6 +202,7 @@ describe('OrdersService', () => {
         { provide: NotificationsService, useValue: notificationsService },
         { provide: SettingsService, useValue: settingsService },
         { provide: GeoapifyService, useValue: geoapifyService },
+        { provide: DeliveryZonesService, useValue: deliveryZonesService },
       ],
     }).compile();
 
@@ -1020,7 +1027,15 @@ describe('OrdersService', () => {
 
     // allowWithout en grupo obligatorio: "Sin X" ([] explícito) es una respuesta
     // válida; omitir el campo sigue siendo 400 (el cliente tiene que decidir).
-    const allowWithoutCases = [
+    const allowWithoutCases: Array<
+      [
+        string,
+        NonNullable<Parameters<typeof menuMenuItem>[0]>,
+        'sauceIds' | 'beverageIds' | 'extraPortionIds',
+        'selectedSauces' | 'selectedBeverages' | 'selectedExtraPortions',
+        string,
+      ]
+    > = [
       [
         'salsas',
         {
@@ -1054,7 +1069,7 @@ describe('OrdersService', () => {
         'selectedExtraPortions',
         'una porción extra',
       ],
-    ] as const;
+    ];
 
     it.each(allowWithoutCases)(
       '%s: grupo obligatorio + allowWithout=true + [] explícito ("Sin …") → crea el pedido',
@@ -2459,6 +2474,12 @@ describe('OrdersService', () => {
         { id: In([orderA, orderB]) },
         { userId: customerId },
       );
+      expect(manager.find.mock.invocationCallOrder[0]).toBeLessThan(
+        manager.findOne.mock.invocationCallOrder[0],
+      );
+      expect(manager.findOne.mock.invocationCallOrder[0]).toBeLessThan(
+        manager.update.mock.invocationCallOrder[0],
+      );
       expect(manager.save).toHaveBeenCalledWith(
         User,
         expect.objectContaining({ totalSpent: 149.8 }),
@@ -2633,6 +2654,9 @@ describe('OrdersService', () => {
         deliveryFee: 0,
         isFarOrder: false,
         distanceMeters: null,
+        isCovered: true,
+        deliveryMode: DeliveryMode.DISTANCE,
+        zone: null,
       });
       expect(settingsService.getStoreLocation).not.toHaveBeenCalled();
     });
@@ -2822,6 +2846,9 @@ describe('OrdersService', () => {
         deliveryFee: 4,
         isFarOrder: false,
         distanceMeters: 100,
+        isCovered: true,
+        deliveryMode: DeliveryMode.DISTANCE,
+        zone: null,
       });
     });
 
@@ -2847,6 +2874,9 @@ describe('OrdersService', () => {
         deliveryFee: 2,
         isFarOrder: false,
         distanceMeters: 0,
+        isCovered: true,
+        deliveryMode: DeliveryMode.DISTANCE,
+        zone: null,
       });
       expect(addressesRepo.findOne).not.toHaveBeenCalled();
       expect(dataSource.transaction).not.toHaveBeenCalled();
@@ -2886,6 +2916,195 @@ describe('OrdersService', () => {
       await expect(
         service.estimateDeliveryByCoords({ latitude: -12.1, longitude: -76.9 }),
       ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('ZONES delivery integration', () => {
+    const coords = { latitude: -12.1631, longitude: -76.97 };
+    const zone = {
+      id: 'zone-1',
+      name: 'Centro',
+      fee: 7.5,
+      polygon: { secret: true },
+    };
+    const dto = { addressId, items: [{ menuItemId, quantity: 2 }] };
+    let saved: Order | undefined;
+
+    beforeEach(() => {
+      saved = undefined;
+      settingsService.getDeliveryMode.mockResolvedValue(DeliveryMode.ZONES);
+      deliveryZonesService.resolve.mockResolvedValue(zone);
+      addressesRepo.findOne.mockResolvedValue(seedAddress(coords));
+      menuItemsRepo.find.mockResolvedValue([menuMenuItem()]);
+      orderItemsRepo.create.mockImplementation(passthrough);
+      dataSource.transaction.mockImplementation(
+        (cb: (m: unknown) => Promise<Order>) =>
+          cb({
+            create: (_type: unknown, value: Order) => value,
+            save: (_type: unknown, value: Order) => {
+              saved = value;
+              return Promise.resolve(value);
+            },
+          }),
+      );
+    });
+
+    it('uses the same resolution for both estimates and order creation and persists the fee/snapshot', async () => {
+      const byCoords = await service.estimateDeliveryByCoords(coords);
+      const byAddress = await service.estimateDeliveryFee(userId, {
+        addressId,
+      });
+      expect(byCoords).toEqual(byAddress);
+      expect(byCoords).toEqual({
+        deliveryFee: 7.5,
+        isFarOrder: false,
+        distanceMeters: 0,
+        isCovered: true,
+        deliveryMode: DeliveryMode.ZONES,
+        zone: { id: 'zone-1', name: 'Centro' },
+      });
+      const order = await service.create(userId, dto);
+      expect(order.deliveryFee).toBe(byCoords.deliveryFee);
+      expect(order.total).toBe(57.3);
+      expect(saved?.deliveryFee).toBe(7.5);
+      expect(saved?.deliverySnapshot).toEqual({
+        deliveryMode: DeliveryMode.ZONES,
+        zone: { id: 'zone-1', name: 'Centro' },
+      });
+      zone.name = 'Editada';
+      expect(saved?.deliverySnapshot?.zone?.name).toBe('Centro');
+      zone.name = 'Centro';
+      expect(settingsService.getDeliveryFeeTiers).not.toHaveBeenCalled();
+      expect(deliveryZonesService.resolve).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps coupon discount before zone delivery', async () => {
+      couponsService.applyToOrder.mockResolvedValue({
+        discountedTotal: 44.82,
+        coupon: { id: 'coupon-1', code: 'ABC' },
+      });
+      const order = await service.create(userId, { ...dto, couponCode: 'ABC' });
+      expect(order.total).toBe(52.32);
+      expect(couponsService.applyToOrder).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ subtotal: 49.8 }),
+      );
+      expect(order.whatsappUrl).toContain(encodeURIComponent('S/ 7.50'));
+    });
+
+    it('returns explicit no coverage but prevents a client order before its transaction', async () => {
+      deliveryZonesService.resolve.mockResolvedValue(null);
+      expect(await service.estimateDeliveryByCoords(coords)).toMatchObject({
+        isCovered: false,
+        deliveryMode: DeliveryMode.ZONES,
+        zone: null,
+        deliveryFee: 0,
+      });
+      await expect(service.create(userId, dto)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(menuItemsRepo.find).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'Texto libre',
+      '{}',
+      '{"latitude":91,"longitude":0}',
+      '{"latitude":0,"longitude":181}',
+      '{"latitude":"-12","longitude":-77}',
+      '{"latitude":1e999,"longitude":0}',
+      'null',
+    ])(
+      'does not allow invalid/missing snapshot coordinates to bypass ZONES: %s',
+      async (snapshot) => {
+        await expect(
+          service.create(userId, {
+            items: dto.items,
+            addressSnapshot: snapshot,
+          }),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(dataSource.transaction).not.toHaveBeenCalled();
+        expect(deliveryZonesService.resolve).not.toHaveBeenCalled();
+      },
+    );
+
+    it('reports no coverage for saved addresses without coordinates', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      expect(await service.estimateDeliveryFee(userId, { addressId })).toEqual({
+        deliveryFee: 0,
+        distanceMeters: null,
+        isFarOrder: false,
+        isCovered: false,
+        deliveryMode: DeliveryMode.ZONES,
+        zone: null,
+      });
+      await expect(service.create(userId, dto)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('keeps isFarOrder as a distance warning even inside a zone', async () => {
+      expect(
+        await service.estimateDeliveryByCoords({
+          latitude: -12,
+          longitude: -76,
+        }),
+      ).toMatchObject({ deliveryFee: 7.5, isCovered: true, isFarOrder: true });
+    });
+
+    it('recalculates price at checkout rather than trusting the preceding estimate', async () => {
+      expect((await service.estimateDeliveryByCoords(coords)).deliveryFee).toBe(
+        7.5,
+      );
+      deliveryZonesService.resolve.mockResolvedValue({ ...zone, fee: 9 });
+      expect((await service.create(userId, dto)).deliveryFee).toBe(9);
+    });
+
+    it.each([JSON.stringify(coords), 'Dirección manual'])(
+      'rejects uncovered admin orders without consulting tiers: %s',
+      async (addressSnapshot) => {
+        deliveryZonesService.resolve.mockResolvedValue(null);
+        await expect(
+          service.createOrderByAdmin({
+            items: dto.items,
+            customerName: 'Cliente',
+            customerPhone: '999888777',
+            addressSnapshot,
+          }),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(settingsService.getDeliveryFeeTiers).not.toHaveBeenCalled();
+        expect(dataSource.transaction).not.toHaveBeenCalled();
+      },
+    );
+
+    it('applies zone pricing to covered admin orders', async () => {
+      const order = await service.createOrderByAdmin({
+        items: dto.items,
+        customerName: 'Cliente',
+        customerPhone: '999888777',
+        addressSnapshot: JSON.stringify(coords),
+      });
+      expect(order.deliveryFee).toBe(7.5);
+      expect(order.deliverySnapshot).toEqual({
+        deliveryMode: DeliveryMode.ZONES,
+        zone: { id: 'zone-1', name: 'Centro' },
+      });
+      expect(settingsService.getDeliveryFeeTiers).not.toHaveBeenCalled();
+    });
+
+    it('DISTANCE continues allowing orders outside zones and without coordinates', async () => {
+      settingsService.getDeliveryMode.mockResolvedValue(DeliveryMode.DISTANCE);
+      deliveryZonesService.resolve.mockResolvedValue(null);
+      const order = await service.create(userId, dto);
+      expect(order.deliveryFee).toBe(2);
+      expect(order.deliverySnapshot).toEqual({
+        deliveryMode: DeliveryMode.DISTANCE,
+        zone: null,
+      });
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      expect((await service.create(userId, dto)).deliveryFee).toBe(0);
+      expect(deliveryZonesService.resolve).not.toHaveBeenCalled();
     });
   });
 
@@ -3037,6 +3256,18 @@ describe('OrdersService', () => {
   describe('updateStatus', () => {
     const setupTransaction = (order: Order, user: User) => {
       const manager = {
+        increment: jest.fn(
+          (
+            _entity: unknown,
+            _criteria: unknown,
+            _property: string,
+            amount: number,
+          ) => {
+            if (!user) return Promise.resolve({ affected: 0 });
+            user.totalSpent = Number((user.totalSpent + amount).toFixed(2));
+            return Promise.resolve({ affected: 1 });
+          },
+        ),
         findOne: jest.fn((entity: EntityTarget<ObjectLiteral>) => {
           if (entity === Order) return Promise.resolve(order);
           if (entity === User) return Promise.resolve(user);
@@ -3147,7 +3378,13 @@ describe('OrdersService', () => {
 
       expect(result.status).toBe(OrderStatus.ENTREGADO);
       expect(user.totalSpent).toBe(159.7); // 100 + 59.7
-      expect(manager.save).toHaveBeenCalledWith(User, user);
+      expect(manager.increment).toHaveBeenCalledWith(
+        User,
+        { id: userId },
+        'totalSpent',
+        59.7,
+      );
+      expect(manager.save).not.toHaveBeenCalledWith(User, user);
     });
 
     it('dispara checkAndGenerateForUser tras entregar (módulo de cupones)', async () => {

@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { DeliveryController } from './delivery.controller';
 import { OrdersService } from './orders.service';
+import { DeliveryMode } from '../delivery/delivery-mode';
 
 describe('DeliveryController', () => {
   let controller: DeliveryController;
@@ -17,7 +18,14 @@ describe('DeliveryController', () => {
   });
 
   it('delega en OrdersService.estimateDeliveryByCoords y devuelve su resultado tal cual', async () => {
-    const estimate = { deliveryFee: 4, isFarOrder: false, distanceMeters: 300 };
+    const estimate = {
+      deliveryFee: 4,
+      isFarOrder: false,
+      distanceMeters: 300,
+      isCovered: true,
+      deliveryMode: DeliveryMode.DISTANCE,
+      zone: null,
+    };
     ordersService.estimateDeliveryByCoords.mockResolvedValue(estimate);
 
     const result = await controller.estimate({

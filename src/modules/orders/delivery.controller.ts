@@ -8,10 +8,11 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { EstimateDeliveryByCoordsDto } from './dto/estimate-delivery-by-coords.dto';
 import { OrdersService } from './orders.service';
+import { DeliveryEstimateResponseDto } from '../delivery/dto/delivery-response.dto';
 
 /**
  * Vive en el módulo de orders porque el cálculo (`computeDelivery`) es de
- * `OrdersService` — no hay un módulo de delivery aparte.
+ * `OrdersService`; la resolución de zonas se comparte mediante DeliveryModule.
  */
 @ApiTags('delivery')
 @ApiBearerAuth()
@@ -26,12 +27,13 @@ export class DeliveryController {
   @ApiOperation({
     summary: 'Estimar el costo de delivery para unas coordenadas (cliente)',
     description:
-      'Mismo cálculo que POST /orders (Haversine contra store_location + tramo de delivery_fee_tiers) para coordenadas sueltas, ej. el pin del mapa antes de guardar la dirección. Nunca rechaza por distancia: isFarOrder indica si supera delivery_alert_radius_meters.',
+      'Misma resolución que POST /orders. DISTANCE: Haversine y tramos, sin bloqueo por distancia. ZONES: tarifa de zona activa; isCovered=false significa sin cotización y el checkout de cliente se rechaza. isFarOrder conserva el aviso por distancia en ambos modos. No devuelve polígonos.',
   })
   @ApiResponse({
     status: 200,
+    type: DeliveryEstimateResponseDto,
     description:
-      'deliveryFee, isFarOrder y distanceMeters calculados (distanceMeters redondeado a múltiplos de 50 m; la tarifa usa la distancia exacta)',
+      'deliveryFee, isFarOrder y distanceMeters calculados (distanceMeters redondeado a múltiplos de 50 m; la tarifa DISTANCE usa la distancia exacta)',
   })
   @ApiResponse({
     status: 400,

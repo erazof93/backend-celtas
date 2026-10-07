@@ -11,6 +11,7 @@ import { OrderItem } from './entities/order-item.entity';
 import { Order } from './entities/order.entity';
 import { AnonymousOrdersLinkController } from './anonymous-orders-link.controller';
 import { DeliveryController } from './delivery.controller';
+import { DeliveryModule } from '../delivery/delivery.module';
 import { GeoapifyService } from './geoapify.service';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
@@ -22,6 +23,7 @@ import { OrdersService } from './orders.service';
     RewardsModule,
     NotificationsModule,
     SettingsModule,
+    DeliveryModule,
   ],
   controllers: [
     OrdersController,

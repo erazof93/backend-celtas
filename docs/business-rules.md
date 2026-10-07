@@ -31,14 +31,38 @@ revisión del repositorio; no certifica configuración o datos de producción.
   estrellas se procesan después del commit; sus fallos se registran sin revertir la entrega.
 - whatsappSentAt registra la primera confirmación humana de envío, no una entrega de WhatsApp comprobada.
 
+## Importes y redondeo
+
+- Checkout calcula subtotales, descuento y total en céntimos enteros. El descuento
+  se redondea una sola vez (mitad hacia arriba) y se limita al subtotal; no afecta delivery.
+- Total = subtotal - descuento + deliveryFee, a precisión de dos decimales.
+  Ejemplo: subtotal 10.01 y cupón 50% producen descuento 5.01 y saldo 5.00, antes del envío.
+- WhatsApp inicial e histórico usan snapshots monetarios del pedido, sin recalcular
+  porcentajes desde el cupón actual. No se reescriben pedidos anteriores.
+- Precios administrables e importes persistidos deben caber en numeric(10,2):
+  de 0 a 99999999.99 (catálogo mantiene sus mínimos actuales). Overflow de
+  subtotales, total o gasto acumulado se rechaza con 400 y rollback transaccional.
+
 ## Delivery y horarios
 
-- Implementación actual: Haversine desde store_location y tarifas delivery_fee_tiers,
-  ambos en settings. No hay tabla ni módulo de zonas por polígonos.
-- Con coordenadas y ubicación del local sin configurar, el cálculo produce 404.
-  Sin coordenadas se conserva el fallback deliveryFee=0.
-- La distancia expuesta se redondea a 50 m; la tarifa usa la distancia exacta.
-  isFarOrder avisa de distancia; no bloquea automáticamente por estar lejos.
+- delivery_mode selecciona DISTANCE (default compatible) o ZONES; solo acepta esos valores.
+- DISTANCE conserva Haversine desde store_location y delivery_fee_tiers, sin bloqueo
+  por distancia y con deliveryFee=0 sin coordenadas.
+- ZONES usa zonas activas de delivery_zones: GeoJSON Polygon sin huecos, tarifa fija,
+  bordes incluidos y solapamientos interiores prohibidos. El cliente sin cobertura
+  o sin coordenadas válidas recibe 400 al crear el pedido.
+- Admin y cliente en ZONES se rechazan sin cobertura; no hay fallback a DISTANCE.
+  Admin mantiene su excepción de horario, no de cobertura.
+- Activar ZONES exige una zona activa; no se puede eliminar/desactivar la última
+  mientras ese modo esté activo. Cambiar modo conserva ambos catálogos de configuración.
+- En ambos modos, con coordenadas válidas, store_location es necesaria (404 si falta)
+  para los diagnósticos. La distancia expuesta se redondea a 50 m; isFarOrder sigue
+  comparando la distancia exacta con delivery_alert_radius_meters, nunca cobertura.
+- Estimaciones añaden isCovered, deliveryMode y zone (id/nombre, sin polígono).
+  En ZONES sin cobertura, deliveryFee=0 es marcador sin cotización, no envío gratis.
+- Orders conserva deliveryFee e incorpora deliverySnapshot mínimo e independiente
+  del catálogo; pedidos anteriores tienen snapshot null. La tarifa se recalcula al crear.
+- Contratos, restricciones y transición: [delivery](delivery.md).
 - GET /delivery/estimate requiere JWT. Geoapify permite geocodificación; sin API key responde 503.
 - Horarios y cierre manual viven en settings, evaluados para Lima, con nextChangeAt.
   Las pruebas de pedidos deben controlar/restaurar esas settings.
@@ -74,5 +98,14 @@ revisión del repositorio; no certifica configuración o datos de producción.
 
 ## Propuestas
 
-[Zonas de delivery](planning/plan-delivery-zones.md) y
-[marketing](planning/marketing-celtas.md) son ideas pendientes de decisión, no contratos vigentes.
+La [propuesta de zonas](planning/plan-delivery-zones.md) remite a la primera fase
+backend implementada y sus límites. [Marketing](planning/marketing-celtas.md)
+continúa siendo una propuesta, no un contrato vigente.
+
+## Integridad de escrituras concurrentes
+
+- Direcciones: create/update/delete toman un lock de fila del usuario antes de leer o modificar sus direcciones, dentro de una transacción READ COMMITTED. El cambio de principal y el guardado son atómicos; como máximo una principal por usuario por escrituras de la API. Borrar o desmarcar la principal puede dejar cero, sin seleccionar otra automáticamente.
+- Promociones de estrellas: todas las creaciones y actualizaciones (incluida activación/desactivación) se serializan con advisory transaction lock `(731942, 2)` antes de comprobar el solapamiento; se conserva el error 400 de fechas. Es un lock distinto al catálogo delivery.
+- Rewards: checkout bloquea UUIDs canónicos en orden ascendente; la reactivación por cancelación usa el mismo orden. El orden visual y la asociación item/premio no cambian.
+- FCM: UNREGISTERED limpia por usuario **y token enviado**, en un UPDATE condicional. Si cambió el token, cero filas afectadas es normal. Envío y cleanup siguen siendo best effort; los logs omiten tokens y mensajes crudos del proveedor.
+- Orden de locks relevante: direcciones Usuario → Dirección; promociones lock catálogo → filas de promoción; checkout Cupón (si aplica) → Rewards por UUID; cancelación Pedido → Cupón → Rewards; entrega Pedido → Usuario. Los catálogos no toman locks de usuario/rewards. SQL directo que omita esta coordinación no queda protegido por la invariancia de aplicación.

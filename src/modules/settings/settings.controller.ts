@@ -77,7 +77,7 @@ export class SettingsController {
   @ApiOperation({
     summary: 'Crear/actualizar una setting (solo admin)',
     description:
-      'Upsert por key: si la key no existe se crea, si existe se actualiza value/description. Las keys auto_coupon_* se rechazan con 400: se editan solo vía PUT /coupons/auto-config (validadas en conjunto).',
+      'Upsert por key: crea o actualiza value/description. delivery_mode acepta exclusivamente DISTANCE o ZONES; activar ZONES exige una zona activa (409). Las keys auto_coupon_* se rechazan: usar PUT /coupons/auto-config.',
   })
   @ApiResponse({ status: 200, description: 'Setting creada/actualizada' })
   @ApiResponse({
@@ -87,6 +87,10 @@ export class SettingsController {
   })
   @ApiResponse({ status: 401, description: 'Sin token o token inválido' })
   @ApiResponse({ status: 403, description: 'Requiere rol admin' })
+  @ApiResponse({
+    status: 409,
+    description: 'No se puede activar ZONES sin una zona activa',
+  })
   upsert(@Body() dto: UpdateSettingDto) {
     return this.settingsService.upsert(dto.key, dto.value, dto.description);
   }
