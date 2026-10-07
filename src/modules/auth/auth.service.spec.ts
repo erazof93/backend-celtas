@@ -1,3 +1,4 @@
+import { GoogleAuthService } from './google-auth.service';
 import { ConflictException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -68,6 +69,11 @@ describe('AuthService', () => {
       usersService as unknown as UsersService,
       jwtService as unknown as JwtService,
       configService as unknown as ConfigService,
+      new GoogleAuthService(
+        new ConfigService({
+          google: { clientId: 'qa.apps.googleusercontent.com' },
+        }),
+      ),
     );
   });
 

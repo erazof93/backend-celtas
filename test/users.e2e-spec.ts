@@ -386,6 +386,7 @@ describe('Users (e2e)', () => {
       const list = (res.body as Envelope).data as Array<{
         id: string;
         isDefault: boolean;
+        alias: string;
       }>;
       expect(list.filter((a) => a.isDefault)).toHaveLength(1);
       expect(list.filter((a) => a.isDefault)[0].alias).toBe('Trabajo');
@@ -885,7 +886,7 @@ describe('Users (e2e)', () => {
   });
   describe('GET /users?search= (nombre, email o teléfono por dígitos)', () => {
     // Números derivados del suffix: únicos por corrida, sin chocar con otros datos.
-    const s8 = String(suffix).slice(-8);
+    const s8 = '11234567';
     const legacyEmail = `qa-users-search-legacy-${suffix}@test.com`;
     const foreignEmail = `qa-users-search-foreign-${suffix}@test.com`;
     const legacyName = `QaBusqueda${suffix} Legacy`;
@@ -1026,12 +1027,38 @@ describe('Users (e2e)', () => {
           .get('/users')
           .set('Authorization', `Bearer ${adminToken}`)
           .expect(200);
-        const res = await search(payload).expect(200);
-
+        const before = await usersRepo.find({ order: { id: 'ASC' } });
+        const queries = jest
+          .spyOn(usersRepo.manager.connection.logger, 'logQuery')
+          .mockImplementation(() => undefined);
+        let res: { body: unknown };
+        try {
+          res = await search(payload).expect(200);
+          const sqlCalls = queries.mock.calls.filter(([sql]) =>
+            sql.includes('ILIKE'),
+          );
+          expect(sqlCalls.length).toBeGreaterThan(0);
+          for (const [sql, parameters] of sqlCalls) {
+            expect(sql).not.toContain(payload);
+            expect(sql).toMatch(/\$\d+/);
+            expect(parameters).toContain('%' + payload + '%');
+          }
+        } finally {
+          queries.mockRestore();
+        }
+        const digits = payload.replace(/\D/g, '');
+        const expected = before
+          .filter(
+            (user) =>
+              user.fullName.toLowerCase().includes(payload.toLowerCase()) ||
+              user.email.toLowerCase().includes(payload.toLowerCase()) ||
+              (digits.length >= 3 &&
+                (user.phone ?? '').replace(/\D/g, '').includes(digits)),
+          )
+          .map((user) => user.id);
+        expect(foundIds(res).sort()).toEqual(expected.sort());
         expect(totalOf(res)).toBeLessThan(totalOf(all));
-        expect(foundIds(res)).not.toContain(ids.legacy);
-        // La tabla sigue viva y los datos intactos.
-        expect(await usersRepo.findOneBy({ id: ids.legacy })).not.toBeNull();
+        expect(await usersRepo.find({ order: { id: 'ASC' } })).toEqual(before);
       },
     );
 

@@ -101,15 +101,18 @@ export class UsersService {
    */
   async updateProfile(userId: string, data: UpdateProfileData): Promise<User> {
     const user = await this.getProfile(userId);
+    const patch: UpdateProfileData = {};
     if (data.fullName !== undefined) {
-      user.fullName = data.fullName;
+      patch.fullName = data.fullName;
     }
     if (data.phone !== undefined) {
       // null sigue borrando el teléfono (el DTO lo permite con @IsOptional).
-      user.phone =
+      patch.phone =
         data.phone === null ? null : this.normalizePhoneOrReject(data.phone);
     }
-    return this.usersRepository.save(user);
+    if (Object.keys(patch).length === 0) return user;
+    await this.usersRepository.update(userId, patch);
+    return this.getProfile(userId);
   }
 
   /**
@@ -160,9 +163,9 @@ export class UsersService {
    * ahora: sobrescribe el token anterior (el último dispositivo gana).
    */
   async updateFcmToken(userId: string, fcmToken: string): Promise<User> {
-    const user = await this.getProfile(userId);
-    user.fcmToken = fcmToken;
-    return this.usersRepository.save(user);
+    await this.getProfile(userId);
+    await this.usersRepository.update(userId, { fcmToken });
+    return this.getProfile(userId);
   }
 
   /**
@@ -174,9 +177,9 @@ export class UsersService {
    * sobrescribe igual en el próximo `updateFcmToken`.
    */
   async clearFcmToken(userId: string): Promise<User> {
-    const user = await this.getProfile(userId);
-    user.fcmToken = null;
-    return this.usersRepository.save(user);
+    await this.getProfile(userId);
+    await this.usersRepository.update(userId, { fcmToken: null });
+    return this.getProfile(userId);
   }
 
   /**
@@ -229,7 +232,9 @@ export class UsersService {
     if (!user) {
       throw new NotFoundException('Usuario no encontrado');
     }
-    user.role = role;
-    return this.usersRepository.save(user);
+    await this.usersRepository.update(targetId, { role });
+    const updated = await this.findById(targetId);
+    if (!updated) throw new NotFoundException('Usuario no encontrado');
+    return updated;
   }
 }

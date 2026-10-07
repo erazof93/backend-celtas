@@ -12,7 +12,12 @@ import { UsersService } from './users.service';
 
 describe('UsersService', () => {
   let service: UsersService;
-  let repo: { findOne: jest.Mock; save: jest.Mock; findAndCount: jest.Mock };
+  let repo: {
+    findOne: jest.Mock;
+    save: jest.Mock;
+    update: jest.Mock;
+    findAndCount: jest.Mock;
+  };
 
   const makeUser = () =>
     ({
@@ -33,6 +38,11 @@ describe('UsersService', () => {
     repo = {
       findOne: jest.fn(),
       save: jest.fn(),
+      update: jest.fn(async (_id: string, patch: Partial<User>) => {
+        const current = (await repo.findOne()) as User;
+        Object.assign(current, patch);
+        return { affected: 1 };
+      }),
       findAndCount: jest.fn(),
     };
 
@@ -71,7 +81,7 @@ describe('UsersService', () => {
         phone: '+51999999999',
       };
       repo.findOne.mockResolvedValue(makeUser());
-      repo.save.mockResolvedValue(updated);
+      repo.findOne.mockResolvedValueOnce(makeUser()).mockResolvedValue(updated);
 
       const result = await service.updateProfile('user-1', {
         fullName: 'Juan Carlos',
@@ -79,7 +89,8 @@ describe('UsersService', () => {
       });
 
       // Se guarda normalizado (código de país + número, sin +): formato de wa.me.
-      expect(repo.save).toHaveBeenCalledWith(
+      expect(repo.update).toHaveBeenCalledWith(
+        'user-1',
         expect.objectContaining({
           fullName: 'Juan Carlos',
           phone: '51999999999',
@@ -146,7 +157,8 @@ describe('UsersService', () => {
 
       const result = await service.updateFcmToken('user-1', 'token-nuevo');
 
-      expect(repo.save).toHaveBeenCalledWith(
+      expect(repo.update).toHaveBeenCalledWith(
+        'user-1',
         expect.objectContaining({ fcmToken: 'token-nuevo' }),
       );
       expect(result.fcmToken).toBe('token-nuevo');
@@ -168,7 +180,8 @@ describe('UsersService', () => {
 
       const result = await service.clearFcmToken('user-1');
 
-      expect(repo.save).toHaveBeenCalledWith(
+      expect(repo.update).toHaveBeenCalledWith(
+        'user-1',
         expect.objectContaining({ fcmToken: null }),
       );
       expect(result.fcmToken).toBe(null);
@@ -265,7 +278,8 @@ describe('UsersService', () => {
         UserRole.ADMIN,
       );
       expect(result.role).toBe(UserRole.ADMIN);
-      expect(repo.save).toHaveBeenCalledWith(
+      expect(repo.update).toHaveBeenCalledWith(
+        'user-1',
         expect.objectContaining({ role: UserRole.ADMIN }),
       );
     });

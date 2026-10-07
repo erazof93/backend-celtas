@@ -183,7 +183,7 @@ describe('Auth (e2e)', () => {
     expect(body.data.user.email).toBe(localEmail);
     // totalSpent debe venir como number (no "0.00" string) gracias al transformer.
     expect(typeof body.data.user.totalSpent).toBe('number');
-    expect(body.data.user.password).toBeUndefined();
+    expect(body.data.user).not.toHaveProperty('password');
     // El password no debe aparecer en NINGÚN punto del JSON de respuesta.
     expect(JSON.stringify(body)).not.toContain(password);
   });
@@ -242,7 +242,7 @@ describe('Auth (e2e)', () => {
     expect(body.data.accessToken).toBeDefined();
     expect(body.data.refreshToken).toBeDefined();
     expect(typeof body.data.user.totalSpent).toBe('number');
-    expect(body.data.user.password).toBeUndefined();
+    expect(body.data.user).not.toHaveProperty('password');
     expect(JSON.stringify(body)).not.toContain(password);
   });
 
@@ -284,7 +284,7 @@ describe('Auth (e2e)', () => {
     expect(data.role).toBe('cliente');
     // /auth/me lee el usuario real de la BD; totalSpent debe venir como number.
     expect(typeof data.totalSpent).toBe('number');
-    expect(data.password).toBeUndefined();
+    expect(data).not.toHaveProperty('password');
   });
 
   it('POST /auth/refresh renueva tokens con un refresh token válido', async () => {
@@ -326,7 +326,7 @@ describe('Auth (e2e)', () => {
     expect(body.data.user.email).toBe(newGoogleEmail);
     expect(body.data.user.provider).toBe('google');
     expect(body.data.user.googleId).toBe('google-id-123');
-    expect(body.data.user.password).toBeUndefined();
+    expect(body.data.user).not.toHaveProperty('password');
     expect(typeof body.data.user.totalSpent).toBe('number');
   });
 
