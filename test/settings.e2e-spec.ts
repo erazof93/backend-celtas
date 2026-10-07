@@ -59,6 +59,7 @@ describe('Settings (e2e)', () => {
   let addressesRepo: Repository<Address>;
   let ordersRepo: Repository<Order>;
   let businessHoursSnapshot: BusinessHoursSnapshot;
+  let originalSecretInternal: Setting | null;
 
   let adminToken: string;
   let clientToken: string;
@@ -107,6 +108,9 @@ describe('Settings (e2e)', () => {
 
     usersRepo = app.get<Repository<User>>(getRepositoryToken(User));
     settingsRepo = app.get<Repository<Setting>>(getRepositoryToken(Setting));
+    originalSecretInternal = await settingsRepo.findOneBy({
+      key: 'secret_internal',
+    });
     categoriesRepo = app.get<Repository<Category>>(
       getRepositoryToken(Category),
     );
@@ -201,6 +205,11 @@ describe('Settings (e2e)', () => {
     // siempre" arriba, y lo muta para probar el cierre manual) por si algún
     // test falló antes de revertirlo por su cuenta.
     await restoreBusinessHours(settingsRepo, businessHoursSnapshot);
+    if (originalSecretInternal) {
+      await settingsRepo.save(originalSecretInternal);
+    } else {
+      await settingsRepo.delete({ key: 'secret_internal' });
+    }
     await app.close();
   });
 
