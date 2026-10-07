@@ -1,3 +1,4 @@
+import { MAX_MONEY } from '../../../common/utils/money.util';
 import {
   Column,
   CreateDateColumn,
@@ -26,7 +27,7 @@ export enum CouponStatus {
  * (`discountValue`, `minPurchaseAmount`). Un valor mayor revienta el INSERT con
  * "numeric field overflow": los DTOs lo rechazan antes con 400.
  */
-export const MAX_COUPON_AMOUNT = 99_999_999.99;
+export const MAX_COUPON_AMOUNT = MAX_MONEY;
 
 /**
  * Tope de vigencia de los cupones automáticos (días). Sin tope, un valor enorme

@@ -1,3 +1,4 @@
+import { MAX_MONEY } from '../../../common/utils/money.util';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
@@ -6,6 +7,7 @@ import {
   IsNumber,
   IsString,
   Min,
+  Max,
 } from 'class-validator';
 import { IsOptionalNonNullable } from '../../../common/decorators/is-optional-non-nullable.decorator';
 
@@ -27,6 +29,7 @@ export class CreateExtraPortionDto {
     { message: 'El precio debe ser un número con hasta 2 decimales' },
   )
   @Min(0.01, { message: 'El precio debe ser mayor a cero' })
+  @Max(MAX_MONEY, { message: 'El precio excede el máximo permitido' })
   price: number;
 
   @ApiPropertyOptional({

@@ -1,3 +1,4 @@
+import { discountedSubtotal } from '../../common/utils/money.util';
 import {
   BadRequestException,
   Injectable,
@@ -516,12 +517,11 @@ export class CouponsService {
 
   /** Aplica el descuento al subtotal según el tipo del cupón. Nunca baja de 0. */
   private applyDiscount(subtotal: number, coupon: Coupon): number {
-    if (coupon.discountType === CouponDiscountType.PERCENTAGE) {
-      // Clampeado a 0 por si un cupón porcentual supera el 100%.
-      return Math.max(0, subtotal * (1 - coupon.discountValue / 100));
-    }
-    // fixed_amount: nunca baja de 0.
-    return Math.max(0, subtotal - coupon.discountValue);
+    return discountedSubtotal(
+      subtotal,
+      coupon.discountValue,
+      coupon.discountType === CouponDiscountType.PERCENTAGE,
+    );
   }
 
   /** Descripción legible del descuento para mostrar al cliente. */
