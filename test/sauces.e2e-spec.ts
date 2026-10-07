@@ -641,7 +641,10 @@ describe('Sauces (e2e)', () => {
     });
 
     it('default de la BD (allowWithout=true): sauceIds: [] → 201, "Sin salsas" en snapshot y WhatsApp', async () => {
-      expect((await getMenuItem(itemId))?.sauceAllowWithout).toBe(true);
+      expect(await getMenuItem(itemId)).toHaveProperty(
+        'sauceAllowWithout',
+        true,
+      );
       const res = await order({ sauceIds: [] }).expect(201);
       const data = (res.body as Envelope).data as OrderData;
       expect(data.items[0].selectedSauces).toEqual([]);

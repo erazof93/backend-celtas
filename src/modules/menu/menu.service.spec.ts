@@ -205,7 +205,7 @@ describe('MenuService', () => {
       expect(result[0].items).toHaveLength(1);
       expect(result[0].items[0].id).toBe('i-1');
       // La app no recibe el flag available: se omiten los productos no disponibles.
-      expect(result[0].items[0].available).toBeUndefined();
+      expect(result[0].items[0]).not.toHaveProperty('available');
       // Producto sin salsas/bebidas/extras asignadas (ej. arroz chaufa): array
       // vacío, no undefined.
       expect(result[0].items[0].sauces).toEqual([]);

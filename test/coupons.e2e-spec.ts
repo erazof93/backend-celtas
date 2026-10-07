@@ -1144,15 +1144,6 @@ describe('Coupons (e2e)', () => {
   });
 
   describe('Generación automática (disparo tras entregar)', () => {
-    let clientCId: string;
-
-    beforeAll(async () => {
-      const clientC = await usersRepo.findOne({
-        where: { email: clientCEmail },
-      });
-      clientCId = clientC!.id;
-    });
-
     const deliverOrder = async (
       token: string,
       quantity: number,
@@ -1369,8 +1360,6 @@ describe('Coupons (e2e)', () => {
       expect(fresh!.status).toBe('active');
       expect(new Date(fresh!.expiresAt).getTime()).toBeGreaterThan(Date.now());
     });
-
-    void clientCId;
   });
 
   describe('GET /coupons (admin)', () => {

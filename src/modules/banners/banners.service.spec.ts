@@ -53,7 +53,7 @@ describe('BannersService', () => {
       (target: Banner, dto: Record<string, unknown>) => {
         for (const key of Object.keys(dto)) {
           if (dto[key] !== undefined) {
-            (target as Record<string, unknown>)[key] = dto[key];
+            Object.assign(target, { [key]: dto[key] });
           }
         }
         return target;

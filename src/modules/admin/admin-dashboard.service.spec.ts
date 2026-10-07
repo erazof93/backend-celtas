@@ -44,7 +44,10 @@ const qb = (overrides: Partial<QbMock> = {}): QbMock => ({
 
 /** Con fake timers solo se congela `Date`; las promesas y timers siguen siendo reales. */
 type FakeableAPI = NonNullable<
-  NonNullable<Parameters<typeof jest.useFakeTimers>[0]>['doNotFake']
+  Extract<
+    NonNullable<Parameters<typeof jest.useFakeTimers>[0]>,
+    { doNotFake?: unknown }
+  >['doNotFake']
 >[number];
 
 const REAL_TIMERS: FakeableAPI[] = [

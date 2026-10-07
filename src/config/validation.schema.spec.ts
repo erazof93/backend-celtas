@@ -2,6 +2,7 @@ import * as Joi from 'joi';
 import { validationSchema } from './validation.schema';
 
 const completeEnv = {
+  ALLOWED_ORIGINS: 'http://localhost:5173',
   PORT: '3000',
   NODE_ENV: 'development',
   DB_HOST: 'localhost',
