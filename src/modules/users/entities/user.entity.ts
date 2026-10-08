@@ -53,6 +53,10 @@ export class User {
   @Column({ type: 'varchar', nullable: true })
   fcmToken: string | null;
 
+  @Exclude()
+  @Column({ type: 'uuid', nullable: true })
+  fcmGeneration: string | null;
+
   @Column({
     type: 'decimal',
     precision: 10,

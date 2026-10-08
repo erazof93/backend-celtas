@@ -3,11 +3,12 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AddressesService } from './addresses.service';
 import { Address } from './entities/address.entity';
 import { User } from './entities/user.entity';
+import { FcmGeneration } from './entities/fcm-generation.entity';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, Address])],
+  imports: [TypeOrmModule.forFeature([User, Address, FcmGeneration])],
   controllers: [UsersController],
   providers: [UsersService, AddressesService],
   exports: [UsersService],

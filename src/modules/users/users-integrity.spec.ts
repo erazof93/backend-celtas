@@ -50,7 +50,9 @@ describe('Users partial update regressions', () => {
           ? { fullName: 'New name' }
           : operation === 'role'
             ? { role: UserRole.ADMIN }
-            : { fcmToken: operation === 'token' ? 'new-token' : null },
+            : operation === 'token'
+              ? { fcmToken: 'new-token', fcmGeneration: null }
+              : { fcmToken: null },
       );
     },
   );

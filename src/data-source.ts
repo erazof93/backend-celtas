@@ -18,6 +18,7 @@ import { Sauce } from './modules/sauces/entities/sauce.entity';
 import { Setting } from './modules/settings/entities/setting.entity';
 import { Address } from './modules/users/entities/address.entity';
 import { User } from './modules/users/entities/user.entity';
+import { FcmGeneration } from './modules/users/entities/fcm-generation.entity';
 import { DeliveryZone } from './modules/delivery/entities/delivery-zone.entity';
 
 /**
@@ -55,6 +56,7 @@ export const AppDataSource = new DataSource({
   database: env('DB_DATABASE'),
   entities: [
     User,
+    FcmGeneration,
     Address,
     Category,
     MenuItem,

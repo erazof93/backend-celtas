@@ -1860,15 +1860,19 @@ describe('OrdersService', () => {
         { title: string; data: Record<string, string> },
       ];
       expect(calledUserId).toBe('admin-1');
-      expect(payload.title).toContain('🍔 Nuevo pedido');
-      expect(payload.title).toContain(`S/ ${result.total.toFixed(2)}`);
+      expect(payload.title).toBe('Nuevo pedido en Celtas');
+      expect(payload).toEqual({
+        title: 'Nuevo pedido en Celtas',
+        body: 'Abre el panel para revisar el pedido',
+        data: { orderId: result.id, status: OrderStatus.PENDIENTE },
+      });
       expect(payload.data).toEqual({
         orderId: result.id,
         status: OrderStatus.PENDIENTE,
       });
     });
 
-    it('el pedido lejano (supera el radio de aviso) marca el push con el mensaje de advertencia', async () => {
+    it('el pedido lejano (supera el radio de aviso) utiliza texto generico', async () => {
       usersRepo.find.mockResolvedValue([
         { id: 'admin-1', role: UserRole.ADMIN, fcmToken: 'token-admin-1' },
       ]);
@@ -1878,9 +1882,7 @@ describe('OrdersService', () => {
 
       const [, payload] = notificationsService.sendPushNotification.mock
         .calls[0] as [string, { title: string }];
-      expect(payload.title).toContain(
-        '⚠️ Nuevo pedido fuera de la zona habitual',
-      );
+      expect(payload.title).toBe('Nuevo pedido en Celtas');
     });
 
     it('el pedido cercano NO dispara el mensaje de advertencia', async () => {
@@ -2800,8 +2802,8 @@ describe('OrdersService', () => {
       [2500.0001, true],
       [2520, true], // se mostraría 2500 → redondear antes NO avisaría
     ])(
-      'create(): %d m exactos → push de pedido lejano = %s (radio 2500 con distancia exacta)',
-      async (exact, far) => {
+      'create(): %d m exactos → push generico (indicador anterior %s) (radio 2500 con distancia exacta)',
+      async (exact) => {
         haversineSpy.mockReturnValue(exact);
         usersRepo.find.mockResolvedValue([
           { id: 'admin-1', role: UserRole.ADMIN, fcmToken: 'token-admin-1' },
@@ -2810,7 +2812,7 @@ describe('OrdersService', () => {
 
         const [, payload] = notificationsService.sendPushNotification.mock
           .calls[0] as [string, { title: string }];
-        expect(payload.title.includes('fuera de la zona habitual')).toBe(far);
+        expect(payload.title).toBe('Nuevo pedido en Celtas');
       },
     );
 

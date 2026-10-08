@@ -1,5 +1,6 @@
 import {
   Body,
+  BadRequestException,
   Controller,
   Delete,
   Get,
@@ -13,6 +14,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiBody,
   ApiOperation,
   ApiParam,
   ApiQuery,
@@ -26,6 +28,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from './entities/user.entity';
 import { AddressesService } from './addresses.service';
 import { CreateAddressDto } from './dto/create-address.dto';
+import { ClearFcmTokenDto } from './dto/clear-fcm-token.dto';
 import { QueryUsersDto } from './dto/query-users.dto';
 import { UpdateAddressDto } from './dto/update-address.dto';
 import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
@@ -80,11 +83,16 @@ export class UsersController {
   })
   @ApiResponse({ status: 200, description: 'Token FCM actualizado' })
   @ApiResponse({ status: 400, description: 'Payload inválido' })
+  @ApiResponse({ status: 409, description: 'Generación FCM revocada' })
   updateFcmToken(
     @Req() req: AuthenticatedRequest,
     @Body() dto: UpdateFcmTokenDto,
   ) {
-    return this.usersService.updateFcmToken(req.user.userId, dto.fcmToken);
+    return this.usersService.updateFcmToken(
+      req.user.userId,
+      dto.fcmToken,
+      dto.generation,
+    );
   }
 
   @Delete('me/fcm-token')
@@ -95,11 +103,33 @@ export class UsersController {
       'Best-effort desde la app al cerrar sesión: deja fcmToken en null para que ' +
       'el backend deje de enviarle notificaciones push a ese dispositivo. Evita ' +
       'que, en un celular compartido, el próximo usuario que inicie sesión reciba ' +
-      'notificaciones de pedidos de la cuenta anterior. Sin body.',
+      'notificaciones de pedidos de la cuenta anterior. Sin body conserva el comportamiento legacy; ' +
+      'con fcmToken solo elimina el token coincidente del usuario autenticado. ' +
+      'Con generation revoca permanentemente esa generación y limpia solo su registro, incluso sin fcmToken.',
   })
   @ApiResponse({ status: 200, description: 'Token FCM borrado' })
-  clearFcmToken(@Req() req: AuthenticatedRequest) {
-    return this.usersService.clearFcmToken(req.user.userId);
+  @ApiBody({ required: false, type: ClearFcmTokenDto })
+  @ApiResponse({
+    status: 400,
+    description: 'Token inválido o campo no permitido',
+  })
+  clearFcmToken(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: ClearFcmTokenDto,
+  ) {
+    if (
+      dto.fcmToken === undefined &&
+      dto.generation === undefined &&
+      (Number(req.headers['content-length']) > 0 ||
+        req.headers['transfer-encoding'])
+    ) {
+      throw new BadRequestException('El body debe incluir un fcmToken válido');
+    }
+    return this.usersService.clearFcmToken(
+      req.user.userId,
+      dto.fcmToken,
+      dto.generation,
+    );
   }
 
   @Get('me/addresses')

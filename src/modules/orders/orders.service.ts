@@ -236,7 +236,7 @@ export class OrdersService {
         'La dirección no tiene cobertura de delivery o no tiene coordenadas válidas',
       );
     }
-    const { deliveryFee, isFarOrder } = delivery;
+    const { deliveryFee } = delivery;
     const deliverySnapshot: DeliverySnapshot = {
       deliveryMode: delivery.deliveryMode,
       zone: delivery.zone ? { ...delivery.zone } : null,
@@ -371,7 +371,7 @@ export class OrdersService {
     // Fuera de la transacción, tras el commit: aviso a los admins con push,
     // best-effort (sendPushNotification nunca lanza, no hace falta try/catch).
     // Si esto fallara igual, la creación del pedido ya quedó registrada.
-    await this.notifyAdminsNewOrder(savedOrder, isFarOrder);
+    await this.notifyAdminsNewOrder(savedOrder);
 
     return savedOrder;
   }
@@ -1069,21 +1069,15 @@ export class OrdersService {
    * Push a los admins con token registrado avisando el pedido nuevo.
    * Awaited best effort after commit, including recipient lookup.
    */
-  private async notifyAdminsNewOrder(
-    order: Order,
-    isFarOrder: boolean,
-  ): Promise<void> {
+  private async notifyAdminsNewOrder(order: Order): Promise<void> {
     try {
       const admins = await this.usersRepository.find({
         where: { role: UserRole.ADMIN, fcmToken: Not(IsNull()) },
       });
       if (admins.length === 0) return;
 
-      const shortId = order.id.slice(0, 8).toUpperCase();
-      const title = isFarOrder
-        ? `⚠️ Nuevo pedido fuera de la zona habitual #${shortId} — S/ ${order.total.toFixed(2)}`
-        : `🍔 Nuevo pedido #${shortId} — S/ ${order.total.toFixed(2)}`;
-      const body = this.readableAddress(order.addressSnapshot);
+      const title = 'Nuevo pedido en Celtas';
+      const body = 'Abre el panel para revisar el pedido';
 
       await Promise.all(
         admins.map((admin) =>

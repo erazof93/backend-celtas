@@ -1,11 +1,19 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DeepPartial, FindOptionsWhere, ILike, Raw, Repository } from 'typeorm';
+import {
+  DeepPartial,
+  FindOptionsWhere,
+  ILike,
+  IsNull,
+  Raw,
+  Repository,
+} from 'typeorm';
 import {
   INVALID_PHONE_MESSAGE,
   normalizePhone,
@@ -162,9 +170,18 @@ export class UsersService {
    * Guarda/actualiza el token FCM del dispositivo actual. Single-device por
    * ahora: sobrescribe el token anterior (el último dispositivo gana).
    */
-  async updateFcmToken(userId: string, fcmToken: string): Promise<User> {
+  async updateFcmToken(
+    userId: string,
+    fcmToken: string,
+    generation?: string,
+  ): Promise<User> {
+    if (generation)
+      return this.changeFcmGeneration(userId, generation, fcmToken);
     await this.getProfile(userId);
-    await this.usersRepository.update(userId, { fcmToken });
+    await this.usersRepository.update(userId, {
+      fcmToken,
+      fcmGeneration: null,
+    });
     return this.getProfile(userId);
   }
 
@@ -176,10 +193,70 @@ export class UsersService {
    * anterior. Es best-effort desde la app; si no se llama, el token se
    * sobrescribe igual en el próximo `updateFcmToken`.
    */
-  async clearFcmToken(userId: string): Promise<User> {
+  async clearFcmToken(
+    userId: string,
+    fcmToken?: string,
+    generation?: string,
+  ): Promise<User> {
+    if (generation)
+      return this.changeFcmGeneration(userId, generation, fcmToken, true);
     await this.getProfile(userId);
-    await this.usersRepository.update(userId, { fcmToken: null });
+    // Compare and clear in one SQL UPDATE, including the authenticated owner.
+    await this.usersRepository.update(
+      fcmToken === undefined ? userId : { id: userId, fcmToken },
+      { fcmToken: null },
+    );
     return this.getProfile(userId);
+  }
+
+  private async changeFcmGeneration(
+    userId: string,
+    generation: string,
+    token?: string,
+    revoke = false,
+  ): Promise<User> {
+    return this.usersRepository.manager.transaction(async (manager) => {
+      const users = manager.getRepository(User);
+      // Lock before creating the generation, including DELETE-before-first-PATCH.
+      const user = await users.findOne({
+        where: { id: userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!user) throw new UnauthorizedException('Usuario no encontrado');
+      await manager.query(
+        'INSERT INTO "fcm_generations" ("userId", "generation", "revokedAt") VALUES ($1, $2, NULL) ON CONFLICT DO NOTHING',
+        [userId, generation],
+      );
+      if (revoke) {
+        await manager.query(
+          'UPDATE "fcm_generations" SET "revokedAt" = COALESCE("revokedAt", CURRENT_TIMESTAMP) WHERE "userId" = $1 AND "generation" = $2',
+          [userId, generation],
+        );
+        await users.update(
+          { id: userId, fcmGeneration: generation },
+          { fcmToken: null, fcmGeneration: null },
+        );
+        // Existing pre-migration / legacy tokens have no generation ownership.
+        // Only clear them when the caller supplies the exact token.
+        if (token !== undefined)
+          await users.update(
+            { id: userId, fcmGeneration: IsNull(), fcmToken: token },
+            { fcmToken: null },
+          );
+      } else {
+        const [record] = await manager.query<{ revokedAt: Date | null }[]>(
+          'SELECT "revokedAt" FROM "fcm_generations" WHERE "userId" = $1 AND "generation" = $2',
+          [userId, generation],
+        );
+        if (!record || record.revokedAt)
+          throw new ConflictException('Generación FCM revocada');
+        await users.update(userId, {
+          fcmToken: token,
+          fcmGeneration: generation,
+        });
+      }
+      return (await users.findOne({ where: { id: userId } }))!;
+    });
   }
 
   /**
