@@ -33,6 +33,18 @@ export default () => ({
     password: env('DB_PASSWORD'),
     database: env('DB_DATABASE'),
   },
+  orderEvents: {
+    enabled: process.env.ORDER_EVENTS_ENABLED === 'true',
+    listenerMode: process.env.ORDER_EVENTS_LISTENER_MODE,
+    listener: {
+      host: process.env.ORDER_EVENTS_LISTENER_HOST,
+      port: process.env.ORDER_EVENTS_LISTENER_PORT
+        ? Number(process.env.ORDER_EVENTS_LISTENER_PORT)
+        : undefined,
+      username: process.env.ORDER_EVENTS_LISTENER_USERNAME,
+      password: process.env.ORDER_EVENTS_LISTENER_PASSWORD,
+    },
+  },
   jwt: {
     secret: env('JWT_SECRET'),
     expiresIn: env('JWT_EXPIRES_IN'),

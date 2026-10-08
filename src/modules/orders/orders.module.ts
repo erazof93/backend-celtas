@@ -15,6 +15,10 @@ import { DeliveryModule } from '../delivery/delivery.module';
 import { GeoapifyService } from './geoapify.service';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
+import { OrderEventsController } from './events/order-events.controller';
+import { OrderEventsService } from './events/order-events.service';
+import { OrderEventsStreamService } from './events/order-events-stream.service';
+import { OrderEventsGuard } from './events/order-events.guard';
 
 @Module({
   imports: [
@@ -29,8 +33,15 @@ import { OrdersService } from './orders.service';
     OrdersController,
     DeliveryController,
     AnonymousOrdersLinkController,
+    OrderEventsController,
   ],
-  providers: [OrdersService, GeoapifyService],
+  providers: [
+    OrdersService,
+    GeoapifyService,
+    OrderEventsService,
+    OrderEventsStreamService,
+    OrderEventsGuard,
+  ],
   exports: [OrdersService],
 })
 export class OrdersModule {}

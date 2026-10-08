@@ -20,6 +20,7 @@ import { OrderItem } from './entities/order-item.entity';
 import { Order, OrderStatus } from './entities/order.entity';
 import { GeoapifyService } from './geoapify.service';
 import { OrdersService } from './orders.service';
+import { OrderEventsService } from './events/order-events.service';
 import * as geoUtil from '../../common/utils/geo.util';
 import { DeliveryMode } from '../delivery/delivery-mode';
 import { DeliveryZonesService } from '../delivery/delivery-zones.service';
@@ -58,6 +59,7 @@ describe('OrdersService', () => {
     recalculateForUser: jest.Mock;
   };
   let notificationsService: { sendPushNotification: jest.Mock };
+  let orderEvents: { record: jest.Mock; wake: jest.Mock };
   let deliveryZonesService: { resolve: jest.Mock };
   let settingsService: {
     getDeliveryMode: jest.Mock;
@@ -142,6 +144,20 @@ describe('OrdersService', () => {
     addressesRepo = { findOne: jest.fn() };
     usersRepo = { findOne: jest.fn(), find: jest.fn().mockResolvedValue([]) };
     dataSource = { transaction: jest.fn() };
+    orderEvents = {
+      record: jest.fn().mockResolvedValue(undefined),
+      wake: jest.fn(),
+    };
+    dataSource.transaction.mockImplementation(
+      (callback: (manager: unknown) => Promise<unknown>) =>
+        callback({
+          findOne: ordersRepo.findOne,
+          update: jest.fn(
+            (_entity: unknown, id: unknown, value: unknown) =>
+              ordersRepo.update(id, value) as unknown,
+          ),
+        }),
+    );
     configService = {
       get: jest.fn((key: string) =>
         key === 'whatsapp.businessNumber' ? '51999999999' : undefined,
@@ -190,6 +206,10 @@ describe('OrdersService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OrdersService,
+        {
+          provide: OrderEventsService,
+          useValue: orderEvents,
+        },
         { provide: getRepositoryToken(Order), useValue: ordersRepo },
         { provide: getRepositoryToken(OrderItem), useValue: orderItemsRepo },
         { provide: getRepositoryToken(MenuItem), useValue: menuItemsRepo },
@@ -257,6 +277,39 @@ describe('OrdersService', () => {
       const result = await service.create(userId, { ...dto, addressId });
       expect(result.status).toBe(OrderStatus.PENDIENTE);
       expect(settingsService.isOpenNow).toHaveBeenCalled();
+    });
+
+    it('records before commit and wakes only after the transaction resolves', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      const transaction = dataSource.transaction.getMockImplementation()!;
+      dataSource.transaction.mockImplementation(async (callback: unknown) => {
+        const result: unknown = await transaction(callback);
+        expect(orderEvents.record).toHaveBeenCalledWith(
+          expect.any(Object),
+          'order.created',
+          result,
+          'created',
+        );
+        expect(orderEvents.wake).not.toHaveBeenCalled();
+        return result;
+      });
+      await service.create(userId, { ...dto, addressId });
+      expect(orderEvents.wake).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not wake or send FCM if the transaction fails after recording', async () => {
+      addressesRepo.findOne.mockResolvedValue(seedAddress());
+      const transaction = dataSource.transaction.getMockImplementation()!;
+      dataSource.transaction.mockImplementation(async (callback: unknown) => {
+        await transaction(callback);
+        throw new Error('commit failed');
+      });
+      await expect(
+        service.create(userId, { ...dto, addressId }),
+      ).rejects.toThrow('commit failed');
+      expect(orderEvents.record).toHaveBeenCalledTimes(1);
+      expect(orderEvents.wake).not.toHaveBeenCalled();
+      expect(notificationsService.sendPushNotification).not.toHaveBeenCalled();
     });
 
     it('copia la dirección desde addressId al snapshot (no guarda referencia viva)', async () => {

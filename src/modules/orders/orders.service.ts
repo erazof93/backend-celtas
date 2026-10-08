@@ -43,6 +43,7 @@ import { GeoapifyService } from './geoapify.service';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrderItem } from './entities/order-item.entity';
 import { Order, OrderSource, OrderStatus } from './entities/order.entity';
+import { OrderEventsService } from './events/order-events.service';
 
 /** Transiciones válidas de estado (no se puede saltar ni retroceder). */
 const VALID_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
@@ -126,6 +127,7 @@ export class OrdersService {
     private readonly settingsService: SettingsService,
     private readonly geoapifyService: GeoapifyService,
     private readonly deliveryZonesService: DeliveryZonesService,
+    private readonly orderEvents: OrderEventsService,
   ) {}
 
   async create(userId: string, dto: CreateOrderDto): Promise<Order> {
@@ -365,12 +367,14 @@ export class OrdersService {
         );
       }
 
+      await this.orderEvents.record(manager, 'order.created', saved, 'created');
       return saved;
     });
 
     // Fuera de la transacción, tras el commit: aviso a los admins con push,
     // best-effort (sendPushNotification nunca lanza, no hace falta try/catch).
     // Si esto fallara igual, la creación del pedido ya quedó registrada.
+    this.orderEvents.wake();
     await this.notifyAdminsNewOrder(savedOrder);
 
     return savedOrder;
@@ -528,9 +532,17 @@ export class OrdersService {
           order.deliveredAt = new Date();
         }
 
-        return manager.save(Order, order);
+        const saved = await manager.save(Order, order);
+        await this.orderEvents.record(
+          manager,
+          'order.status_changed',
+          saved,
+          `status:${saved.status}`,
+        );
+        return saved;
       })
       .then(async (saved) => {
+        this.orderEvents.wake();
         // Pedido manual anónimo: sin cliente no hay cupón, estrellas ni push.
         const userId = saved.userId;
         if (!userId) return saved;
@@ -657,14 +669,30 @@ export class OrdersService {
   async markWhatsappSent(
     orderId: string,
   ): Promise<{ orderId: string; whatsappSentAt: Date }> {
-    const order = await this.findOrderForWhatsapp(orderId);
-    if (order.whatsappSentAt) {
-      return { orderId: order.id, whatsappSentAt: order.whatsappSentAt };
-    }
-    const whatsappSentAt = new Date();
-    // update() de la columna sola: no re-guarda relaciones ni pisa otros campos.
-    await this.ordersRepository.update(order.id, { whatsappSentAt });
-    return { orderId: order.id, whatsappSentAt };
+    const result = await this.dataSource.transaction(async (manager) => {
+      const order = await manager.findOne(Order, {
+        where: { id: orderId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!order) throw new NotFoundException('Pedido no encontrado');
+      if (order.status === OrderStatus.CANCELADO)
+        throw new ConflictException(
+          'El pedido está cancelado: no corresponde mandarle WhatsApp',
+        );
+      if (order.whatsappSentAt)
+        return { orderId: order.id, whatsappSentAt: order.whatsappSentAt };
+      const whatsappSentAt = new Date();
+      await manager.update(Order, order.id, { whatsappSentAt });
+      await this.orderEvents.record(
+        manager,
+        'order.updated',
+        order,
+        'whatsapp',
+      );
+      return { orderId: order.id, whatsappSentAt };
+    });
+    this.orderEvents.wake();
+    return result;
   }
 
   /** Pedido para los endpoints de WhatsApp: 404 si no existe, 409 si está cancelado. */
@@ -759,6 +787,14 @@ export class OrdersService {
           throw new NotFoundException('Usuario no encontrado');
         }
         await manager.update(Order, { id: In(orderIds) }, { userId: user.id });
+        for (const order of orders) {
+          await this.orderEvents.record(
+            manager,
+            'order.updated',
+            order,
+            'linked',
+          );
+        }
 
         const delivered = fromCents(
           orders
@@ -778,6 +814,7 @@ export class OrdersService {
         };
       });
 
+    this.orderEvents.wake();
     // Mismo disparo post-commit que al entregar (best-effort): la vinculación ya
     // quedó registrada aunque esto falle. Las estrellas son mensuales: solo
     // cuentan los entregados del mes en curso (ver RewardsService.monthlyStats).

@@ -27,6 +27,18 @@ export const validationSchema = Joi.object({
   // (Supabase lo exige). DB_SSL=true/false lo fuerza (ej. probar el build de producción
   // contra un Postgres local sin SSL).
   DB_SSL: Joi.string().valid('true', 'false').optional(),
+  ORDER_EVENTS_ENABLED: Joi.string().valid('true', 'false').default('false'),
+  ORDER_EVENTS_LISTENER_MODE: Joi.string()
+    .valid('direct', 'session')
+    .when('ORDER_EVENTS_ENABLED', {
+      is: 'true',
+      then: Joi.required(),
+      otherwise: Joi.optional(),
+    }),
+  ORDER_EVENTS_LISTENER_HOST: Joi.string().optional(),
+  ORDER_EVENTS_LISTENER_PORT: Joi.number().port().optional(),
+  ORDER_EVENTS_LISTENER_USERNAME: Joi.string().optional(),
+  ORDER_EVENTS_LISTENER_PASSWORD: Joi.string().optional(),
 
   // Auth (se declaran ya para que el módulo Auth las use sin fallback hardcodeado)
   JWT_SECRET: Joi.string().required(),

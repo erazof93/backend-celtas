@@ -52,6 +52,25 @@ export async function assertDisposableDatabase(ds: DataSource): Promise<void> {
        AND table_name NOT IN ('migrations', 'settings', 'fries_types')`,
   );
   for (const { table_name: name } of tables) {
+    if (name === 'order_event_state') {
+      const state = await ds.query<
+        { singleton: boolean; streamId: string; head: string; floor: string }[]
+      >(
+        'SELECT singleton, "streamId", head::text, floor::text FROM order_event_state',
+      );
+      if (
+        state.length !== 1 ||
+        state[0].singleton !== true ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          state[0].streamId,
+        ) ||
+        state[0].head !== '0' ||
+        state[0].floor !== '0'
+      ) {
+        throw new Error('E2E requires the initial order event state');
+      }
+      continue;
+    }
     const [row] = await ds.query<{ count: string }[]>(
       `SELECT count(*) FROM "${name.replaceAll('"', '""')}"`,
     );

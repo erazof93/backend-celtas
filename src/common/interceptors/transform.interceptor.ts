@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
+import { RAW_RESPONSE } from '../decorators/raw-response.decorator';
 
 /**
  * Respuesta estándar de la API:
@@ -29,6 +30,10 @@ export class TransformInterceptor<T> implements NestInterceptor<
     context: ExecutionContext,
     next: CallHandler<T>,
   ): Observable<ApiResponse<T>> {
+    const handler = context.getHandler?.();
+    if (handler && Reflect.getMetadata(RAW_RESPONSE, handler) === true) {
+      return next.handle() as Observable<ApiResponse<T>>;
+    }
     return next.handle().pipe(
       map((data) => {
         if (

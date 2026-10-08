@@ -8,6 +8,7 @@ export interface JwtPayload {
   sub: string;
   email: string;
   role: string;
+  exp?: number;
 }
 
 /**
@@ -31,6 +32,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     userId: string;
     email: string;
     role: string;
+    expiresAt?: number;
   }> {
     if (typeof payload.sub !== 'string' || !payload.sub) {
       throw new UnauthorizedException('Token inválido');
@@ -41,6 +43,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       userId: user.id,
       email: user.email,
       role: user.role,
+      ...(typeof payload.exp === 'number'
+        ? { expiresAt: payload.exp * 1000 }
+        : {}),
     };
   }
 }

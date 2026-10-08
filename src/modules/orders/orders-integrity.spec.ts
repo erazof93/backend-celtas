@@ -71,6 +71,10 @@ describe('Orders integrity regressions', () => {
       } as never,
       {} as never,
       {} as never,
+      {
+        record: jest.fn().mockResolvedValue(undefined),
+        wake: jest.fn(),
+      } as never,
     );
   });
   it.each([
