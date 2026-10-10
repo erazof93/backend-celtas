@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import 'reflect-metadata';
 import { DataSource } from 'typeorm';
+import { postgresTls } from './config/postgres-tls';
 import { Banner } from './modules/banners/entities/banner.entity';
 import { Beverage } from './modules/beverages/entities/beverage.entity';
 import { Coupon } from './modules/coupons/entities/coupon.entity';
@@ -77,13 +78,5 @@ export const AppDataSource = new DataSource({
   ],
   migrations: [__dirname + '/migrations/*{.ts,.js}'],
   synchronize: false,
-  // SSL: Supabase lo exige desde fuera de su red, el Postgres local de Docker no.
-  // Por defecto: SSL solo cuando NODE_ENV=production. DB_SSL=true/false lo fuerza.
-  ssl: (
-    process.env.DB_SSL !== undefined
-      ? process.env.DB_SSL === 'true'
-      : process.env.NODE_ENV === 'production'
-  )
-    ? { rejectUnauthorized: false }
-    : false,
+  ssl: postgresTls(),
 });

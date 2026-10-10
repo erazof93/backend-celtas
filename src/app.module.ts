@@ -6,6 +6,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import configuration from './config/configuration';
 import { validationSchema } from './config/validation.schema';
+import { postgresTls } from './config/postgres-tls';
 import { AuthModule } from './modules/auth/auth.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { BannersModule } from './modules/banners/banners.module';
@@ -44,17 +45,7 @@ import { UsersModule } from './modules/users/users.module';
         // solo por migraciones (ver "Flujo de migraciones" en la skill nestjs-celtas).
         // Reactivarlo rompe la detección de diffs de `migration:generate`.
         synchronize: false,
-        // SSL: Supabase lo exige desde fuera de su red, el Postgres local de Docker no.
-        // Por defecto: SSL solo cuando NODE_ENV=production. DB_SSL=true/false lo fuerza
-        // (ej. DB_SSL=false para probar el build de producción contra un Postgres local).
-        // Se usa { rejectUnauthorized: false } porque Supabase usa certificados auto-firmados.
-        ssl: (
-          process.env.DB_SSL !== undefined
-            ? process.env.DB_SSL === 'true'
-            : configService.get<string>('nodeEnv') === 'production'
-        )
-          ? { rejectUnauthorized: false }
-          : false,
+        ssl: postgresTls(),
       }),
     }),
     UsersModule,

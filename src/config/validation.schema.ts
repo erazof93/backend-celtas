@@ -27,6 +27,7 @@ export const validationSchema = Joi.object({
   // (Supabase lo exige). DB_SSL=true/false lo fuerza (ej. probar el build de producción
   // contra un Postgres local sin SSL).
   DB_SSL: Joi.string().valid('true', 'false').optional(),
+  DB_SSL_CA_FILE: Joi.string().optional(),
   ORDER_EVENTS_ENABLED: Joi.string().valid('true', 'false').default('false'),
   ORDER_EVENTS_LISTENER_MODE: Joi.string()
     .valid('direct', 'session')
